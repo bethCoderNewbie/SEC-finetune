@@ -1,0 +1,39 @@
+# Risk Taxonomy for SEC 10-K Filings
+# These categories will be used as candidate labels for zero-shot classification
+
+categories:
+  - name: "Market Risk"
+    description: "Risks related to market volatility, competition, and demand fluctuations"
+
+  - name: "Operational Risk"
+    description: "Risks related to business operations, supply chain, and execution challenges"
+
+  - name: "Financial Risk"
+    description: "Risks related to liquidity, credit, interest rates, and financial performance"
+
+  - name: "Regulatory and Compliance Risk"
+    description: "Risks related to laws, regulations, compliance requirements, and government policies"
+
+  - name: "Technology Risk"
+    description: "Risks related to cybersecurity, IT infrastructure, and technological changes"
+
+  - name: "Legal Risk"
+    description: "Risks related to litigation, intellectual property, and legal proceedings"
+
+  - name: "Strategic Risk"
+    description: "Risks related to business strategy, acquisitions, and strategic decisions"
+
+  - name: "Reputation Risk"
+    description: "Risks related to brand reputation, public perception, and customer trust"
+
+  - name: "Human Capital Risk"
+    description: "Risks related to talent retention, labor relations, and workforce management"
+
+  - name: "Environmental and Climate Risk"
+    description: "Risks related to climate change, environmental regulations, and sustainability"
+
+  - name: "Geopolitical Risk"
+    description: "Risks related to international operations, trade tensions, and political instability"
+
+  - name: "Product and Service Risk"
+    description: "Risks related to product liability, quality issues, and service delivery"

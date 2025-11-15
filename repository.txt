@@ -1,0 +1,191 @@
+​sec-filing-analyzer/​
+├──​ .dvc/             # DVC metadata for data/pipeline versioning​
+├──.github/           # GitHub-specific files (e.g., CI/CD Actions) 
+│   └── workflows/
+│       ├── test.yml
+│       └── train.yml
+├── alembic/                 # (NEW) Alembic migration environment
+│   ├── versions/             # (NEW) Contains versioned migration scripts (e.g., 001_add_risk_table.py)
+│   ├── env.py                # (NEW) Alembic runtime config
+│   └── script.py.mako        # (NEW) Migration script template
+├── alembic.ini              # (NEW) Alembic configuration file
+├── configs/           # Hydra/YAML configs for experiments, data, models 
+│   ├── data/
+│   │   └── finetune_dataset.yaml
+│   └── model/
+│       └── llm_base.yaml
+│   └── core/                     # <-- NEW: For service connection configs
+│       └── services.yaml         # <-- NEW: Stores endpoints, bucket names defines the shape of your configuration and provides safe defaults.
+├──​ .gitignore         # Ignores data, logs, env files, model checkpoints​
+├── .gitattributes     # Defines file tracking for Git LFS 
+├──​ .env.example       # Template for environment variables (API keys, DB credentials, MinIO Access Key & Secret Key, MongoDB Connection String, Postgres Password)​
+├──​ README.md          # Project overview, setup, usage, and pipeline diagram​
+├── Makefile           # Convenience commands Add 'make db-migration', 'make db-upgrade'
+├──​ pyproject.toml     # Project metadata and dependencies Add dependencies: alembic, sqlalchemy, pydantic
+├──​ Dockerfile         # For containerizing the application​
+├──​ docker-compose.yml    # (Optional) For running services like a DB, app, etc.​
+​|​
+├──​ data/              # Data versioned by DVC, separated by stage
+│   ├── external/      # Third-party data sources
+│   ├── interim/       # Transformed or augmented data
+│   ├── processed/     # Final, tokenized datasets for training (JSONs of extracted risk factors​)
+│   └── raw/           # Original, immutable data (e.g., text, JSONL, A few raw 10-K .txt files for testing​) 
+│​   └── README.md      # Explains that large data lives in the Data Lake/DB​
+​|​
+├──​ docs/              # Project documentation​
+│​   ├── requirements/     # Historical requirements files for reference
+│   │   └── requirements_cleaning.txt  # Standalone requirements for cleaning module
+│​   ├── architecture.md   # Detailed breakdown of your pipeline diagram​
+│​   ├── setup.md       # Detailed installation and setup guide​
+│   ├── INSTALLATION.md    # Complete installation guide with troubleshooting
+│   ├── CLEANING_SUMMARY.md  # Text cleaning implementation summary
+│   ├── PYPROJECT_UPDATE_SUMMARY.md  # Dependency management documentation
+│   ├── README_INSTALLATION_SECTION.md  # Template for README installation section
+│   ├── code_guidance.md   # Coding standards and best practices
+│   ├── USAGE_GUIDE_SEC_PARSER.md  # SEC parser usage guide
+│   ├── FILE_ORGANIZATION.md  # File organization guide and directory structure
+│​   └── data_schema.md    # Describes the schema for the DBs/Lake​ Now auto-generated. DO NOT EDIT MANUALLY.
+​|​
+├──​ llm_finetuning/      # All code related to *training* the LLM​
+│​   ├── synthesize_dataset.py # Input: Reads segmented risks from your Postgres DB (using src/storage/postgres_repo.py) Output: Saves to data/processed/synthesized_risk_categories.jsonl (which is versioned by DVC).
+│​   ├── data_prep.py     # Script to convert Segmented Risks into training data​
+│​   ├── train.py         # The main model training script (e.g., using 'transformers')​
+│​   ├── evaluate.py     # Script to evaluate model performance​
+│​   └── configs/        # Training hyperparameters, model configs, etc.​
+​|​
+├──​ models/         # For model-related files Serialized model checkpoints (versioned by Git LFS or DVC)
+│   └── my-finetuned-model/ The resulting model llm_finetuning would be saved to models/my-sentiment-model/, and src/analysis/inference.py would load this model instead of the public one.
+│       ├── checkpoint-1000/
+│       └── config.json
+│​       ├── .gitkeep       # Placeholder​
+│​       └── README.md      # Explains *where* trained models are stored (e.g., S3, Hugging​​Face Hub)​
+​|​
+├──​ notebooks/        # Jupyter notebooks for exploration and analysis​
+│​ ├── 01_data_exploration.ipynb​
+│​ ├── 02_preprocessing_dev.ipynb​
+│​ ├── 03_llm_finetuning_prototype.ipynb​
+│​ └── 04_results_analysis.ipynb​
+├── prompts/           # (LLM-Specific) Versioned.prompt files 
+│   ├── categorize_risk.prompt
+│   ├── summarize.prompt
+│   └── qa_agent.prompt
+├── reports/           # Generated analysis, model cards, evaluation metrics 
+│   └── figures/
+|​
+├──​ scripts/                 # (NEW) Utility scripts for development and CI
+│   └── generate_schema_docs.py # (NEW) Script to build data_schema.md from code
+|​
+├──​ src/           # Main source code, mirroring your pipeline​
+│​ ├── __init__.py​
+│​ │​
+│​ ├── acquisition/     # 1. [Acquisition Engine]​
+│​ │ ├── __init__.py​
+│​ │ └── edgar_client.py # Module for fetching filings from EDGAR​
+│​ │​
+│​ ├── storage/       # Utility for Data Lake / Database I/O​
+│​ │ ├── __init__.py​
+│​ │ ├── db_clients.py     # Handles the raw connection logic (the "how") is to connect to the databases and manage the connection clients. It gets its configuration (like passwords) from your src/config.py
+│​ │ ├── mongo_repo.py     # Imports from mongo_schemas for validation Defines *what* you do with MongoDB (the "what") "Filing Index" repository. It uses the db_clients.py to get a connection and then defines clear, simple functions for your acquisition pipeline.
+│​ │ └── postgres_repo.py  # Imports from postgres_schemas for queries Defines *what* you do with Postgres + pg_vector "Analysis Results" repository. It handles the structured data: the extracted risks and their vector embeddings.
+│​ │ └── schemas/           # (NEW) Single source of truth for data models
+│​ │     ├── __init__.py
+│​ │     ├── mongo_schemas.py   # (NEW) Pydantic models (e.g., FilingIndex)
+│​ │     └── postgres_schemas.py# (NEW) SQLAlchemy declarative models (e.g., RiskSegment)
+│​ │
+│​ ├── preprocessing/    # 2. [Preprocessing & Extraction Engine]​
+│​ │ ├── __init__.py​
+│​ │ ├── parser.py    # Parses raw HTML/XML/text filings​ beautifulsoup4, lxml (for parsing XBRL/iXBRL)
+│​ │ ├── extractor.py   # Finds Start/End anchors and extracts the HTML blob
+│​ │ ├── cleaning.py    # Cleans the HTML blob (removes tags, newlines)
+│​ │ └── ​segmenter.py      # NEW: Job: Splits the *clean text blob* into a list of risks.
+│​ │​
+│​ ├── analysis/      # 3. [NLP & Analysis Engine]​
+│​ │ ├── __init__.py​
+│​ │ ├── taxonomies/
+│​ │ │    ├──  __init__.py​
+│​ │ │    └──  risk_taxonomy.yaml    # The list of categories. Used by both methods.
+│​ │ │                               # These will be the "hypotheses" for Zero-Shot.
+│​ │ │                               # These will be the "labels" for the Teacher-Student model.
+│​ │ ├── inference.py   # Loads the fine-tuned LLM to run analysis​ transformers, torch (from Hugging Face)
+│​ │ └── insights.py   # Generates Risk Scores, Categories, Deltas from LLM output​
+│​ │​
+│​ ├── visualization/    # 4. [Visualization Layer]​
+│​ │ ├── __init__.py​
+│​ │ └── app.py      # The Dash or Streamlit application code​ 
+│ │ └── api.py      # fastapi
+│​ │​
+│​ ├── main.py       # Main script to run the pipeline (or use an orchestrator)​
+│​ └── config.py      # Global configuration (paths, credentials loading)​
+​|​
+└──​ tests/           # Unit and integration tests​
+     ├──​ test_acquisition.py
+     ├──​ test_preprocessing.py
+     ├──​ test_analysis.py
+     └──​ test_storage.py # (MODIFIED) Add tests for Pydantic/SQLAlchemy schema logic
+     
+
+# ​Key Concepts of This Structure​
+
+​●​ ​src/ (Source Code):​​This is the heart of your project.​​I've created sub-directories inside​
+​src/ that map​​directly to your pipeline components​​(acquisition, preprocessing,​
+​analysis, visualization). This makes the code organization intuitive.​
+
+-----
+
+​●​ ​llm_finetuning/ vs. src/analysis/:​​This is a crucial separation.​
+​○​ ​llm_finetuning/​​holds the​​one-time​​(or infrequent)​​scripts used to ​​create ​​your ​​model.​
+​○​ ​src/analysis/​​holds the​​production​​code that​​uses​​the trained model to perform​
+
+​inference on new data.​
+​●​ ​data/ Directory:​​This folder should​​not​​contain your​​full "Data Lake" or "Database." Git is​ ​not designed for large data. This folder is only for small​​sample files​​that help new​
+​developers run tests or understand the data format. The README.md inside explains that​ ​the real data lives in cloud storage (like S3) or a database.​
+​●​ ​models/ Directory:​​Similar to data/, this does​​not​​store the large, multi-gigabyte model​ [​checkpoints]
+The​ ​README.md here tells other developers where to find them.​
+​●​ ​Root Files:​​The files in the main directory (README.md,​​requirements.txt, Dockerfile) are​
+​standard "entry points" for any developer, system, or CI/CD pipeline interacting with your​
+​project.​
+
+data/: This directory is separated by pipeline stage, a critical application of SoC.   
+data/raw: The original, immutable data dump.
+data/interim: Intermediate data that has been transformed.
+data/processed: The final, canonical datasets for modeling.
+
+models/: Stores trained and serialized models, model predictions, or model summaries.   
+notebooks/: Used for exploratory data analysis (EDA) and experimentation. A strict naming convention (e.g., 1.0-jqp-initial-data-exploration) is used to enforce a reproducible narrative.   
+
+(i.e., src/): The source code for the project, structured as an importable Python module. This directory contains scripts for data generation (dataset.py), feature creation (features.py), model training (train.py), and inference (predict.py).   
+​This granular modularity is the physical manifestation of an MLOps pipeline. It decouples data engineering from model engineering, allowing a CI/CD system to reliably test, validate, and execute specific stages (e.g., make data or make train) as independent, automated steps.
+configs/: This directory holds configuration files (e.g., model1.yaml) for model and training hyperparameters. This separates configuration from code, a core software engineering best practice. It enables systematic experiment tracking  and allows tools like Hydra to override parameters at runtime (e.g., python3 main.py gpt4all.gpt4all_model_name="my-new-model").
+
+## 1. Data Acquisition & Ingestion (The Foundation)
+### How You'll Use src/storage/ in Your Pipeline:
+src/acquisition/ will call mongo_repo.add_filing_metadata() to log a new filing and mongo_repo.update_filing_status() to 'raw_downloaded'.
+src/preprocessing/ will call mongo_repo.get_filings_to_process() to get its work queue.
+src/analysis/ will run the LLM, get an embedding, and then call postgres_repo.insert_risk_factor() to save the final result.
+src/visualization/ will call postgres_repo.find_similar_risks() to power your "find similar risks" search bar.
+
+## 2. Data Preprocessing & Extraction (The Refinery)
+### Data Workflow
+* Orchestrator (main.py): The pipeline starts.
+* Get Work: It calls src.storage.mongo_repo.get_filings_to_process(). This returns a list of filings marked "raw_downloaded."
+* Fetch Raw Data: For each filing, it gets the S3/MinIO path from the Mongo record and uses your src.storage.data_lake.py (which you'd create) or boto3 client to download the raw .html file.
+* Parse (parser.py): The raw HTML is passed to parser.parse_filing(), which returns a BeautifulSoup object.
+* Extract (extractor.py): The soup object is passed to extractor.find_risk_section() which finds the Start/End anchors and returns the raw HTML blob for just Item 1A.
+* Clean (cleaning.py): The raw HTML blob is passed to cleaning.clean_html_blob() which returns a single, clean string of text.
+* Segment (segmenter.py): The clean string is passed to segmenter.split_into_risks() which returns a list[str] of individual risks.
+* Analyze (analysis/): This list[str] is passed to your src.analysis.inference.py to get embeddings for each risk.
+* Save Results: The final list of risks (with their text, embeddings, and any other metadata) is saved to the "Analysis Results" database by calling src.storage.postgres_repo.insert_risk_factor() for each item in the list.
+* Update Status: Finally, it calls src.storage.mongo_repo.update_filing_status() to mark the filing as "processed."
+
+### Use notebooks/ for Development
+Your "rules engine" for extraction and segmentation will be brittle and require a lot of iteration.
+This is the single most important use for notebooks/02_preprocessing_dev.ipynb.
+Use this notebook to:
+* Load sample raw/ filings.
+* Prototype your extractor.py logic.
+* Test your Start/End anchor regular expressions.
+* Develop your segmenter.py logic (e.g., "split on paragraphs that are bolded").
+* Once the logic is stable, copy it from the notebook into the .py files in src/preprocessing/. This keeps your src/ code clean while giving you a "scratchpad" to do the messy work.
+
+-----
+
