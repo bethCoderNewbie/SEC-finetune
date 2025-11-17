@@ -28,7 +28,7 @@
 ├──​ data/              # Data versioned by DVC, separated by stage
 │   ├── external/      # Third-party data sources
 │   ├── interim/       # Transformed or augmented data
-│   ├── processed/     # Final, tokenized datasets for training (JSONs of extracted risk factors​)
+│   ├── processed/     # Final, tokenized datasets for training (JSONs of extracted risk factors​) model_training_dataset.parquet  <-- Output of [Step 6: Build Dataset]
 │   └── raw/           # Original, immutable data (e.g., text, JSONL, A few raw 10-K .txt files for testing​) 
 │​   └── README.md      # Explains that large data lives in the Data Lake/DB​
 ​|​
@@ -46,7 +46,7 @@
 │   ├── FILE_ORGANIZATION.md  # File organization guide and directory structure
 │​   └── data_schema.md    # Describes the schema for the DBs/Lake​ Now auto-generated. DO NOT EDIT MANUALLY.
 ​|​
-├──​ llm_finetuning/      # All code related to *training* the LLM​
+├──​ llm_finetuning/      # All code related to *training* the LLM​ # <-- YOUR FOLDER: Path B (Training)
 │​   ├── synthesize_dataset.py # Input: Reads segmented risks from your Postgres DB (using src/storage/postgres_repo.py) Output: Saves to data/processed/synthesized_risk_categories.jsonl (which is versioned by DVC).
 │​   ├── data_prep.py     # Script to convert Segmented Risks into training data​
 │​   ├── train.py         # The main model training script (e.g., using 'transformers')​
@@ -54,7 +54,8 @@
 │​   └── configs/        # Training hyperparameters, model configs, etc.​
 ​|​
 ├──​ models/         # For model-related files Serialized model checkpoints (versioned by Git LFS or DVC)
-│   └── my-finetuned-model/ The resulting model llm_finetuning would be saved to models/my-sentiment-model/, and src/analysis/inference.py would load this model instead of the public one.
+│​   ├── baseline_xgb.pkl           # <-- Output of Path A
+│   └── my-finetuned-model/ The resulting model llm_finetuning would be saved to models/my-sentiment-model/, and src/analysis/inference.py would load this model instead of the public one. # <-- Output of Path B (Git LFS tracked)
 │       ├── checkpoint-1000/
 │       └── config.json
 │​       ├── .gitkeep       # Placeholder​
@@ -65,6 +66,7 @@
 │​ ├── 02_preprocessing_dev.ipynb​
 │​ ├── 03_llm_finetuning_prototype.ipynb​
 │​ └── 04_results_analysis.ipynb​
+​|​
 ├── prompts/           # (LLM-Specific) Versioned.prompt files 
 │   ├── categorize_risk.prompt
 │   ├── summarize.prompt
@@ -98,6 +100,11 @@
 │​ │ ├── extractor.py   # Finds Start/End anchors and extracts the HTML blob
 │​ │ ├── cleaning.py    # Cleans the HTML blob (removes tags, newlines)
 │​ │ └── ​segmenter.py      # NEW: Job: Splits the *clean text blob* into a list of risks.
+│​ │​
+│​ ├── features/ # Path A (Feature Engineering)
+│ │   ├── linguistic_features.py   # For Step 5 (pysentiment2, textstat)
+│ │   ├── build_vectors.py         # For Step 6 (FinBERT model.encode())
+│ │   └── __init__.py
 │​ │​
 │​ ├── analysis/      # 3. [NLP & Analysis Engine]​
 │​ │ ├── __init__.py​

@@ -18,7 +18,7 @@ import sys
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.config import RAW_DATA_DIR, ensure_directories
+from src.config import settings
 
 
 def download_filings(
@@ -41,10 +41,10 @@ def download_filings(
     Returns:
         List of downloaded file paths
     """
-    ensure_directories()
+    settings.paths.ensure_directories()
 
     print(f"Downloading {form_type} filings for {len(tickers)} ticker(s)")
-    print(f"Output directory: {RAW_DATA_DIR}")
+    print(f"Output directory: {settings.paths.raw_data_dir}")
     print("=" * 80)
 
     # TODO: Implement using src/acquisition/edgar_client.py

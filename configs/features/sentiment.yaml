@@ -1,0 +1,102 @@
+# Sentiment Analysis Configuration
+# Runtime settings for Loughran-McDonald sentiment feature extraction
+#
+# This file controls HOW sentiment features are extracted.
+# For dictionary metadata (version, categories), see src/features/dictionaries/constants.py
+#
+# All settings can be overridden via environment variables:
+#   SENTIMENT__ACTIVE_CATEGORIES='["Negative", "Positive"]'
+#   SENTIMENT_TEXT__CASE_SENSITIVE=true
+#   SENTIMENT_NORM__METHOD=count
+
+sentiment:
+  # ===========================
+  # Active Categories
+  # ===========================
+  # Subset of LM_FEATURE_CATEGORIES to extract
+  # Options: Negative, Positive, Uncertainty, Litigious,
+  #          Strong_Modal, Weak_Modal, Constraining, Complexity
+  active_categories:
+    - Negative
+    - Positive
+    - Uncertainty
+    - Litigious
+    - Constraining
+
+  # ===========================
+  # Text Processing
+  # ===========================
+  text_processing:
+    # Case sensitivity for word matching
+    # LM dictionary uses uppercase, so False is recommended
+    case_sensitive: false
+
+    # Apply lemmatization before matching
+    # Reduces "running" -> "run" for better matching
+    lemmatize: true
+
+    # Remove stopwords before counting
+    # May reduce false positives but also signal
+    remove_stopwords: false
+
+  # ===========================
+  # Normalization
+  # ===========================
+  normalization:
+    # Enable feature normalization
+    enabled: true
+
+    # Normalization method
+    # - count: Raw word counts
+    # - tfidf: TF-IDF weighted (recommended for classification)
+    # - log: Log(1 + count) transformation
+    method: tfidf
+
+  # ===========================
+  # Features to Extract
+  # ===========================
+  features:
+    # Raw counts per category
+    include_counts: true
+
+    # Ratios (category_count / total_words)
+    include_ratios: true
+
+    # TF-IDF weighted scores
+    include_tfidf: true
+
+    # Proportions (category_count / total_sentiment_words)
+    include_proportions: true
+
+  # ===========================
+  # Processing Performance
+  # ===========================
+  processing:
+    # Cache loaded dictionary in memory
+    cache_enabled: true
+
+    # Use preprocessed pickle cache for fast loading
+    use_preprocessed_dict: true
+
+    # Batch size for processing multiple documents
+    batch_size: 1000
+
+    # Number of parallel workers (0 = auto-detect)
+    parallel_workers: 4
+
+  # ===========================
+  # Output Settings
+  # ===========================
+  output:
+    # Output format: json, csv, parquet
+    format: json
+
+    # Save intermediate feature extractions
+    save_intermediate: false
+
+    # Decimal precision for floating-point features
+    precision: 4
+
+    # Output directory (relative to project root)
+    # Overrides default from PathsConfig.features_data_dir
+    # output_dir: "data/processed/features/sentiment"

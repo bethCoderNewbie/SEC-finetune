@@ -14,7 +14,7 @@ from src.preprocessing.parser import SECFilingParser
 from src.preprocessing.extractor import RiskFactorExtractor
 from src.preprocessing.cleaning import TextCleaner
 from src.preprocessing.segmenter import RiskSegmenter
-from src.config import RAW_DATA_DIR
+from src.config import settings
 import json
 
 
@@ -28,10 +28,10 @@ def main():
     # ============================================
     print("\n[Step 1] Parsing HTML filing...")
 
-    html_files = list(RAW_DATA_DIR.glob("*.html"))
+    html_files = list(settings.paths.raw_data_dir.glob("*.html"))
     if not html_files:
         print("ERROR: No HTML files found")
-        print(f"Please place HTML filings in: {RAW_DATA_DIR}")
+        print(f"Please place HTML filings in: {settings.paths.raw_data_dir}")
         return
 
     filing_path = html_files[0]

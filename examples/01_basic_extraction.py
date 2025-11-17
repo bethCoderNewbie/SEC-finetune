@@ -10,7 +10,7 @@ This example demonstrates:
 from pathlib import Path
 from src.preprocessing.parser import SECFilingParser
 from src.preprocessing.extractor import RiskFactorExtractor, SectionIdentifier, SECSectionExtractor
-from src.config import RAW_DATA_DIR
+from src.config import settings
 
 
 def main():
@@ -24,10 +24,10 @@ def main():
     print("\n[Step 1] Parsing filing...")
 
     # Find an HTML file in your raw data directory
-    html_files = list(RAW_DATA_DIR.glob("*.html"))
+    html_files = list(settings.paths.raw_data_dir.glob("*.html"))
 
     if not html_files:
-        print(f"ERROR: No HTML files found in {RAW_DATA_DIR}")
+        print(f"ERROR: No HTML files found in {settings.paths.raw_data_dir}")
         print("Please download a 10-K filing using sec-downloader:")
         print("  pip install sec-downloader")
         print("  from sec_downloader import Downloader")

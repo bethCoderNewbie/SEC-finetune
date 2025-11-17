@@ -1,0 +1,105 @@
+# ============================================
+# SEC Filing Analyzer - Configuration
+# ============================================
+# This file contains all default configuration values.
+# Environment variables can override any setting.
+
+# ===========================
+# SEC Parser Configuration
+# ===========================
+sec_parser:
+  # Supported form types
+  supported_form_types:
+    - "10-K"
+    - "10-Q"
+
+  # Default form type
+  default_form_type: "10-K"
+
+  # Input file types
+  # Options: ["html"], ["txt"], or ["html", "txt"] for both
+  # Note: sec-parser requires HTML format for semantic parsing
+  input_file_extensions:
+    - "html"
+
+  # Parsing configuration
+  parse_tables: true
+  parse_images: false
+
+  # Version
+  version: "0.54.0"
+
+# ===========================
+# Model Configuration
+# ===========================
+models:
+  # Model for financial text analysis
+  default_model: "ProsusAI/finbert"
+
+  # Zero-shot classification model
+  zero_shot_model: "facebook/bart-large-mnli"
+
+# ===========================
+# Preprocessing Configuration
+# ===========================
+preprocessing:
+  # Segmentation settings
+  min_segment_length: 50
+  max_segment_length: 999999999999
+
+  # Text cleaning settings
+  remove_html_tags: true
+  normalize_whitespace: true
+  remove_page_numbers: true
+
+# ===========================
+# Extraction Configuration
+# ===========================
+extraction:
+  # Minimum confidence for extraction acceptance
+  min_confidence: 0.7
+
+  # Enable audit logging
+  enable_audit_logging: true
+
+  # Output format for extracted sections
+  # Options: "json", "parquet", "both"
+  output_format: "json"
+
+  # Default sections to extract (can be overridden per job)
+  default_sections:
+    - "part1item1a"  # Risk Factors
+
+# ===========================
+# SEC Section Identifiers
+# ===========================
+sec_sections:
+  # 10-K sections
+  "10-K":
+    part1item1: "Item 1. Business"
+    part1item1a: "Item 1A. Risk Factors"
+    part1item1b: "Item 1B. Unresolved Staff Comments"
+    part1item1c: "Item 1C. Cybersecurity"
+    part2item7: "Item 7. Management's Discussion and Analysis"
+    part2item7a: "Item 7A. Quantitative and Qualitative Disclosures About Market Risk"
+    part2item8: "Item 8. Financial Statements and Supplementary Data"
+
+  # 10-Q sections
+  "10-Q":
+    part1item1: "Item 1. Financial Statements"
+    part1item2: "Item 2. Management's Discussion and Analysis"
+    part2item1a: "Item 1A. Risk Factors"
+
+# ===========================
+# Testing & Validation
+# ===========================
+testing:
+  # Enable golden dataset validation
+  enable_golden_validation: false
+
+# ===========================
+# Reproducibility
+# ===========================
+reproducibility:
+  # Random seed for reproducibility
+  random_seed: 42

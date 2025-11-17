@@ -3,6 +3,93 @@
 ## Overview
 Best practices for managing enums and configurations in a scalable, maintainable Python project.
 
+---
+
+## 🔒 Pydantic v2 Enforcement Policy
+
+### **MANDATORY REQUIREMENT: Pydantic 2.12.4+**
+
+This project **REQUIRES** Pydantic v2 (version 2.12.4 or later). Pydantic v1 is deprecated and **NOT SUPPORTED**.
+
+### Version Requirements
+
+**pyproject.toml must specify:**
+```toml
+[project]
+dependencies = [
+    "pydantic>=2.12.4",
+    "pydantic-settings>=2.0.0",
+]
+```
+
+### Pre-Commit Validation
+
+All Pydantic code must follow v2 patterns. The following patterns are **FORBIDDEN**:
+
+❌ **NEVER USE (Pydantic v1 - Deprecated):**
+```python
+# ❌ OLD - Do not use
+from pydantic import BaseSettings  # Wrong import
+from pydantic import validator      # Deprecated
+
+class Config:                        # Old style configuration
+    env_file = '.env'
+
+@validator('field')                  # Old validator decorator
+def validate_field(cls, v):
+    return v
+
+config.dict()                        # Old serialization method
+config.json()                        # Old JSON method
+Config.parse_obj(data)               # Old parsing method
+```
+
+✅ **ALWAYS USE (Pydantic v2 - Current):**
+```python
+# ✅ CORRECT - Use these
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+model_config = ConfigDict(...)               # New style configuration
+model_config = SettingsConfigDict(...)       # For BaseSettings
+
+@field_validator('field')                    # New validator decorator
+@classmethod
+def validate_field(cls, v):
+    return v
+
+@model_validator(mode='after')               # New model validator
+@classmethod
+def validate_model(cls, model):
+    return model
+
+config.model_dump()                          # New serialization method
+config.model_dump_json()                     # New JSON method
+Config.model_validate(data)                  # New parsing method
+Field(..., pattern='regex')                  # pattern instead of regex
+```
+
+### Code Review Checklist
+
+Before committing any Pydantic code, verify:
+
+- [ ] Using Pydantic v2.12.4 or later
+- [ ] All imports are from correct v2 modules (`pydantic` and `pydantic_settings`)
+- [ ] All models use `model_config = ConfigDict(...)` or `SettingsConfigDict(...)`
+- [ ] All validators use `@field_validator` or `@model_validator` with `@classmethod`
+- [ ] All serialization uses `.model_dump()` and `.model_dump_json()`
+- [ ] All parsing uses `.model_validate()` and `.model_validate_json()`
+- [ ] No deprecated v1 patterns in code
+
+### Enforcement
+
+- **CI/CD**: Add linting to check for deprecated patterns
+- **Code Reviews**: Reject any PRs containing Pydantic v1 patterns
+- **Documentation**: All examples must show v2 patterns only
+- **Dependencies**: Pin `pydantic>=2.12.4` to prevent downgrades
+
+---
+
 ## Pattern 1: Config-Driven Enums (Current Implementation)
 
 ### ✅ Recommended for: Business logic that changes frequently
@@ -227,116 +314,202 @@ MIN_EXTRACTION_CONFIDENCE = Config.MIN_EXTRACTION_CONFIDENCE
 - ✅ Environment-specific optimizations
 - ✅ Easy testing with different configs
 
-## Pattern 5: Pydantic for Validation
+## Pattern 5: Pydantic v2 for Validation
 
 ### ✅ Recommended for: Type-safe, validated configs
 
-**Implementation:**
+### 🔒 **ENFORCED: Pydantic v2.12.4+ Required**
+
+**This project MUST use Pydantic v2 (2.12.4 or later). Pydantic v1 is deprecated and not supported.**
+
+**Implementation (Pydantic v2 Style):**
 
 ```python
 # src/config_models.py
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Dict, List, Literal
 from pathlib import Path
 
 class SECSectionConfig(BaseModel):
-    id: str = Field(..., regex=r'^part\d+item\d+[a-z]?$')
+    """Configuration for individual SEC filing sections"""
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    id: str = Field(..., pattern=r'^part\d+item\d+[a-z]?$')
     title: str
     extract_by_default: bool = False
     priority: int = Field(default=0, ge=0, le=10)
 
 class FormConfig(BaseModel):
+    """Configuration for SEC form types"""
     form_type: Literal['10-K', '10-Q', '8-K']
     sections: List[SECSectionConfig]
 
-    @validator('sections')
-    def validate_sections(cls, sections):
+    @field_validator('sections')
+    @classmethod
+    def validate_sections(cls, sections: List[SECSectionConfig]) -> List[SECSectionConfig]:
+        """Ensure no duplicate section IDs"""
         ids = [s.id for s in sections]
         if len(ids) != len(set(ids)):
             raise ValueError("Duplicate section IDs found")
         return sections
 
-class ExtractionConfig(BaseModel):
-    sec_forms: Dict[str, FormConfig]
+class ExtractionConfig(BaseSettings):
+    """Main extraction configuration with environment variable support"""
+    model_config = SettingsConfigDict(
+        env_prefix='EXTRACTION_',
+        env_file='.env',
+        env_file_encoding='utf-8',
+        case_sensitive=False,
+        extra='ignore'
+    )
+
+    sec_forms: Dict[str, FormConfig] = Field(default_factory=dict)
     output_format: Literal['json', 'parquet', 'both'] = 'json'
     min_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
 
-    @validator('output_format')
-    def validate_output_format(cls, v):
+    @field_validator('output_format')
+    @classmethod
+    def validate_output_format(cls, v: str) -> str:
+        """Validate output format is supported"""
         valid = ['json', 'parquet', 'both']
         if v not in valid:
             raise ValueError(f"output_format must be one of {valid}")
         return v
 
-# Usage
-config = ExtractionConfig.parse_file('config/extraction.yaml')
+# Usage (Pydantic v2 methods)
+import yaml
+with open('config/extraction.yaml') as f:
+    yaml_data = yaml.safe_load(f)
+
+config = ExtractionConfig.model_validate(yaml_data)  # v2: model_validate instead of parse_obj
 SEC_10K_SECTIONS = {
     s.id: s.title
     for s in config.sec_forms['10-K'].sections
 }
+
+# Serialization (v2 methods)
+config_dict = config.model_dump()  # v2: model_dump instead of .dict()
+config_json = config.model_dump_json(indent=2)  # v2: model_dump_json instead of .json()
 ```
 
 **Benefits:**
-- ✅ Automatic validation
-- ✅ Type safety
-- ✅ IDE autocomplete
-- ✅ Clear error messages
-- ✅ JSON Schema generation
+- ✅ Automatic validation with better error messages
+- ✅ Type safety with full IDE autocomplete
+- ✅ Environment variable integration via BaseSettings
+- ✅ JSON Schema generation via `.model_json_schema()`
+- ✅ Clear separation: BaseSettings for configs, BaseModel for data schemas
+- ✅ Modern ConfigDict pattern for better maintainability
+
+### 🚨 Pydantic v2 Migration Checklist
+
+**REQUIRED Changes from v1 to v2:**
+
+| Old (v1) ❌ | New (v2) ✅ |
+|------------|-----------|
+| `@validator` | `@field_validator` with `@classmethod` |
+| `@root_validator` | `@model_validator` with `@classmethod` |
+| `class Config:` | `model_config = ConfigDict(...)` |
+| `.dict()` | `.model_dump()` |
+| `.json()` | `.model_dump_json()` |
+| `.parse_obj(data)` | `.model_validate(data)` |
+| `.parse_raw(json_str)` | `.model_validate_json(json_str)` |
+| `.parse_file(path)` | Use with open + `.model_validate()` |
+| `.schema()` | `.model_json_schema()` |
+| `.construct()` | `.model_construct()` |
+| `Field(..., regex='...')` | `Field(..., pattern='...')` |
+
+**Example v2 Validator:**
+```python
+# ✅ CORRECT - Pydantic v2
+@field_validator('field_name')
+@classmethod
+def validate_field(cls, v: str) -> str:
+    if not v:
+        raise ValueError('Field cannot be empty')
+    return v.upper()
+
+# ✅ CORRECT - Pydantic v2 model validator (for cross-field validation)
+@model_validator(mode='after')
+@classmethod
+def validate_model(cls, model):
+    if model.start_date > model.end_date:
+        raise ValueError('start_date must be before end_date')
+    return model
+```
 
 ## Hybrid Approach (Recommended)
 
-Combine patterns for maximum flexibility:
+Combine patterns for maximum flexibility using **Pydantic v2**:
 
 ```python
 # src/config.py
 from pathlib import Path
-from pydantic import BaseSettings
-import os
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Dict, Optional
+import yaml
+
+def load_yaml_config(path: str) -> dict:
+    """Load configuration from YAML file"""
+    with open(path) as f:
+        return yaml.safe_load(f)
 
 class Settings(BaseSettings):
     """
-    Hierarchical configuration:
+    Hierarchical configuration (Pydantic v2):
     1. YAML files (base configuration)
     2. Environment variables (overrides)
     3. .env file (local development)
     """
+    model_config = SettingsConfigDict(
+        env_file='.env',
+        env_file_encoding='utf-8',
+        case_sensitive=False,
+        extra='ignore',
+        env_nested_delimiter='__'  # Allows SECTION__SUBSECTION__VALUE
+    )
 
     # Base configs from YAML
-    sec_10k_sections: Dict[str, str] = None
-    sec_10q_sections: Dict[str, str] = None
+    sec_10k_sections: Optional[Dict[str, str]] = Field(default_factory=dict)
+    sec_10q_sections: Optional[Dict[str, str]] = Field(default_factory=dict)
 
-    # Can be overridden by environment
+    # Can be overridden by environment (env_prefix in model_config)
     extraction_output_format: str = Field(
         default='json',
-        env='EXTRACTION_OUTPUT_FORMAT'
+        description='Output format for extraction results'
     )
     min_extraction_confidence: float = Field(
         default=0.7,
-        env='MIN_EXTRACTION_CONFIDENCE'
+        ge=0.0,
+        le=1.0,
+        description='Minimum confidence threshold for extraction'
     )
 
-    class Config:
-        env_file = '.env'
-        env_file_encoding = 'utf-8'
-
     @classmethod
-    def load(cls):
+    def load(cls) -> 'Settings':
+        """Load settings from YAML + environment variables"""
         # Load base from YAML
         base_config = load_yaml_config('config/sections.yaml')
 
         # Create settings with YAML base + env overrides
+        # Environment variables will automatically override YAML values
         return cls(
-            sec_10k_sections=base_config['10-K'],
-            sec_10q_sections=base_config['10-Q'],
+            sec_10k_sections=base_config.get('10-K', {}),
+            sec_10q_sections=base_config.get('10-Q', {}),
         )
 
-# Initialize
+# Initialize settings
 settings = Settings.load()
 
 # Export for backwards compatibility
 SEC_10K_SECTIONS = settings.sec_10k_sections
 SEC_10Q_SECTIONS = settings.sec_10q_sections
 EXTRACTION_OUTPUT_FORMAT = settings.extraction_output_format
+
+# Example: Override via environment variable
+# EXTRACTION_OUTPUT_FORMAT=parquet python script.py
+# MIN_EXTRACTION_CONFIDENCE=0.9 python script.py
 ```
 
 ## Migration Strategy

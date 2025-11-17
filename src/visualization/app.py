@@ -11,7 +11,7 @@ import sys
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.config import RAW_DATA_DIR, INPUT_FILE_EXTENSIONS
+from src.config import settings
 from src.preprocessing.parser import SECFilingParser
 from src.preprocessing.extractor import RiskFactorExtractor
 from src.preprocessing.cleaning import TextCleaner
@@ -232,12 +232,12 @@ def get_filing_files():
     File types are configured in config.INPUT_FILE_EXTENSIONS
     Supports: .html, .txt, or both
     """
-    raw_dir = Path(RAW_DATA_DIR)
+    raw_dir = settings.paths.raw_data_dir
     if not raw_dir.exists():
         return []
 
     all_files = []
-    for ext in INPUT_FILE_EXTENSIONS:
+    for ext in settings.sec_parser.input_file_extensions:
         # Normalize extension (remove leading dot if present)
         ext = ext.lstrip('.')
         pattern = f"*.{ext}"
@@ -324,8 +324,8 @@ filing_files = get_filing_files()
 
 if not filing_files:
     # Build friendly extension list for display
-    ext_display = ", ".join([f".{ext.lstrip('.')}" for ext in INPUT_FILE_EXTENSIONS])
-    st.warning(f"⚠️ No {ext_display} files found in `{RAW_DATA_DIR}`")
+    ext_display = ", ".join([f".{ext.lstrip('.')}" for ext in settings.sec_parser.input_file_extensions])
+    st.warning(f"⚠️ No {ext_display} files found in `{settings.paths.raw_data_dir}`")
     st.markdown(f"""
     <div class="custom-card">
     <h3><span class="material-symbols-outlined">info</span> Getting Started</h3>
@@ -341,8 +341,8 @@ if not filing_files:
     """, unsafe_allow_html=True)
 
     # Show example of where to place files
-    example_ext = INPUT_FILE_EXTENSIONS[0].lstrip('.')
-    st.code(f"Example: {RAW_DATA_DIR / f'company_10k.{example_ext}'}", language="text")
+    example_ext = settings.sec_parser.input_file_extensions[0].lstrip('.')
+    st.code(f"Example: {settings.paths.raw_data_dir / f'company_10k.{example_ext}'}", language="text")
 
 else:
     st.success(f"✓ Found {len(filing_files)} file(s) in data/raw/")
@@ -357,7 +357,7 @@ else:
 
     # Run Analysis button
     if st.button("🚀 Run Analysis", type="primary", use_container_width=True):
-        file_path = RAW_DATA_DIR / selected_file
+        file_path = settings.paths.raw_data_dir / selected_file
 
         with st.spinner("Running analysis pipeline..."):
             try:

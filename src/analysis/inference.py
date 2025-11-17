@@ -7,7 +7,7 @@ import yaml
 from typing import List, Dict, Optional
 from pathlib import Path
 from transformers import pipeline
-from src.config import RISK_TAXONOMY_PATH, ZERO_SHOT_MODEL
+from src.config import settings
 
 
 class RiskClassifier:
@@ -15,20 +15,20 @@ class RiskClassifier:
 
     def __init__(
         self,
-        taxonomy_path: Path = RISK_TAXONOMY_PATH,
-        model_name: str = ZERO_SHOT_MODEL,
+        taxonomy_path: Path = None,
+        model_name: str = None,
         device: int = -1  # -1 for CPU, 0 for GPU
     ):
         """
         Initialize the risk classifier
 
         Args:
-            taxonomy_path: Path to risk_taxonomy.yaml
-            model_name: Name of the Hugging Face model to use
+            taxonomy_path: Path to risk_taxonomy.yaml (defaults to settings.paths.risk_taxonomy_path)
+            model_name: Name of the Hugging Face model to use (defaults to settings.models.zero_shot_model)
             device: Device to run model on (-1 for CPU, 0+ for GPU)
         """
-        self.taxonomy_path = taxonomy_path
-        self.model_name = model_name
+        self.taxonomy_path = taxonomy_path or settings.paths.risk_taxonomy_path
+        self.model_name = model_name or settings.models.zero_shot_model
         self.device = device
 
         # Load risk categories from taxonomy
@@ -173,7 +173,7 @@ class RiskClassifier:
 
 def classify_risk_segments(
     segments: List[str],
-    model_name: str = ZERO_SHOT_MODEL,
+    model_name: str = None,
     multi_label: bool = False
 ) -> List[Dict]:
     """
@@ -193,4 +193,5 @@ def classify_risk_segments(
 
 if __name__ == "__main__":
     print("Inference module loaded successfully")
-    print(f"Default model: {ZERO_SHOT_MODEL}")
+    print(f"Default model: {settings.models.zero_shot_model}")
+    print(f"Risk taxonomy path: {settings.paths.risk_taxonomy_path}")

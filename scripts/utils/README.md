@@ -13,8 +13,10 @@ utils/
 │   └── debug_node_structure.py
 ├── inspection/               # Data inspection tools
 │   └── inspect_parsed.py
-└── testing/                  # Testing utilities
-    └── test_extractor_fix.py
+├── testing/                  # Testing utilities
+│   └── test_extractor_fix.py
+└── validation/               # Code quality and validation tools
+    └── validate_pydantic_v2.py
 ```
 
 ## Scripts Overview
@@ -83,12 +85,37 @@ python scripts/utils/inspection/inspect_parsed.py inspect data/interim/AAPL_pars
 python scripts/utils/testing/test_extractor_fix.py
 ```
 
+### Validation Tools (`validation/`)
+
+**validate_pydantic_v2.py**
+- Enforce Pydantic v2.12.4+ patterns across the codebase
+- Detect deprecated Pydantic v1 patterns
+- Automated code quality validation
+- Can be integrated with pre-commit hooks and CI/CD
+
+```bash
+# Validate specific files
+python scripts/utils/validation/validate_pydantic_v2.py src/config.py
+
+# Validate all Python files in src/
+python scripts/utils/validation/validate_pydantic_v2.py $(find src -name "*.py")
+
+# Verbose mode
+python scripts/utils/validation/validate_pydantic_v2.py src/*.py --verbose
+
+# Quiet mode (only errors)
+python scripts/utils/validation/validate_pydantic_v2.py src/*.py --quiet
+```
+
+See `docs/PYDANTIC_V2_ENFORCEMENT.md` for complete documentation.
+
 ## Usage Guidelines
 
 1. **Environment Setup**: Run `check_installation.py` after setting up the project
 2. **Debugging**: Use debugging tools when encountering parsing or extraction issues
 3. **Inspection**: Use inspection tools to verify data at each pipeline stage
 4. **Testing**: Use testing tools to validate fixes before committing
+5. **Validation**: Run validation tools before committing code to ensure quality standards
 
 ## Adding New Utilities
 

@@ -10,11 +10,11 @@ Usage:
 import argparse
 from pathlib import Path
 from src.preprocessing.parser import SECFilingParser
-from src.config import RAW_DATA_DIR, PARSED_DATA_DIR, ensure_directories
+from src.config import settings
 
 
 def batch_parse_filings(
-    input_dir: Path = RAW_DATA_DIR,
+    input_dir: Path = None,
     form_type: str = "10-K",
     pattern: str = "*.html",
     overwrite: bool = False
@@ -23,13 +23,17 @@ def batch_parse_filings(
     Parse all HTML filings in a directory and save as JSON files
 
     Args:
-        input_dir: Directory containing HTML files
+        input_dir: Directory containing HTML files (defaults to settings.paths.raw_data_dir)
         form_type: Type of SEC form (10-K or 10-Q)
         pattern: File pattern to match (default: *.html)
         overwrite: Whether to overwrite existing JSON files
     """
+    # Use default if not provided
+    if input_dir is None:
+        input_dir = settings.paths.raw_data_dir
+
     # Ensure directories exist
-    ensure_directories()
+    settings.paths.ensure_directories()
 
     # Find all HTML files
     html_files = list(input_dir.glob(pattern))
@@ -39,7 +43,7 @@ def batch_parse_filings(
         return
 
     print(f"Found {len(html_files)} file(s) to parse")
-    print(f"Output directory: {PARSED_DATA_DIR}")
+    print(f"Output directory: {settings.paths.parsed_data_dir}")
     print("=" * 80)
 
     # Initialize parser
