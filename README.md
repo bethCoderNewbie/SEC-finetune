@@ -69,7 +69,9 @@ sec-filing-analyzer/
 1. **Clone or navigate to the project directory**
 
 ```bash
-cd "C:\Users\bichn\MSBA\SEC finetune"
+# Clone the repository
+git clone https://github.com/bethCoderNewbie/SEC-finetune.git
+cd SEC-finetune
 ```
 
 2. **Create a virtual environment (recommended)**
