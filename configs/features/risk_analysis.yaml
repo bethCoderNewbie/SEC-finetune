@@ -1,0 +1,6 @@
+model:
+  drift_threshold: 0.15
+  labeling_model: "facebook/bart-large-mnli"
+  labeling_batch_size: 16
+  labeling_multi_label: true
+  device: "auto"  # 'auto', 'cpu', 'cuda', 'mps'

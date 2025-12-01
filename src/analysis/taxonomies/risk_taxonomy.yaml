@@ -1,39 +1,30 @@
-# Risk Taxonomy for SEC 10-K Filings
-# These categories will be used as candidate labels for zero-shot classification
+# Risk Taxonomy for SEC 10-K Filings based on SASB Materiality Map (Software & IT Services)
+# These categories will be used as candidate labels for zero-shot classification and model fine-tuning.
 
 categories:
-  - name: "Market Risk"
-    description: "Risks related to market volatility, competition, and demand fluctuations"
-
-  - name: "Operational Risk"
-    description: "Risks related to business operations, supply chain, and execution challenges"
-
-  - name: "Financial Risk"
-    description: "Risks related to liquidity, credit, interest rates, and financial performance"
-
-  - name: "Regulatory and Compliance Risk"
-    description: "Risks related to laws, regulations, compliance requirements, and government policies"
-
-  - name: "Technology Risk"
-    description: "Risks related to cybersecurity, IT infrastructure, and technological changes"
-
-  - name: "Legal Risk"
-    description: "Risks related to litigation, intellectual property, and legal proceedings"
-
-  - name: "Strategic Risk"
-    description: "Risks related to business strategy, acquisitions, and strategic decisions"
-
-  - name: "Reputation Risk"
-    description: "Risks related to brand reputation, public perception, and customer trust"
-
-  - name: "Human Capital Risk"
-    description: "Risks related to talent retention, labor relations, and workforce management"
-
-  - name: "Environmental and Climate Risk"
-    description: "Risks related to climate change, environmental regulations, and sustainability"
-
-  - name: "Geopolitical Risk"
-    description: "Risks related to international operations, trade tensions, and political instability"
-
-  - name: "Product and Service Risk"
-    description: "Risks related to product liability, quality issues, and service delivery"
+  - name: "Data_Security"
+    description: "Risks related to protecting customer and company data from unauthorized access, use, disclosure, disruption, modification, or destruction."
+  - name: "Data_Privacy_&_Freedom_of_Expression"
+    description: "Risks related to the collection, use, and retention of personal information, and issues concerning censorship or access restrictions impacting user rights."
+  - name: "Environmental_Footprint_of_Hardware_Infrastructure"
+    description: "Environmental risks associated with the energy consumption and waste generation from hardware used in IT operations (e.g., data centers)."
+  - name: "Recruiting_&_Managing_a_Skilled_Workforce"
+    description: "Risks related to attracting, developing, and retaining employees with specialized skills needed for technological innovation and service delivery."
+  - name: "Managing_Systemic_Risks_from_Technology_Disruptions"
+    description: "Risks related to the potential for widespread disruption or failure of technology systems and services, including cybersecurity incidents and operational outages."
+  - name: "Energy_Management"
+    description: "Risks and opportunities related to the consumption and management of energy, including energy efficiency and renewable energy sourcing."
+  - name: "Intellectual_Property_Protection_&_Competitive_Behavior"
+    description: "Risks related to safeguarding intellectual property rights and ensuring fair competition in the market."
+  - name: "Business_Ethics"
+    description: "Risks related to the ethical conduct of business operations, including anti-corruption measures and responsible business practices."
+  - name: "Management_of_the_Legal_&_Regulatory_Environment"
+    description: "Risks related to compliance with laws and regulations, and the ability to adapt to changes in the legal and regulatory landscape."
+  - name: "Customer_Privacy"
+    description: "Risks related to the protection of customer information and privacy rights, distinct from broader data privacy and freedom of expression."
+  - name: "Employee_Health_&_Safety"
+    description: "Risks related to ensuring the health, safety, and well-being of employees in the workplace."
+  - name: "Employee_Engagement,_Diversity_&_Inclusion"
+    description: "Risks related to fostering a diverse, equitable, and inclusive work environment, and maintaining high levels of employee engagement."
+  - name: "Other_General_Risk"
+    description: "A catch-all category for risks that do not fit into the other defined SASB disclosure topics for the Software & IT Services industry."

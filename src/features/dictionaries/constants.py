@@ -91,5 +91,6 @@ LM_CACHE_FILENAME: Final[str] = "lm_dictionary_cache.pkl"
 # Dictionary Statistics (Reference)
 # ===========================
 
-LM_APPROX_WORD_COUNT: Final[int] = 20000
-"""Approximate number of words in the dictionary (for validation)."""
+LM_APPROX_WORD_COUNT: Final[int] = 4000
+"""Approximate number of sentiment-categorized words in the dictionary (for validation).
+Note: The full CSV has ~86,000 words, but only ~4,000 have sentiment category assignments."""

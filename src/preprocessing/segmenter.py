@@ -5,16 +5,25 @@ Splits the Risk Factors section into individual risk segments
 
 import re
 from typing import List
+import numpy as np
 from src.config import MIN_SEGMENT_LENGTH, MAX_SEGMENT_LENGTH
+
+try:
+    from sentence_transformers import SentenceTransformer, util
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
 
 
 class RiskSegmenter:
-    """Segments Risk Factors section into individual risks"""
+    """Segments Risk Factors section into individual risk segments"""
 
     def __init__(
         self,
         min_length: int = MIN_SEGMENT_LENGTH,
-        max_length: int = MAX_SEGMENT_LENGTH
+        max_length: int = MAX_SEGMENT_LENGTH,
+        semantic_model_name: str = "all-MiniLM-L6-v2",
+        similarity_threshold: float = 0.5
     ):
         """
         Initialize the segmenter
@@ -22,9 +31,20 @@ class RiskSegmenter:
         Args:
             min_length: Minimum characters for a valid segment
             max_length: Maximum characters for a segment
+            semantic_model_name: Name of the SentenceTransformer model to use for semantic segmentation
+            similarity_threshold: Cosine similarity threshold to detect semantic breaks
         """
         self.min_length = min_length
         self.max_length = max_length
+        self.similarity_threshold = similarity_threshold
+
+        self.semantic_model = None
+        if SENTENCE_TRANSFORMERS_AVAILABLE:
+            try:
+                self.semantic_model = SentenceTransformer(semantic_model_name)
+            except Exception as e:
+                print(f"Warning: Could not load SentenceTransformer model '{semantic_model_name}'. "
+                      f"Semantic segmentation will not be available. Error: {e}")
 
     def segment_risks(self, text: str) -> List[str]:
         """
@@ -39,11 +59,23 @@ class RiskSegmenter:
         if not text:
             return []
 
-        # Try multiple segmentation strategies
-        segments = self._segment_by_headers(text)
+        # Try semantic segmentation first if model is available
+        segments = []
+        if self.semantic_model:
+            segments = self._segment_by_semantic_breaks(text)
+            if len(segments) > 1: # If semantic segmentation yields at least 2 segments, use it
+                print(f"Using semantic segmentation. Found {len(segments)} segments.")
+            else: # Fallback if semantic segmentation didn't produce enough segments
+                print("Semantic segmentation yielded too few segments, falling back to heuristic methods.")
+                segments = self._segment_by_headers(text)
+        else:
+            print("Semantic model not loaded, falling back to heuristic segmentation.")
+            segments = self._segment_by_headers(text)
+
 
         # If header-based segmentation doesn't work well, try paragraph-based
-        if len(segments) < 3:
+        if len(segments) < 3: # Keep the original heuristic as a fallback if needed
+            print("Header-based segmentation yielded too few segments, trying paragraph-based.")
             segments = self._segment_by_paragraphs(text)
 
         # Filter and clean segments
@@ -230,6 +262,52 @@ class RiskSegmenter:
             chunks.append(''.join(current_chunk).strip())
 
         return chunks
+
+    def _segment_by_semantic_breaks(self, text: str) -> List[str]:
+        """
+        Segment text by identifying semantic breaks using sentence embeddings.
+
+        Args:
+            text: The cleaned Risk Factors section text.
+
+        Returns:
+            List[str]: List of individual risk segments based on semantic similarity.
+        """
+        if not SENTENCE_TRANSFORMERS_AVAILABLE or self.semantic_model is None:
+            return [] # Fallback if model not available
+
+        sentences = re.split(r'(?<=[.!?])\s+', text) # Split by sentence, keeping punctuation
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        if len(sentences) < 2:
+            return sentences
+
+        # Generate embeddings for all sentences
+        embeddings = self.semantic_model.encode(sentences, convert_to_tensor=True)
+
+        # Calculate cosine similarity between adjacent sentences
+        cosine_scores = util.cos_sim(embeddings[:-1], embeddings[1:])
+        cosine_scores = cosine_scores.diag().cpu().numpy() # Extract diagonal and convert to numpy
+
+        # Identify break points where similarity drops significantly
+        # A low similarity score between adjacent sentences indicates a potential topic shift
+        break_points = [0] # Start of the first segment
+        for i, score in enumerate(cosine_scores):
+            if score < self.similarity_threshold:
+                break_points.append(i + 1) # Mark the beginning of a new segment
+
+        break_points.append(len(sentences)) # End of the last segment
+
+        segments = []
+        for i in range(len(break_points) - 1):
+            start_idx = break_points[i]
+            end_idx = break_points[i+1]
+            segment_sentences = sentences[start_idx:end_idx]
+            if segment_sentences:
+                segment = " ".join(segment_sentences)
+                segments.append(segment)
+
+        return segments
 
 
 def segment_risk_factors(text: str) -> List[str]:

@@ -4,23 +4,53 @@ Handles HTML SEC filings (10-K, 10-Q) with semantic structure preservation
 """
 
 from pathlib import Path
-from typing import List, Optional, Union, Dict
-from dataclasses import dataclass
+from typing import List, Optional, Union, Dict, Any
 from enum import Enum
 from datetime import datetime
 import warnings
 import json
 import sys
 
+from pydantic import BaseModel, ConfigDict
+
 try:
     import sec_parser as sp
+    from sec_parser.utils.bs4_ import approx_table_metrics
+    from sec_parser.utils.bs4_.get_single_table import get_single_table
+    from sec_parser.processing_engine import html_tag
+    import re
     SECPARSER_AVAILABLE = True
-except ImportError:
+
+    # Monkey patch to fix bug in sec_parser where row.find("td") returns None
+    # for rows with only <th> elements, causing "'NoneType' has no attribute 'text'"
+    def _fixed_get_approx_table_metrics(bs4_tag):
+        """Fixed version of get_approx_table_metrics that handles missing <td> elements."""
+        try:
+            table = get_single_table(bs4_tag)
+            # Fix: Check if td exists before accessing .text
+            rows = sum(
+                1 for row in table.find_all("tr")
+                if (td := row.find("td")) and td.text.strip()
+            )
+            numbers = sum(
+                bool(re.search(r"\d", cell.text))
+                for cell in table.find_all("td")
+                if cell.text.strip()
+            )
+            return approx_table_metrics.ApproxTableMetrics(rows, numbers)
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+    # Apply the monkey patch to all locations where the function is imported
+    approx_table_metrics.get_approx_table_metrics = _fixed_get_approx_table_metrics
+    html_tag.get_approx_table_metrics = _fixed_get_approx_table_metrics
+
+except ImportError as exc:
     SECPARSER_AVAILABLE = False
     raise ImportError(
         "sec-parser is required but not installed. "
         "Install it with: pip install sec-parser"
-    )
+    ) from exc
 
 
 class FormType(Enum):
@@ -29,8 +59,7 @@ class FormType(Enum):
     FORM_10Q = "10-Q"
 
 
-@dataclass
-class ParsedFiling:
+class ParsedFiling(BaseModel):
     """
     Parsed SEC filing with semantic structure
 
@@ -40,10 +69,15 @@ class ParsedFiling:
         form_type: Type of SEC form (10-K, 10-Q)
         metadata: Additional metadata about the filing
     """
-    elements: List[sp.AbstractSemanticElement]
-    tree: sp.TreeNode
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,  # Allow sec_parser types
+        validate_assignment=True,
+    )
+
+    elements: List[Any]  # sp.AbstractSemanticElement - use Any for flexibility
+    tree: Any  # sp.TreeNode - use Any for flexibility
     form_type: FormType
-    metadata: Dict[str, any]
+    metadata: Dict[str, Any]
 
     def __len__(self) -> int:
         """Return number of semantic elements"""
@@ -51,11 +85,12 @@ class ParsedFiling:
 
     def get_section_names(self) -> List[str]:
         """Get all top-level section names in the filing"""
-        sections = []
-        for node in self.tree.nodes:
-            if isinstance(node.semantic_element, sp.TopSectionTitle):
-                sections.append(node.text.strip())
-        return sections
+        section_names = []
+        if hasattr(self.tree, 'nodes'):
+            for node in self.tree.nodes:
+                if isinstance(node.semantic_element, sp.TopSectionTitle):
+                    section_names.append(node.text.strip())
+        return section_names
 
     def save_to_pickle(
         self,
@@ -131,7 +166,7 @@ class ParsedFiling:
                     try:
                         if hasattr(element, 'html_tag'):
                             element_data['html_tag'] = str(element.html_tag)
-                    except:
+                    except (AttributeError, TypeError, ValueError):
                         pass
                     elements_data.append(element_data)
                 except Exception as e:
@@ -146,9 +181,12 @@ class ParsedFiling:
             if hasattr(self.tree, 'nodes'):
                 for node in self.tree.nodes:
                     try:
+                        elem_type = ''
+                        if hasattr(node, 'semantic_element'):
+                            elem_type = node.semantic_element.__class__.__name__
                         node_data = {
                             'text': str(node.text) if hasattr(node, 'text') else '',
-                            'type': node.semantic_element.__class__.__name__ if hasattr(node, 'semantic_element') else '',
+                            'type': elem_type,
                             'level': int(node.level) if hasattr(node, 'level') else 0,
                         }
                         tree_data.append(node_data)
@@ -305,7 +343,10 @@ class SECFilingParser:
     def parse_from_content(
         self,
         html_content: str,
-        form_type: str = "10-K"
+        form_type: str = "10-K",
+        recursion_limit: Optional[int] = 10000,
+        flatten_html: bool = True,
+        quiet: bool = False
     ) -> ParsedFiling:
         """
         Parse SEC filing from HTML content string
@@ -313,6 +354,9 @@ class SECFilingParser:
         Args:
             html_content: HTML content of the filing
             form_type: Type of SEC form ("10-K" or "10-Q")
+            recursion_limit: Optional recursion limit for deeply nested HTML (default: 10000)
+            flatten_html: If True, pre-process HTML to reduce nesting depth (improves speed)
+            quiet: If True, suppress warnings
 
         Returns:
             ParsedFiling object with semantic structure
@@ -323,23 +367,37 @@ class SECFilingParser:
         if not html_content or len(html_content.strip()) == 0:
             raise ValueError("HTML content is empty")
 
+        # Pre-process HTML to flatten deep nesting (major performance optimization)
+        if flatten_html:
+            html_content = self._flatten_html_nesting(html_content)
+
         # Validate and convert form type
         form_type_enum = self._validate_form_type(form_type)
 
         # Get appropriate parser
         parser = self.parsers[form_type_enum]
 
-        # Parse HTML into semantic elements
-        # Suppress warnings for non-10-Q forms (10-K uses Edgar10QParser but generates warnings)
-        if form_type_enum == FormType.FORM_10K:
+        # Increase recursion limit for deeply nested HTML in SEC filings
+        # Some filings have very deep nesting that exceeds Python's default limit
+        original_recursion_limit = sys.getrecursionlimit()
+        if recursion_limit and recursion_limit > original_recursion_limit:
+            sys.setrecursionlimit(recursion_limit)
+            if recursion_limit > 50000 and not quiet:
+                print(f"Warning: Recursion limit set to {recursion_limit}. "
+                      "This may mask issues with deeply nested HTML. "
+                      "Consider reviewing the input file for excessive nesting.")
+
+        try:
+            # Parse HTML into semantic elements
+            # Suppress "Invalid section type for" warning (10-K uses Edgar10QParser)
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message="Invalid section type for")
                 elements = parser.parse(html_content)
-        else:
-            elements = parser.parse(html_content)
-
-        # Build semantic tree
-        tree = sp.TreeBuilder().build(elements)
+                # Build semantic tree
+                tree = sp.TreeBuilder().build(elements)
+        finally:
+            # Restore original recursion limit
+            sys.setrecursionlimit(original_recursion_limit)
 
         # Extract metadata
         metadata = self._extract_metadata(elements, html_content)
@@ -401,7 +459,7 @@ class SECFilingParser:
         self,
         elements: List[sp.AbstractSemanticElement],
         html_content: str
-    ) -> Dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         Extract metadata from parsed elements
 
@@ -424,12 +482,57 @@ class SECFilingParser:
             if isinstance(el, sp.TopSectionTitle)
         )
 
+        # Extract SIC Code
+        sic_code = self._extract_sic_code(html_content)
+
+        # Extract Company Name
+        company_name_match = re.search(r'COMPANY CONFORMED NAME:\s*(.+)', html_content, re.IGNORECASE)
+        company_name = company_name_match.group(1).strip() if company_name_match else None
+
+        # Extract CIK
+        cik_match = re.search(r'CENTRAL INDEX KEY:\s*(\d+)', html_content, re.IGNORECASE)
+        cik = cik_match.group(1).strip() if cik_match else None
+        
+        # Determine a Ticker (heuristic, often the CIK is used by services or can be mapped)
+        # For now, we'll leave Ticker as None unless explicitly found, or derive it from CIK later
+        ticker = None # More complex to extract directly from HTML, usually needs CIK lookup
+
         return {
             'total_elements': len(elements),
             'num_sections': num_sections,
             'element_types': element_types,
             'html_size': len(html_content),
+            'sic_code': sic_code,
+            'company_name': company_name,
+            'cik': cik,
+            'ticker': ticker, # Placeholder for future ticker extraction
         }
+
+    def _extract_sic_code(self, html_content: str) -> Optional[str]:
+        """
+        Extract SIC Code from HTML content using regex.
+        
+        Common formats:
+        - STANDARD INDUSTRIAL CLASSIFICATION:  SERVICES-PREPACKAGED SOFTWARE [7372]
+        - ASSIGNED-SIC: 7372
+        """
+        # Pattern 1: [SIC Code] inside brackets after classification name
+        # e.g., STANDARD INDUSTRIAL CLASSIFICATION: ... [7372]
+        pattern1 = r'STANDARD\s+INDUSTRIAL\s+CLASSIFICATION:.*?\[(\d{3,4})\]'
+        
+        # Pattern 2: ASSIGNED-SIC: 7372
+        pattern2 = r'ASSIGNED-SIC:\s*(\d{3,4})'
+        
+        # Search for patterns (case-insensitive)
+        match = re.search(pattern1, html_content, re.IGNORECASE | re.DOTALL)
+        if match:
+            return match.group(1)
+            
+        match = re.search(pattern2, html_content, re.IGNORECASE)
+        if match:
+            return match.group(1)
+            
+        return None
 
     def _generate_output_path(
         self,
@@ -463,6 +566,63 @@ class SECFilingParser:
             if path.suffix == '.pkl':
                 path = path.with_suffix('.json')
             return path
+
+    def _flatten_html_nesting(self, html_content: str) -> str:
+        """
+        Pre-process HTML to reduce unnecessary nesting depth.
+        This significantly improves parsing speed by reducing recursion.
+
+        Args:
+            html_content: Original HTML content
+
+        Returns:
+            HTML with reduced nesting depth
+        """
+        # Remove redundant nested divs (common in SEC filings)
+        # Pattern: <div><div>content</div></div> -> <div>content</div>
+        import re
+
+        # Remove empty tags that add nesting without content
+        empty_tags = ['div', 'span', 'p', 'font']
+        for tag in empty_tags:
+            # Remove completely empty tags: <tag></tag> or <tag />
+            html_content = re.sub(
+                rf'<{tag}[^>]*>\s*</{tag}>',
+                '',
+                html_content,
+                flags=re.IGNORECASE
+            )
+
+        # Remove redundant wrapper divs (div containing only another div)
+        # Do this iteratively as patterns may be nested
+        for _ in range(5):  # Limit iterations to prevent infinite loops
+            prev_len = len(html_content)
+            # Match div that contains only whitespace and another div
+            html_content = re.sub(
+                r'<div[^>]*>\s*(<div[^>]*>.*?</div>)\s*</div>',
+                r'\1',
+                html_content,
+                flags=re.IGNORECASE | re.DOTALL
+            )
+            if len(html_content) == prev_len:
+                break
+
+        # Remove redundant font tags (font containing only another font)
+        for _ in range(3):
+            prev_len = len(html_content)
+            html_content = re.sub(
+                r'<font[^>]*>\s*(<font[^>]*>.*?</font>)\s*</font>',
+                r'\1',
+                html_content,
+                flags=re.IGNORECASE | re.DOTALL
+            )
+            if len(html_content) == prev_len:
+                break
+
+        # Remove excessive whitespace
+        html_content = re.sub(r'\n\s*\n\s*\n', '\n\n', html_content)
+
+        return html_content
 
     def get_parser_info(self) -> Dict[str, str]:
         """

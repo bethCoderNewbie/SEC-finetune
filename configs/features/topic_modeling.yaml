@@ -1,0 +1,57 @@
+# Topic Modeling Configuration
+# LDA-based topic modeling for SEC risk factor analysis
+
+topic_modeling:
+  # Model Architecture
+  model:
+    num_topics: 15              # Number of latent topics to discover
+    passes: 10                  # Number of training passes through corpus
+    iterations: 100             # Number of iterations per pass
+    random_state: 42            # Random seed for reproducibility
+    alpha: "auto"               # Document-topic density (auto = learned from data)
+    eta: "auto"                 # Topic-word density (auto = learned from data)
+
+  # Preprocessing
+  preprocessing:
+    min_word_length: 3          # Minimum word length
+    max_word_length: 30         # Maximum word length
+    no_below: 2                 # Filter tokens in < N documents
+    no_above: 0.7               # Filter tokens in > N fraction of documents
+    keep_n: 10000               # Keep top N most frequent tokens
+    use_financial_stopwords: true   # Use financial domain stopwords
+
+  # Feature Extraction
+  features:
+    min_probability: 0.01       # Minimum topic probability threshold
+    dominant_threshold: 0.25    # Minimum probability for dominant topic
+    include_entropy: true       # Include topic entropy feature
+    include_dominant_topic: true    # Include dominant topic ID
+    return_full_distribution: true  # Return all topic probabilities
+
+  # Model Evaluation
+  evaluation:
+    compute_coherence: true     # Compute coherence score (slower)
+    coherence_metric: "c_v"     # Coherence metric (c_v, u_mass, c_uci, c_npmi)
+    compute_perplexity: true    # Compute perplexity
+
+  # Output
+  output:
+    format: "json"              # Output format (json, csv, parquet)
+    save_intermediate: false    # Save intermediate processing steps
+    precision: 4                # Decimal precision for probabilities
+    include_metadata: true      # Include model metadata
+    include_topic_words: true   # Include top words for each topic
+    num_topic_words: 10         # Number of top words to save per topic
+
+  # Processing
+  processing:
+    batch_size: 100             # Batch size for feature extraction
+    parallel_workers: 4         # Number of parallel workers
+    cache_enabled: true         # Enable caching of preprocessed data
+
+  # Model Persistence
+  persistence:
+    default_model_path: "models/lda_item1a"   # Default model save/load path
+    save_dictionary: true       # Save gensim Dictionary
+    save_corpus: false          # Save bag-of-words corpus (can be large)
+    save_topic_labels: true     # Save human-readable topic labels

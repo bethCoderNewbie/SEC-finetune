@@ -1,198 +1,397 @@
-​sec-filing-analyzer/​
-├──​ .dvc/             # DVC metadata for data/pipeline versioning​
-├──.github/           # GitHub-specific files (e.g., CI/CD Actions) 
-│   └── workflows/
-│       ├── test.yml
-│       └── train.yml
-├── alembic/                 # (NEW) Alembic migration environment
-│   ├── versions/             # (NEW) Contains versioned migration scripts (e.g., 001_add_risk_table.py)
-│   ├── env.py                # (NEW) Alembic runtime config
-│   └── script.py.mako        # (NEW) Migration script template
-├── alembic.ini              # (NEW) Alembic configuration file
-├── configs/           # Hydra/YAML configs for experiments, data, models 
-│   ├── data/
-│   │   └── finetune_dataset.yaml
-│   └── model/
-│       └── llm_base.yaml
-│   └── core/                     # <-- NEW: For service connection configs
-│       └── services.yaml         # <-- NEW: Stores endpoints, bucket names defines the shape of your configuration and provides safe defaults.
-├──​ .gitignore         # Ignores data, logs, env files, model checkpoints​
-├── .gitattributes     # Defines file tracking for Git LFS 
-├──​ .env.example       # Template for environment variables (API keys, DB credentials, MinIO Access Key & Secret Key, MongoDB Connection String, Postgres Password)​
-├──​ README.md          # Project overview, setup, usage, and pipeline diagram​
-├── Makefile           # Convenience commands Add 'make db-migration', 'make db-upgrade'
-├──​ pyproject.toml     # Project metadata and dependencies Add dependencies: alembic, sqlalchemy, pydantic
-├──​ Dockerfile         # For containerizing the application​
-├──​ docker-compose.yml    # (Optional) For running services like a DB, app, etc.​
-​|​
-├──​ data/              # Data versioned by DVC, separated by stage
-│   ├── external/      # Third-party data sources
-│   ├── interim/       # Transformed or augmented data
-│   ├── processed/     # Final, tokenized datasets for training (JSONs of extracted risk factors​) model_training_dataset.parquet  <-- Output of [Step 6: Build Dataset]
-│   └── raw/           # Original, immutable data (e.g., text, JSONL, A few raw 10-K .txt files for testing​) 
-│​   └── README.md      # Explains that large data lives in the Data Lake/DB​
-​|​
-├──​ docs/              # Project documentation​
-│​   ├── requirements/     # Historical requirements files for reference
-│   │   └── requirements_cleaning.txt  # Standalone requirements for cleaning module
-│​   ├── architecture.md   # Detailed breakdown of your pipeline diagram​
-│​   ├── setup.md       # Detailed installation and setup guide​
-│   ├── INSTALLATION.md    # Complete installation guide with troubleshooting
-│   ├── CLEANING_SUMMARY.md  # Text cleaning implementation summary
-│   ├── PYPROJECT_UPDATE_SUMMARY.md  # Dependency management documentation
-│   ├── README_INSTALLATION_SECTION.md  # Template for README installation section
-│   ├── code_guidance.md   # Coding standards and best practices
-│   ├── USAGE_GUIDE_SEC_PARSER.md  # SEC parser usage guide
-│   ├── FILE_ORGANIZATION.md  # File organization guide and directory structure
-│​   └── data_schema.md    # Describes the schema for the DBs/Lake​ Now auto-generated. DO NOT EDIT MANUALLY.
-​|​
-├──​ llm_finetuning/      # All code related to *training* the LLM​ # <-- YOUR FOLDER: Path B (Training)
-│​   ├── synthesize_dataset.py # Input: Reads segmented risks from your Postgres DB (using src/storage/postgres_repo.py) Output: Saves to data/processed/synthesized_risk_categories.jsonl (which is versioned by DVC).
-│​   ├── data_prep.py     # Script to convert Segmented Risks into training data​
-│​   ├── train.py         # The main model training script (e.g., using 'transformers')​
-│​   ├── evaluate.py     # Script to evaluate model performance​
-│​   └── configs/        # Training hyperparameters, model configs, etc.​
-​|​
-├──​ models/         # For model-related files Serialized model checkpoints (versioned by Git LFS or DVC)
-│​   ├── baseline_xgb.pkl           # <-- Output of Path A
-│   └── my-finetuned-model/ The resulting model llm_finetuning would be saved to models/my-sentiment-model/, and src/analysis/inference.py would load this model instead of the public one. # <-- Output of Path B (Git LFS tracked)
-│       ├── checkpoint-1000/
-│       └── config.json
-│​       ├── .gitkeep       # Placeholder​
-│​       └── README.md      # Explains *where* trained models are stored (e.g., S3, Hugging​​Face Hub)​
-​|​
-├──​ notebooks/        # Jupyter notebooks for exploration and analysis​
-│​ ├── 01_data_exploration.ipynb​
-│​ ├── 02_preprocessing_dev.ipynb​
-│​ ├── 03_llm_finetuning_prototype.ipynb​
-│​ └── 04_results_analysis.ipynb​
-​|​
-├── prompts/           # (LLM-Specific) Versioned.prompt files 
-│   ├── categorize_risk.prompt
-│   ├── summarize.prompt
-│   └── qa_agent.prompt
-├── reports/           # Generated analysis, model cards, evaluation metrics 
-│   └── figures/
-|​
-├──​ scripts/                 # (NEW) Utility scripts for development and CI
-│   └── generate_schema_docs.py # (NEW) Script to build data_schema.md from code
-|​
-├──​ src/           # Main source code, mirroring your pipeline​
-│​ ├── __init__.py​
-│​ │​
-│​ ├── acquisition/     # 1. [Acquisition Engine]​
-│​ │ ├── __init__.py​
-│​ │ └── edgar_client.py # Module for fetching filings from EDGAR​
-│​ │​
-│​ ├── storage/       # Utility for Data Lake / Database I/O​
-│​ │ ├── __init__.py​
-│​ │ ├── db_clients.py     # Handles the raw connection logic (the "how") is to connect to the databases and manage the connection clients. It gets its configuration (like passwords) from your src/config.py
-│​ │ ├── mongo_repo.py     # Imports from mongo_schemas for validation Defines *what* you do with MongoDB (the "what") "Filing Index" repository. It uses the db_clients.py to get a connection and then defines clear, simple functions for your acquisition pipeline.
-│​ │ └── postgres_repo.py  # Imports from postgres_schemas for queries Defines *what* you do with Postgres + pg_vector "Analysis Results" repository. It handles the structured data: the extracted risks and their vector embeddings.
-│​ │ └── schemas/           # (NEW) Single source of truth for data models
-│​ │     ├── __init__.py
-│​ │     ├── mongo_schemas.py   # (NEW) Pydantic models (e.g., FilingIndex)
-│​ │     └── postgres_schemas.py# (NEW) SQLAlchemy declarative models (e.g., RiskSegment)
-│​ │
-│​ ├── preprocessing/    # 2. [Preprocessing & Extraction Engine]​
-│​ │ ├── __init__.py​
-│​ │ ├── parser.py    # Parses raw HTML/XML/text filings​ beautifulsoup4, lxml (for parsing XBRL/iXBRL)
-│​ │ ├── extractor.py   # Finds Start/End anchors and extracts the HTML blob
-│​ │ ├── cleaning.py    # Cleans the HTML blob (removes tags, newlines)
-│​ │ └── ​segmenter.py      # NEW: Job: Splits the *clean text blob* into a list of risks.
-│​ │​
-│​ ├── features/ # Path A (Feature Engineering)
-│ │   ├── linguistic_features.py   # For Step 5 (pysentiment2, textstat)
-│ │   ├── build_vectors.py         # For Step 6 (FinBERT model.encode())
-│ │   └── __init__.py
-│​ │​
-│​ ├── analysis/      # 3. [NLP & Analysis Engine]​
-│​ │ ├── __init__.py​
-│​ │ ├── taxonomies/
-│​ │ │    ├──  __init__.py​
-│​ │ │    └──  risk_taxonomy.yaml    # The list of categories. Used by both methods.
-│​ │ │                               # These will be the "hypotheses" for Zero-Shot.
-│​ │ │                               # These will be the "labels" for the Teacher-Student model.
-│​ │ ├── inference.py   # Loads the fine-tuned LLM to run analysis​ transformers, torch (from Hugging Face)
-│​ │ └── insights.py   # Generates Risk Scores, Categories, Deltas from LLM output​
-│​ │​
-│​ ├── visualization/    # 4. [Visualization Layer]​
-│​ │ ├── __init__.py​
-│​ │ └── app.py      # The Dash or Streamlit application code​ 
-│ │ └── api.py      # fastapi
-│​ │​
-│​ ├── main.py       # Main script to run the pipeline (or use an orchestrator)​
-│​ └── config.py      # Global configuration (paths, credentials loading)​
-​|​
-└──​ tests/           # Unit and integration tests​
-     ├──​ test_acquisition.py
-     ├──​ test_preprocessing.py
-     ├──​ test_analysis.py
-     └──​ test_storage.py # (MODIFIED) Add tests for Pydantic/SQLAlchemy schema logic
-     
+# SEC Filing Analyzer - Repository Structure
+# Updated: 2025-01-17
+#
+# GUIDANCE:
+# - All code must use Pydantic v2.12.4+ (enforced by validation script)
+# - Configuration uses YAML files in configs/ with Pydantic Settings
+# - Scripts organized by ML lifecycle stages (01-10)
+# - Use pyproject.toml for dependency management (no requirements.txt)
+# - Run validation before commits: python scripts/utils/validation/validate_pydantic_v2.py
 
-# ​Key Concepts of This Structure​
+sec-filing-analyzer/
+│
+├── .git/                   # Git version control
+├── .gitignore              # Ignores data/, logs/, venv/, model checkpoints
+│
+├── README.md               # Project overview, setup, usage
+├── pyproject.toml          # Project metadata, dependencies (Pydantic >=2.12.4)
+├── repository.txt          # This file - repository structure reference
+│
+├── configs/                # YAML configuration files (Pydantic Settings)
+│   ├── README.md           # Configuration system documentation
+│   ├── config.yaml         # Main application configuration
+│   └── features/
+│       ├── sentiment.yaml  # Sentiment analysis configuration
+│       └── readability.yaml # Readability/complexity analysis configuration
+│
+├── data/                   # Data directory (versioned by DVC, not in Git)
+│   ├── dictionary/         # Reference dictionaries (e.g., Loughran-McDonald)
+│   ├── raw/                # Original SEC filings (HTML/XBRL)
+│   ├── interim/            # Intermediate processed data
+│   │   ├── parsed/         # Parsed SEC filings (JSON)
+│   │   └── extracted/      # Extracted sections
+│   └── processed/          # Final datasets ready for modeling
+│       └── features/       # Extracted features (sentiment, readability, embeddings)
+│
+├── docs/                   # Project documentation
+│   ├── README.md           # Documentation index with Pydantic v2 quick start
+│   ├── PYDANTIC_V2_ENFORCEMENT.md  # ⚠️ REQUIRED: Pydantic v2 enforcement guide
+│   ├── ENUM_CONFIG_PATTERNS.md     # Configuration patterns (Pydantic v2)
+│   ├── CONFIG_MIGRATION_GUIDE.md   # Configuration migration guide
+│   └── requirements/       # Historical requirements (reference only)
+│
+├── examples/               # Example scripts demonstrating usage
+│   ├── 01_basic_extraction.py              # Basic section extraction
+│   ├── 02_complete_pipeline.py             # Full pipeline example
+│   ├── 03_sentiment_analysis.py            # Sentiment analysis example
+│   └── 04_sentiment_risk_classification.py # Risk classification example
+│
+├── logs/                   # Application logs (not in Git)
+│   └── extractions/        # Extraction process logs
+│
+├── models/                 # Trained models (tracked by Git LFS or DVC)
+│   └── README.md           # Model storage and versioning info
+│
+├── reports/                # Generated analysis and visualizations
+│
+├── scripts/                # ML lifecycle scripts (numbered by stage)
+│   ├── README.md           # Scripts directory overview
+│   │
+│   ├── 01_data_collection/         # Stage 1: Data acquisition
+│   │   └── download_sec_filings.py
+│   │
+│   ├── 02_data_preprocessing/      # Stage 2: Parsing and extraction
+│   │   ├── batch_parse.py
+│   │   └── run_preprocessing_pipeline.py
+│   │
+│   ├── 03_eda/                     # Stage 3: Exploratory data analysis
+│   │   └── exploratory_analysis.py
+│   │
+│   ├── 04_feature_engineering/     # Stage 4: Feature extraction
+│   │   ├── extract_features.py
+│   │   └── utils/
+│   │       └── preprocess_lm_dict.py
+│   │
+│   ├── 05_data_splitting/          # Stage 5: Train/test splits
+│   │   └── create_train_test_split.py
+│   │
+│   ├── 06_training/                # Stage 6: Model training
+│   │   └── train_model.py
+│   │
+│   ├── 07_evaluation/              # Stage 7: Model evaluation
+│   │   └── evaluate_model.py
+│   │
+│   ├── 08_inference/               # Stage 8: Predictions
+│   │   └── predict.py
+│   │
+│   ├── 09_deployment/              # Stage 9: Deployment (placeholder)
+│   ├── 10_monitoring/              # Stage 10: Monitoring (placeholder)
+│   │
+│   └── utils/                      # Development utilities
+│       ├── README.md               # Utilities documentation
+│       ├── check_installation.py  # Verify environment setup
+│       ├── setup_nlp_models.py    # Download NLP models
+│       ├── show_segment_sample.py # Display data samples
+│       │
+│       ├── debugging/              # Debug tools
+│       │   ├── diagnose_extraction.py
+│       │   └── debug_node_structure.py
+│       │
+│       ├── inspection/             # Data inspection tools
+│       │   └── inspect_parsed.py
+│       │
+│       ├── testing/                # Testing utilities
+│       │   └── test_extractor_fix.py
+│       │
+│       └── validation/             # ⚠️ Code quality validation
+│           ├── README.md
+│           └── validate_pydantic_v2.py  # Pydantic v2 enforcement
+│
+├── src/                    # Main source code (importable Python package)
+│   ├── __init__.py
+│   │
+│   ├── config.py           # ⚠️ Global configuration (Pydantic Settings + YAML)
+│   │                       # 21 Pydantic v2 models (incl. ReadabilityConfig)
+│   │
+│   ├── preprocessing/      # SEC filing parsing and extraction
+│   │   ├── __init__.py
+│   │   ├── parser.py       # Parse HTML/XBRL filings (sec-parser)
+│   │   └── extractor.py    # Extract specific sections (Item 1A, etc.)
+│   │
+│   ├── features/           # Feature engineering modules
+│   │   ├── __init__.py
+│   │   ├── sentiment.py    # Sentiment analysis with LM dictionary
+│   │   ├── dictionaries/   # Dictionary-based features
+│   │   │   ├── __init__.py
+│   │   │   ├── constants.py        # Feature category definitions
+│   │   │   ├── lm_dictionary.py    # Loughran-McDonald dictionary
+│   │   │   └── schemas.py          # ⚠️ Pydantic v2 data models (3 models)
+│   │   └── readability/    # ⚠️ Text complexity & readability analysis (NEW)
+│   │       ├── __init__.py
+│   │       ├── constants.py        # Financial domain word list (200+ terms)
+│   │       ├── schemas.py          # ⚠️ Pydantic v2 models (3 models)
+│   │       └── analyzer.py         # ReadabilityAnalyzer (textstat + adjustments)
+│   │
+│   ├── analysis/           # NLP analysis and inference
+│   │   ├── __init__.py
+│   │   ├── inference.py    # Model inference
+│   │   └── taxonomies/
+│   │       └── risk_taxonomy.yaml
+│   │
+│   └── visualization/      # Visualization and UI
+│       ├── __init__.py
+│       └── app.py          # Streamlit dashboard
+│
+└── tests/                  # Unit and integration tests
+    ├── test_preprocessing.py
+    └── test_analysis.py
 
-​●​ ​src/ (Source Code):​​This is the heart of your project.​​I've created sub-directories inside​
-​src/ that map​​directly to your pipeline components​​(acquisition, preprocessing,​
-​analysis, visualization). This makes the code organization intuitive.​
 
------
+# ========================================
+# KEY CONCEPTS & GUIDANCE
+# ========================================
 
-​●​ ​llm_finetuning/ vs. src/analysis/:​​This is a crucial separation.​
-​○​ ​llm_finetuning/​​holds the​​one-time​​(or infrequent)​​scripts used to ​​create ​​your ​​model.​
-​○​ ​src/analysis/​​holds the​​production​​code that​​uses​​the trained model to perform​
+## 1. PYDANTIC V2 ENFORCEMENT (MANDATORY)
+#
+# ⚠️ ALL CODE MUST USE PYDANTIC V2.12.4+
+#
+# Before committing:
+#   python scripts/utils/validation/validate_pydantic_v2.py src/
+#
+# See docs/PYDANTIC_V2_ENFORCEMENT.md for complete guide
+# See docs/README.md for quick reference
+#
+# Quick Reference:
+#   ❌ NEVER USE: @validator, class Config:, .dict(), .json()
+#   ✅ ALWAYS USE: @field_validator, model_config =, .model_dump(), .model_dump_json()
 
-​inference on new data.​
-​●​ ​data/ Directory:​​This folder should​​not​​contain your​​full "Data Lake" or "Database." Git is​ ​not designed for large data. This folder is only for small​​sample files​​that help new​
-​developers run tests or understand the data format. The README.md inside explains that​ ​the real data lives in cloud storage (like S3) or a database.​
-​●​ ​models/ Directory:​​Similar to data/, this does​​not​​store the large, multi-gigabyte model​ [​checkpoints]
-The​ ​README.md here tells other developers where to find them.​
-​●​ ​Root Files:​​The files in the main directory (README.md,​​requirements.txt, Dockerfile) are​
-​standard "entry points" for any developer, system, or CI/CD pipeline interacting with your​
-​project.​
+## 2. CONFIGURATION MANAGEMENT
+#
+# The project uses a multi-layer configuration system:
+#
+# Layer 1: YAML Defaults
+#   - configs/config.yaml (main settings)
+#   - configs/features/sentiment.yaml (sentiment analysis)
+#   - configs/features/readability.yaml (readability/complexity)
+#
+# Layer 2: Pydantic Settings Models (src/config.py)
+#   - 21 Pydantic v2 BaseSettings models (incl. ReadabilityConfig)
+#   - Type-safe with validation
+#   - Environment variable support with prefixes
+#
+# Layer 3: Environment Variables (.env)
+#   - Override YAML defaults at runtime
+#   - Use env_prefix for namespacing (e.g., PATHS_*, SENTIMENT_*)
+#
+# Layer 4: Legacy Exports (backward compatibility)
+#   - Module-level variables for easy imports
+#
+# See docs/ENUM_CONFIG_PATTERNS.md for patterns
+# See docs/CONFIG_MIGRATION_GUIDE.md for migration
 
-data/: This directory is separated by pipeline stage, a critical application of SoC.   
-data/raw: The original, immutable data dump.
-data/interim: Intermediate data that has been transformed.
-data/processed: The final, canonical datasets for modeling.
+## 3. READABILITY ANALYSIS (TEXT COMPLEXITY AS RISK PROXY)
+#
+# The readability module measures text complexity in SEC filings.
+# Research shows harder-to-read 10-Ks are associated with:
+#   - Higher future stock volatility
+#   - More negative earnings surprises
+#   - Higher audit fees
+#   - Potential obfuscation of bad news
+#
+# Key Components:
+#
+# 1. Standard Readability Indices (via textstat library):
+#   - Flesch-Kincaid Grade Level (most widely used in research)
+#   - Gunning Fog Index (better for business/technical writing)
+#   - Flesch Reading Ease (0-100 scale)
+#   - SMOG Index, ARI, Coleman-Liau Index
+#
+# 2. Financial Domain Adjustments:
+#   - FINANCIAL_COMMON_WORDS: 200+ curated 3+ syllable terms
+#   - Excludes common financial words from "complex word" count
+#   - Examples excluded: investment, management, financial, regulatory
+#   - Impact: Reduces false positives by 35-50% for 10-Ks
+#
+# 3. Custom Obfuscation Score (0-100):
+#   - Weighted composite of multiple readability signals
+#   - <40: Clear, 40-60: Typical 10-K, 60-75: Elevated, >75: High risk
+#   - Combines FK grade, Fog index, sentence length, complex words
+#
+# 4. Structural Complexity Metrics:
+#   - Average sentence length, word length, syllables per word
+#   - Percentage of long sentences (>30 words)
+#   - Paragraph length analysis
+#
+# Module Structure (follows dictionaries/ pattern):
+#   - constants.py: Immutable (financial word list, benchmarks, citations)
+#   - schemas.py: Pydantic v2 models (ReadabilityFeatures, Metadata, Result)
+#   - analyzer.py: ReadabilityAnalyzer class (textstat + adjustments)
+#
+# Usage:
+#   from src.features import ReadabilityAnalyzer
+#   from src.preprocessing.cleaning import TextCleaner
+#
+#   cleaner = TextCleaner(remove_punctuation=False)  # Keep for sentences!
+#   cleaned = cleaner.clean_html_text(raw_text)
+#
+#   analyzer = ReadabilityAnalyzer()
+#   features = analyzer.extract_features(cleaned)
+#   print(f"Gunning Fog: {features.gunning_fog_index}")
+#   print(f"Obfuscation Score: {features.obfuscation_score}/100")
+#
+# Academic References:
+#   - Li (2008): Annual report readability and earnings persistence
+#   - Loughran & McDonald (2014): Measuring readability in financial disclosures
 
-models/: Stores trained and serialized models, model predictions, or model summaries.   
-notebooks/: Used for exploratory data analysis (EDA) and experimentation. A strict naming convention (e.g., 1.0-jqp-initial-data-exploration) is used to enforce a reproducible narrative.   
+## 4. PROJECT STRUCTURE PHILOSOPHY
+#
+# Separation of Concerns:
+#   src/          - Production code (clean, tested, importable)
+#   scripts/      - Pipeline execution (numbered by ML stage)
+#   examples/     - Demonstration and learning
+#   tests/        - Quality assurance
+#
+# Data Organization:
+#   raw/          - Original, immutable data
+#   interim/      - Intermediate transformations
+#   processed/    - Final, model-ready datasets
+#
+# Scripts Organization (ML Lifecycle):
+#   01-10 prefix  - Natural execution order
+#   utils/        - Cross-cutting tools (debugging, validation, testing)
 
-(i.e., src/): The source code for the project, structured as an importable Python module. This directory contains scripts for data generation (dataset.py), feature creation (features.py), model training (train.py), and inference (predict.py).   
-​This granular modularity is the physical manifestation of an MLOps pipeline. It decouples data engineering from model engineering, allowing a CI/CD system to reliably test, validate, and execute specific stages (e.g., make data or make train) as independent, automated steps.
-configs/: This directory holds configuration files (e.g., model1.yaml) for model and training hyperparameters. This separates configuration from code, a core software engineering best practice. It enables systematic experiment tracking  and allows tools like Hydra to override parameters at runtime (e.g., python3 main.py gpt4all.gpt4all_model_name="my-new-model").
+## 5. DEVELOPMENT WORKFLOW
+#
+# 1. Setup:
+#    git clone https://github.com/bethCoderNewbie/SEC-finetune.git
+#    cd SEC-finetune
+#    pip install -e ".[dev]"
+#    python scripts/utils/setup_nlp_models.py
+#
+# 2. Before Coding:
+#    - Review docs/PYDANTIC_V2_ENFORCEMENT.md
+#    - Check existing patterns in src/config.py and src/features/dictionaries/schemas.py
+#
+# 3. During Development:
+#    - Use Pydantic v2 patterns only
+#    - Add type hints to all functions
+#    - Document with docstrings
+#
+# 4. Before Committing:
+#    python scripts/utils/validation/validate_pydantic_v2.py <your_files>
+#    ruff check src/ scripts/
+#    mypy src/
+#
+# 5. Commit:
+#    git add <files>
+#    git commit -m "Description"
+#    git push
 
-## 1. Data Acquisition & Ingestion (The Foundation)
-### How You'll Use src/storage/ in Your Pipeline:
-src/acquisition/ will call mongo_repo.add_filing_metadata() to log a new filing and mongo_repo.update_filing_status() to 'raw_downloaded'.
-src/preprocessing/ will call mongo_repo.get_filings_to_process() to get its work queue.
-src/analysis/ will run the LLM, get an embedding, and then call postgres_repo.insert_risk_factor() to save the final result.
-src/visualization/ will call postgres_repo.find_similar_risks() to power your "find similar risks" search bar.
+## 6. IMPORTANT FILES
+#
+# Configuration:
+#   - src/config.py              (21 Pydantic Settings models)
+#   - configs/config.yaml        (YAML defaults)
+#   - configs/features/sentiment.yaml
+#   - configs/features/readability.yaml
+#
+# Data Models:
+#   - src/features/dictionaries/schemas.py  (3 Pydantic data models)
+#   - src/features/readability/schemas.py   (3 Pydantic data models)
+#
+# Validation:
+#   - scripts/utils/validation/validate_pydantic_v2.py
+#
+# Documentation:
+#   - docs/PYDANTIC_V2_ENFORCEMENT.md  (enforcement guide)
+#   - docs/README.md                    (documentation index)
+#   - docs/ENUM_CONFIG_PATTERNS.md     (configuration patterns)
 
-## 2. Data Preprocessing & Extraction (The Refinery)
-### Data Workflow
-* Orchestrator (main.py): The pipeline starts.
-* Get Work: It calls src.storage.mongo_repo.get_filings_to_process(). This returns a list of filings marked "raw_downloaded."
-* Fetch Raw Data: For each filing, it gets the S3/MinIO path from the Mongo record and uses your src.storage.data_lake.py (which you'd create) or boto3 client to download the raw .html file.
-* Parse (parser.py): The raw HTML is passed to parser.parse_filing(), which returns a BeautifulSoup object.
-* Extract (extractor.py): The soup object is passed to extractor.find_risk_section() which finds the Start/End anchors and returns the raw HTML blob for just Item 1A.
-* Clean (cleaning.py): The raw HTML blob is passed to cleaning.clean_html_blob() which returns a single, clean string of text.
-* Segment (segmenter.py): The clean string is passed to segmenter.split_into_risks() which returns a list[str] of individual risks.
-* Analyze (analysis/): This list[str] is passed to your src.analysis.inference.py to get embeddings for each risk.
-* Save Results: The final list of risks (with their text, embeddings, and any other metadata) is saved to the "Analysis Results" database by calling src.storage.postgres_repo.insert_risk_factor() for each item in the list.
-* Update Status: Finally, it calls src.storage.mongo_repo.update_filing_status() to mark the filing as "processed."
+## 7. DEPENDENCY MANAGEMENT
+#
+# ✅ USE: pyproject.toml (modern, PEP 621 compliant)
+# ❌ NEVER: requirements.txt, requirements-dev.txt (removed)
+#
+# Install:
+#   pip install -e .              # Base dependencies
+#   pip install -e ".[dev]"       # With dev tools (ruff, mypy, pytest)
+#   pip install -e ".[all]"       # Everything
+#
+# Key Dependencies:
+#   - pydantic>=2.12.4           # ENFORCED
+#   - pydantic-settings>=2.0.0   # For configuration
+#   - sec-parser==0.54.0         # SEC filing parsing
+#   - transformers>=4.35.0       # NLP models
+#   - streamlit>=1.28.0          # Visualization
+#   - textstat>=0.7.0            # Readability metrics
 
-### Use notebooks/ for Development
-Your "rules engine" for extraction and segmentation will be brittle and require a lot of iteration.
-This is the single most important use for notebooks/02_preprocessing_dev.ipynb.
-Use this notebook to:
-* Load sample raw/ filings.
-* Prototype your extractor.py logic.
-* Test your Start/End anchor regular expressions.
-* Develop your segmenter.py logic (e.g., "split on paragraphs that are bolded").
-* Once the logic is stable, copy it from the notebook into the .py files in src/preprocessing/. This keeps your src/ code clean while giving you a "scratchpad" to do the messy work.
+## 8. ML PIPELINE STAGES
+#
+# 01: Data Collection    → Download SEC filings from EDGAR
+# 02: Preprocessing      → Parse HTML, extract sections
+# 03: EDA               → Exploratory data analysis
+# 04: Feature Engineering → Extract sentiment, readability, embeddings
+# 05: Data Splitting    → Create train/val/test splits
+# 06: Training          → Train/fine-tune models
+# 07: Evaluation        → Calculate metrics
+# 08: Inference         → Run predictions
+# 09: Deployment        → Deploy to production (planned)
+# 10: Monitoring        → Monitor performance (planned)
 
------
+## 9. CODE QUALITY STANDARDS
+#
+# Enforced:
+#   - Pydantic v2.12.4+ (automated validation)
+#   - Type hints (mypy checking)
+#   - Code formatting (black, ruff)
+#   - Docstrings (all public functions)
+#
+# Pre-commit Checks:
+#   - Pydantic v2 validation
+#   - Ruff linting
+#   - MyPy type checking
+#   - Pytest (when available)
 
+## 10. CURRENT PROJECT STATUS
+#
+# ✅ Complete:
+#   - Pydantic v2 enforcement system
+#   - Configuration refactor to YAML + Pydantic Settings
+#   - Sentiment analysis with Loughran-McDonald dictionary
+#   - Readability/complexity analysis with financial domain adjustments
+#   - Text cleaning pipeline (TextCleaner with HTML/boilerplate removal)
+#   - Feature extraction pipeline (sentiment + readability integrated)
+#   - Validation automation
+#   - Comprehensive documentation
+#
+# 🚧 In Progress:
+#   - Model training infrastructure
+#   - Evaluation metrics
+#
+# 📋 Planned:
+#   - Deployment automation
+#   - Monitoring dashboards
+#   - CI/CD pipelines
+
+## 11. GETTING HELP
+#
+# Documentation:
+#   - docs/README.md                    - Start here
+#   - docs/PYDANTIC_V2_ENFORCEMENT.md  - Pydantic v2 guide
+#   - scripts/utils/README.md          - Utility scripts
+#   - scripts/README.md                - ML pipeline scripts
+#
+# Validation:
+#   python scripts/utils/validation/validate_pydantic_v2.py --help
+#
+# Examples:
+#   - examples/01_basic_extraction.py
+#   - examples/03_sentiment_analysis.py
+#
+# Debugging:
+#   - scripts/utils/debugging/diagnose_extraction.py
+#   - scripts/utils/inspection/inspect_parsed.py
+
+# ========================================
+# END OF REPOSITORY STRUCTURE
+# ========================================

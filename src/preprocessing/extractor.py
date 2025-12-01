@@ -3,12 +3,12 @@ Section Extractor for SEC Filings
 Uses semantic tree structure to extract specific sections (e.g., Risk Factors)
 """
 
-from typing import Optional, List, Dict, Union
-from dataclasses import dataclass
-from enum import Enum
+from typing import Optional, List, Dict, Union, Any
 from pathlib import Path
 import json
 import re
+
+from pydantic import BaseModel, ConfigDict, computed_field
 
 try:
     import sec_parser as sp
@@ -18,29 +18,11 @@ except ImportError:
     sp = None
 
 from .parser import ParsedFiling, SECFilingParser
+from .constants import SectionIdentifier, SECTION_PATTERNS, MIN_PARAGRAPH_LENGTH
 from ..config import SEC_10K_SECTIONS, SEC_10Q_SECTIONS, EXTRACTED_DATA_DIR
 
 
-class SectionIdentifier(Enum):
-    """Standard section identifiers for SEC filings"""
-
-    # 10-K Sections
-    ITEM_1_BUSINESS = "part1item1"
-    ITEM_1A_RISK_FACTORS = "part1item1a"
-    ITEM_1B_UNRESOLVED_STAFF = "part1item1b"
-    ITEM_1C_CYBERSECURITY = "part1item1c"
-    ITEM_7_MDNA = "part2item7"
-    ITEM_7A_MARKET_RISK = "part2item7a"
-    ITEM_8_FINANCIAL_STATEMENTS = "part2item8"
-
-    # 10-Q Sections
-    ITEM_1_FINANCIAL_STATEMENTS_10Q = "part1item1"
-    ITEM_2_MDNA_10Q = "part1item2"
-    ITEM_1A_RISK_FACTORS_10Q = "part2item1a"
-
-
-@dataclass
-class ExtractedSection:
+class ExtractedSection(BaseModel):
     """
     Extracted section with metadata and structure
 
@@ -52,22 +34,27 @@ class ExtractedSection:
         elements: List of semantic elements (paragraphs, tables, etc.)
         metadata: Additional metadata about the extraction
     """
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        validate_assignment=True,
+    )
+
     text: str
     identifier: str
     title: str
     subsections: List[str]
-    elements: List[Dict]
-    metadata: Dict[str, any]
+    elements: List[Dict[str, Any]]
+    metadata: Dict[str, Any]
 
     def __len__(self) -> int:
         """Return character length of extracted text"""
         return len(self.text)
 
-    def get_tables(self) -> List[Dict]:
+    def get_tables(self) -> List[Dict[str, Any]]:
         """Get all tables in this section"""
         return [el for el in self.elements if el['type'] == 'TableElement']
 
-    def get_paragraphs(self) -> List[Dict]:
+    def get_paragraphs(self) -> List[Dict[str, Any]]:
         """Get all text paragraphs in this section"""
         return [el for el in self.elements if el['type'] in ['TextElement', 'ParagraphElement']]
 
@@ -109,15 +96,10 @@ class ExtractedSection:
         # Create parent directory if needed
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Convert to serializable dict
+        # Convert to serializable dict using Pydantic V2
         data = {
             'version': '1.0',  # Format version for future compatibility
-            'text': self.text,
-            'identifier': self.identifier,
-            'title': self.title,
-            'subsections': self.subsections,
-            'elements': self.elements,
-            'metadata': self.metadata,
+            **self.model_dump(),
             'stats': {
                 'text_length': len(self.text),
                 'num_subsections': len(self.subsections),
@@ -165,15 +147,13 @@ class ExtractedSection:
                 f"File does not contain valid ExtractedSection data: {file_path}"
             )
 
-        # Reconstruct ExtractedSection (exclude 'version' and 'stats')
-        return ExtractedSection(
-            text=data['text'],
-            identifier=data['identifier'],
-            title=data['title'],
-            subsections=data['subsections'],
-            elements=data['elements'],
-            metadata=data['metadata']
-        )
+        # Reconstruct ExtractedSection using Pydantic V2 model_validate
+        # Exclude 'version' and 'stats' which are not model fields
+        model_data = {
+            k: v for k, v in data.items()
+            if k not in ('version', 'stats')
+        }
+        return ExtractedSection.model_validate(model_data)
 
 
 class SECSectionExtractor:
@@ -204,37 +184,8 @@ class SECSectionExtractor:
     SECTION_TITLES_10K = SEC_10K_SECTIONS
     SECTION_TITLES_10Q = SEC_10Q_SECTIONS
 
-    # Regex patterns for flexible section matching
-    # Used when identifier attribute is not set by sec-parser
-    SECTION_PATTERNS = {
-        "part1item1": [
-            r'(?i)^item\s*1\s*\.?\s*business',
-            r'(?i)^item\s*1\s*$',
-            r'(?i)^item\s*1\s*[^a-z0-9]',  # Item 1 followed by non-alphanumeric
-        ],
-        "part1item1a": [
-            r'(?i)item\s*1\s*a\.?\s*risk\s*factors?',
-            r'(?i)item\s*1a\.?\s*risk',
-            r'(?i)^item\s*1\s*a\s*\.?',  # Item 1A with optional period
-        ],
-        "part1item1b": [
-            r'(?i)item\s*1\s*b\.?\s*unresolved',
-            r'(?i)item\s*1b\.?',
-        ],
-        "part1item1c": [
-            r'(?i)item\s*1\s*c\.?\s*cybersecurity',
-            r'(?i)item\s*1c\.?',
-        ],
-        "part2item7": [
-            r'(?i)item\s*7\.?\s*management',
-            r'(?i)item\s*7\.?\s*md\s*&?\s*a',
-            r'(?i)^item\s*7\s*\.?$',
-        ],
-        "part2item7a": [
-            r'(?i)item\s*7\s*a\.?\s*market\s*risk',
-            r'(?i)item\s*7a\.?',
-        ],
-    }
+    # Regex patterns imported from constants module
+    # SECTION_PATTERNS = SECTION_PATTERNS  # Available via import
 
     def __init__(self):
         """Initialize section extractor"""
@@ -420,10 +371,10 @@ class SECSectionExtractor:
         Returns:
             True if text matches any pattern for this section
         """
-        if section_id not in self.SECTION_PATTERNS:
+        if section_id not in SECTION_PATTERNS:
             return False
 
-        patterns = self.SECTION_PATTERNS[section_id]
+        patterns = SECTION_PATTERNS[section_id]
         text = text.strip()
 
         for pattern in patterns:
@@ -712,7 +663,7 @@ class RiskFactorExtractor:
             if element['type'] in ['TextElement', 'ParagraphElement']:
                 # Filter out very short paragraphs (likely artifacts)
                 text = element['text'].strip()
-                if len(text) > 50:  # Minimum 50 characters
+                if len(text) > MIN_PARAGRAPH_LENGTH:
                     paragraphs.append(text)
         return paragraphs
 

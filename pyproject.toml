@@ -41,6 +41,8 @@ dependencies = [
     "transformers>=4.35.0",
     "torch>=2.0.0",
     "spacy>=3.7.0",  # For advanced text preprocessing (lemmatization, stopwords, etc.)
+    "gensim>=4.0.0",  # For topic modeling (LDA)
+    "sentence-transformers>=2.2.2", # For semantic chunking and zero-shot labeling
 
     # Data handling
     "pandas>=2.0.0",

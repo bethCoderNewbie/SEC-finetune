@@ -89,7 +89,7 @@ def batch_parse_filings(
     print(f"  Successful: {success_count}")
     print(f"  Errors/Skipped: {error_count}")
     print(f"  Total: {len(html_files)}")
-    print(f"\nParsed files saved to: {PARSED_DATA_DIR}")
+    print(f"\nParsed files saved to: {settings.paths.parsed_data_dir}")
 
 
 def main():
@@ -106,7 +106,7 @@ def main():
     parser.add_argument(
         '--input-dir',
         type=str,
-        help=f'Input directory (default: {RAW_DATA_DIR})'
+        help=f'Input directory (default: {settings.paths.raw_data_dir})'
     )
     parser.add_argument(
         '--pattern',
@@ -122,7 +122,7 @@ def main():
 
     args = parser.parse_args()
 
-    input_dir = Path(args.input_dir) if args.input_dir else RAW_DATA_DIR
+    input_dir = Path(args.input_dir) if args.input_dir else settings.paths.raw_data_dir
 
     batch_parse_filings(
         input_dir=input_dir,

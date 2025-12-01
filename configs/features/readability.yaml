@@ -1,0 +1,140 @@
+# Readability Analysis Configuration
+# Runtime settings for text complexity and readability feature extraction
+#
+# This file controls HOW readability features are extracted.
+# For readability metadata (indices, benchmarks), see src/features/readability/constants.py
+#
+# All settings can be overridden via environment variables:
+#   READABILITY__USE_FINANCIAL_ADJUSTMENTS=false
+#   READABILITY_TEXT__PRESERVE_CASE=true
+#   READABILITY_INDICES__INCLUDE_ALL=true
+
+readability:
+  # ===========================
+  # Feature Selection
+  # ===========================
+  # Control which indices to compute (all are fast, so default is all)
+  indices:
+    # Standard readability indices
+    include_flesch_kincaid: true
+    include_gunning_fog: true
+    include_flesch_reading_ease: true
+    include_smog: true
+    include_ari: true
+    include_coleman_liau: true
+
+    # Aggregate scores
+    include_consensus_grade: true
+    include_obfuscation_score: true
+
+  # ===========================
+  # Text Processing
+  # ===========================
+  text_processing:
+    # Preserve original case (recommended: true)
+    # Readability analysis is case-insensitive
+    preserve_case: true
+
+    # Minimum text length for analysis (characters)
+    # Shorter texts will trigger warnings
+    min_text_length: 100
+
+    # Minimum word count for analysis
+    min_word_count: 30
+
+    # Minimum sentence count for analysis
+    min_sentence_count: 3
+
+  # ===========================
+  # Financial Domain Adjustments
+  # ===========================
+  adjustments:
+    # Use financial domain exception list for complex words
+    # If true, common financial terms (e.g., "investment", "management")
+    # are excluded from the 3+ syllable "complex word" count
+    use_financial_adjustments: true
+
+    # Path to custom financial word list (optional)
+    # If not specified, uses built-in FINANCIAL_COMMON_WORDS
+    # custom_financial_words_file: "data/dictionary/custom_financial_terms.txt"
+
+  # ===========================
+  # Structural Metrics
+  # ===========================
+  structural:
+    # Threshold for "long" sentences (words)
+    long_sentence_threshold: 30
+
+    # Threshold for "short" paragraphs (sentences)
+    short_paragraph_threshold: 3
+
+    # Compute sentence length variance
+    compute_sentence_variance: false
+
+  # ===========================
+  # Obfuscation Score Weights
+  # ===========================
+  # Custom weights for obfuscation score calculation (must sum to 1.0)
+  obfuscation_weights:
+    flesch_kincaid: 0.30
+    gunning_fog: 0.30
+    sentence_length: 0.15
+    complex_words: 0.15
+    long_sentences: 0.10
+
+  # ===========================
+  # Output Settings
+  # ===========================
+  output:
+    # Output format: json, csv, parquet
+    format: json
+
+    # Save intermediate feature extractions
+    save_intermediate: false
+
+    # Decimal precision for floating-point features
+    precision: 2
+
+    # Include metadata in output (analysis timestamp, warnings, etc.)
+    include_metadata: true
+
+    # Include feature interpretations in output
+    # Adds human-readable labels (e.g., "Typical 10-K complexity")
+    include_interpretations: true
+
+    # Output directory (relative to project root)
+    # Overrides default from PathsConfig.features_data_dir
+    # output_dir: "data/processed/features/readability"
+
+  # ===========================
+  # Processing Performance
+  # ===========================
+  processing:
+    # Batch size for processing multiple documents
+    batch_size: 1000
+
+    # Number of parallel workers (0 = auto-detect)
+    parallel_workers: 4
+
+    # Enable caching of computed features
+    cache_enabled: false
+
+  # ===========================
+  # Validation & Logging
+  # ===========================
+  validation:
+    # Raise error if text is too short (instead of warning)
+    strict_text_length: false
+
+    # Raise error if indices are out of expected range
+    strict_range_validation: false
+
+    # Log warnings for unusual values
+    enable_warnings: true
+
+    # Expected ranges for validation (10-K typical values)
+    expected_ranges:
+      flesch_kincaid_grade: [8.0, 20.0]
+      gunning_fog_index: [10.0, 22.0]
+      flesch_reading_ease: [10.0, 70.0]
+      avg_sentence_length: [10.0, 40.0]
