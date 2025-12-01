@@ -1,5 +1,5 @@
 # SEC Filing Analyzer - Repository Structure
-# Updated: 2025-01-17
+# Updated: 2025-12-01
 #
 # GUIDANCE:
 # - All code must use Pydantic v2.12.4+ (enforced by validation script)
@@ -22,7 +22,9 @@ sec-filing-analyzer/
 │   ├── config.yaml         # Main application configuration
 │   └── features/
 │       ├── sentiment.yaml  # Sentiment analysis configuration
-│       └── readability.yaml # Readability/complexity analysis configuration
+│       ├── readability.yaml # Readability/complexity analysis configuration
+│       ├── topic_modeling.yaml # LDA model configuration
+│       └── risk_analysis.yaml  # ⚠️ Risk analysis (Auto-labeling & Drift) configuration
 │
 ├── data/                   # Data directory (versioned by DVC, not in Git)
 │   ├── dictionary/         # Reference dictionaries (e.g., Loughran-McDonald)
@@ -31,6 +33,7 @@ sec-filing-analyzer/
 │   │   ├── parsed/         # Parsed SEC filings (JSON)
 │   │   └── extracted/      # Extracted sections
 │   └── processed/          # Final datasets ready for modeling
+│       ├── labeled/        # ⚠️ Auto-labeled training datasets (Versioned by RunContext)
 │       └── features/       # Extracted features (sentiment, readability, embeddings)
 │
 ├── docs/                   # Project documentation
@@ -50,6 +53,8 @@ sec-filing-analyzer/
 │   └── extractions/        # Extraction process logs
 │
 ├── models/                 # Trained models (tracked by Git LFS or DVC)
+│   ├── experiments/        # ⚠️ Training experiments (checkpoints, logs)
+│   ├── registry/           # ⚠️ Production-ready models
 │   └── README.md           # Model storage and versioning info
 │
 ├── reports/                # Generated analysis and visualizations
@@ -69,6 +74,9 @@ sec-filing-analyzer/
 │   │
 │   ├── 04_feature_engineering/     # Stage 4: Feature extraction
 │   │   ├── extract_features.py
+│   │   ├── auto_label.py           # ⚠️ Teacher-Student auto-labeling pipeline
+│   │   ├── detect_drift.py         # ⚠️ Topic drift detection (Year-over-Year)
+│   │   ├── topic_modeling_demo.py  # LDA demo
 │   │   └── utils/
 │   │       └── preprocess_lm_dict.py
 │   │
@@ -111,11 +119,13 @@ sec-filing-analyzer/
 │   ├── __init__.py
 │   │
 │   ├── config.py           # ⚠️ Global configuration (Pydantic Settings + YAML)
-│   │                       # 21 Pydantic v2 models (incl. ReadabilityConfig)
+│   │                       # Includes RunContext, RiskAnalysisConfig
 │   │
 │   ├── preprocessing/      # SEC filing parsing and extraction
 │   │   ├── __init__.py
+│   │   ├── cleaning.py     # Text cleaning (spaCy)
 │   │   ├── parser.py       # Parse HTML/XBRL filings (sec-parser)
+│   │   ├── segmenter.py    # ⚠️ Semantic chunking (SentenceTransformers)
 │   │   └── extractor.py    # Extract specific sections (Item 1A, etc.)
 │   │
 │   ├── features/           # Feature engineering modules
@@ -126,17 +136,26 @@ sec-filing-analyzer/
 │   │   │   ├── constants.py        # Feature category definitions
 │   │   │   ├── lm_dictionary.py    # Loughran-McDonald dictionary
 │   │   │   └── schemas.py          # ⚠️ Pydantic v2 data models (3 models)
-│   │   └── readability/    # ⚠️ Text complexity & readability analysis (NEW)
+│   │   ├── readability/    # Text complexity & readability analysis
+│   │   │   ├── __init__.py
+│   │   │   ├── constants.py
+│   │   │   ├── schemas.py
+│   │   │   └── analyzer.py
+│   │   └── topic_modeling/ # ⚠️ LDA Topic Modeling
 │   │       ├── __init__.py
-│   │       ├── constants.py        # Financial domain word list (200+ terms)
-│   │       ├── schemas.py          # ⚠️ Pydantic v2 models (3 models)
-│   │       └── analyzer.py         # ReadabilityAnalyzer (textstat + adjustments)
+│   │       ├── analyzer.py
+│   │       ├── constants.py
+│   │       ├── lda_trainer.py
+│   │       └── schemas.py
 │   │
 │   ├── analysis/           # NLP analysis and inference
 │   │   ├── __init__.py
 │   │   ├── inference.py    # Model inference
-│   │   └── taxonomies/
-│   │       └── risk_taxonomy.yaml
+│   │   └── taxonomies/     # ⚠️ Taxonomy Management
+│   │       ├── __init__.py
+│   │       ├── risk_taxonomy.yaml      # Base taxonomy
+│   │       ├── sasb_sics_mapping.json  # ⚠️ SIC -> SASB Industry Map
+│   │       └── taxonomy_manager.py     # ⚠️ TaxonomyManager (Pydantic V2)
 │   │
 │   └── visualization/      # Visualization and UI
 │       ├── __init__.py
@@ -173,11 +192,13 @@ sec-filing-analyzer/
 #   - configs/config.yaml (main settings)
 #   - configs/features/sentiment.yaml (sentiment analysis)
 #   - configs/features/readability.yaml (readability/complexity)
+#   - configs/features/topic_modeling.yaml (LDA parameters)
+#   - configs/features/risk_analysis.yaml (drift threshold, auto-label model)
 #
 # Layer 2: Pydantic Settings Models (src/config.py)
-#   - 21 Pydantic v2 BaseSettings models (incl. ReadabilityConfig)
-#   - Type-safe with validation
+#   - Type-safe with validation (RiskAnalysisConfig, TopicModelingConfig)
 #   - Environment variable support with prefixes
+#   - Includes RunContext for versioned output management
 #
 # Layer 3: Environment Variables (.env)
 #   - Override YAML defaults at runtime
