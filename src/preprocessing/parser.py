@@ -169,10 +169,10 @@ class ParsedFiling(BaseModel):
                     except (AttributeError, TypeError, ValueError):
                         pass
                     elements_data.append(element_data)
-                except Exception as e:
+                except (AttributeError, TypeError, ValueError) as e:
                     # Skip problematic elements
                     elements_data.append({'type': 'Error', 'text': f'Error extracting: {str(e)}'})
-        except Exception as e:
+        except (AttributeError, TypeError) as e:
             print(f"Warning: Error extracting elements: {e}")
 
         # Extract tree structure (simplified) with error handling
@@ -190,16 +190,16 @@ class ParsedFiling(BaseModel):
                             'level': int(node.level) if hasattr(node, 'level') else 0,
                         }
                         tree_data.append(node_data)
-                    except Exception as e:
+                    except (AttributeError, TypeError, ValueError):
                         # Skip problematic nodes
                         continue
-        except Exception as e:
+        except (AttributeError, TypeError) as e:
             print(f"Warning: Error extracting tree: {e}")
 
         # Safely get section names
         try:
             section_names = self.get_section_names()
-        except Exception as e:
+        except (AttributeError, TypeError) as e:
             print(f"Warning: Error extracting section names: {e}")
             section_names = []
 
@@ -447,13 +447,12 @@ class SECFilingParser:
 
         if form_type in ["10K", "10-K"]:
             return FormType.FORM_10K
-        elif form_type in ["10Q", "10-Q"]:
+        if form_type in ["10Q", "10-Q"]:
             return FormType.FORM_10Q
-        else:
-            raise ValueError(
-                f"Unsupported form type: {form_type}. "
-                f"Supported types: 10-K, 10-Q"
-            )
+        raise ValueError(
+            f"Unsupported form type: {form_type}. "
+            f"Supported types: 10-K, 10-Q"
+        )
 
     def _extract_metadata(
         self,
@@ -486,16 +485,18 @@ class SECFilingParser:
         sic_code = self._extract_sic_code(html_content)
 
         # Extract Company Name
-        company_name_match = re.search(r'COMPANY CONFORMED NAME:\s*(.+)', html_content, re.IGNORECASE)
+        company_name_match = re.search(
+            r'COMPANY CONFORMED NAME:\s*(.+)', html_content, re.IGNORECASE
+        )
         company_name = company_name_match.group(1).strip() if company_name_match else None
 
         # Extract CIK
         cik_match = re.search(r'CENTRAL INDEX KEY:\s*(\d+)', html_content, re.IGNORECASE)
         cik = cik_match.group(1).strip() if cik_match else None
-        
+
         # Determine a Ticker (heuristic, often the CIK is used by services or can be mapped)
-        # For now, we'll leave Ticker as None unless explicitly found, or derive it from CIK later
-        ticker = None # More complex to extract directly from HTML, usually needs CIK lookup
+        # For now, we'll leave Ticker as None unless explicitly found, or derive from CIK later
+        ticker = None  # More complex to extract directly from HTML, usually needs CIK lookup
 
         return {
             'total_elements': len(elements),
@@ -505,13 +506,13 @@ class SECFilingParser:
             'sic_code': sic_code,
             'company_name': company_name,
             'cik': cik,
-            'ticker': ticker, # Placeholder for future ticker extraction
+            'ticker': ticker,  # Placeholder for future ticker extraction
         }
 
     def _extract_sic_code(self, html_content: str) -> Optional[str]:
         """
         Extract SIC Code from HTML content using regex.
-        
+
         Common formats:
         - STANDARD INDUSTRIAL CLASSIFICATION:  SERVICES-PREPACKAGED SOFTWARE [7372]
         - ASSIGNED-SIC: 7372
@@ -519,19 +520,19 @@ class SECFilingParser:
         # Pattern 1: [SIC Code] inside brackets after classification name
         # e.g., STANDARD INDUSTRIAL CLASSIFICATION: ... [7372]
         pattern1 = r'STANDARD\s+INDUSTRIAL\s+CLASSIFICATION:.*?\[(\d{3,4})\]'
-        
+
         # Pattern 2: ASSIGNED-SIC: 7372
         pattern2 = r'ASSIGNED-SIC:\s*(\d{3,4})'
-        
+
         # Search for patterns (case-insensitive)
         match = re.search(pattern1, html_content, re.IGNORECASE | re.DOTALL)
         if match:
             return match.group(1)
-            
+
         match = re.search(pattern2, html_content, re.IGNORECASE)
         if match:
             return match.group(1)
-            
+
         return None
 
     def _generate_output_path(
@@ -552,20 +553,22 @@ class SECFilingParser:
             Path where the JSON file should be saved
         """
         if isinstance(save_output, bool) and save_output:
-            # Auto-generate filename in PARSED_DATA_DIR
-            from src.config import PARSED_DATA_DIR
+            # Auto-generate filename in parsed_data_dir
+            # pylint: disable=import-outside-toplevel
+            from src.config import settings as cfg
+            # pylint: enable=import-outside-toplevel
 
             # Extract filename stem and create timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"{input_path.stem}_{form_type}_{timestamp}_parsed.json"
-            return PARSED_DATA_DIR / filename
-        else:
-            # Use provided path
-            path = Path(save_output)
-            # Ensure .json extension
-            if path.suffix == '.pkl':
-                path = path.with_suffix('.json')
-            return path
+            return cfg.paths.parsed_data_dir / filename  # pylint: disable=no-member
+
+        # Use provided path
+        path = Path(save_output)
+        # Ensure .json extension
+        if path.suffix == '.pkl':
+            path = path.with_suffix('.json')
+        return path
 
     def _flatten_html_nesting(self, html_content: str) -> str:
         """
@@ -580,7 +583,6 @@ class SECFilingParser:
         """
         # Remove redundant nested divs (common in SEC filings)
         # Pattern: <div><div>content</div></div> -> <div>content</div>
-        import re
 
         # Remove empty tags that add nesting without content
         empty_tags = ['div', 'span', 'p', 'font']
@@ -662,7 +664,7 @@ def parse_filing_from_path(
 
 if __name__ == "__main__":
     # Example usage
-    from src.config import RAW_DATA_DIR, PARSED_DATA_DIR, ensure_directories
+    from src.config import settings, ensure_directories
 
     print("SEC Filing Parser with sec-parser")
     print("=" * 50)
@@ -676,10 +678,12 @@ if __name__ == "__main__":
     print(f"Library: {info['library']}")
     print(f"Version: {info['version']}")
     print(f"Supported forms: {', '.join(info['supported_forms'])}")
-    print(f"\nLooking for HTML files in: {RAW_DATA_DIR}")
+    # pylint: disable=no-member
+    print(f"\nLooking for HTML files in: {settings.paths.raw_data_dir}")
 
     # Find HTML files
-    html_files = list(RAW_DATA_DIR.glob("*.html"))
+    html_files = list(settings.paths.raw_data_dir.glob("*.html"))
+    # pylint: enable=no-member
 
     if html_files:
         print(f"Found {len(html_files)} HTML file(s)")
@@ -707,7 +711,7 @@ if __name__ == "__main__":
             if len(sections) > 5:
                 print(f"  ... and {len(sections) - 5} more")
 
-        print(f"\n--- Load from Pickle Example ---")
+        print("\n--- Load from Pickle Example ---")
         print("To load a saved filing:")
         print("  filing = ParsedFiling.load_from_pickle('path/to/file.pkl')")
         print("\nTo inspect saved filings:")

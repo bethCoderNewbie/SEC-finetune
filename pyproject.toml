@@ -109,10 +109,12 @@ dev = [
 ]
 
 # Testing and validation
+# Install with: pip install -e ".[test]"
 test = [
     "pytest>=7.0.0",
-    "pytest-cov>=4.1.0",
+    "pytest-cov>=6.0.0",
     "pytest-mock>=3.12.0",
+    "pytest-xdist>=3.5.0",  # Parallel test execution
 ]
 
 # All optional dependencies (combine all extras without self-reference)
@@ -128,7 +130,7 @@ all = [
     "openai",
     # From dev
     "pytest>=7.0.0",
-    "pytest-cov>=4.1.0",
+    "pytest-cov>=6.0.0",
     "black>=23.0.0",
     "ruff>=0.1.0",
     "flake8>=6.0.0",
@@ -138,6 +140,7 @@ all = [
     "nbformat>=5.0.0",
     # From test
     "pytest-mock>=3.12.0",
+    "pytest-xdist>=3.5.0",
     # nlp-advanced has no actual packages, just instructions for spacy models
 ]
 
@@ -178,18 +181,23 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# Note: Coverage flags removed from defaults - use explicitly when needed:
+#   pytest --cov=src --cov-report=term-missing --cov-report=html
+# Requires: pip install pytest-cov  OR  pip install -e ".[test]"
 addopts = [
     "-v",
     "--tb=short",
     "--strict-markers",
-    "--cov=src",
-    "--cov-report=term-missing",
-    "--cov-report=html",
 ]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
+    "requires_10k_files: marks tests requiring 10-K files in data/raw/",
+    "requires_10q_files: marks tests requiring 10-Q files in data/raw/",
+]
+filterwarnings = [
+    "error::DeprecationWarning:src.config",  # Fail on config deprecation warnings
 ]
 
 [tool.coverage.run]
@@ -260,3 +268,37 @@ include_trailing_comma = true
 force_grid_wrap = 0
 use_parentheses = true
 ensure_newline_before_comments = true
+
+# ===========================
+# Flake8 Configuration
+# ===========================
+# Note: flake8 doesn't fully support pyproject.toml yet
+# Create .flake8 file or use setup.cfg for full flake8 config
+# This section documents our intended settings
+
+# [tool.flake8]  # Not supported - use .flake8 file instead
+# max-line-length = 100
+# extend-ignore = E402
+# per-file-ignores = tests/*:W0718
+
+# ===========================
+# Pylint Configuration
+# ===========================
+[tool.pylint.main]
+max-line-length = 100
+ignore-patterns = ["test_.*\\.py"]
+
+[tool.pylint.messages_control]
+disable = [
+    "too-few-public-methods",      # R0903 - Single-purpose classes are valid
+    "too-many-arguments",          # R0913 - Clear signatures > config objects
+    "too-many-positional-arguments", # R0917 - Same as above
+    "wrong-import-position",       # C0413 - Allow imports after sys.path modification
+]
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint.design]
+max-locals = 20
+max-args = 7

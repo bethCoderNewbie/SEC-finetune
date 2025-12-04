@@ -1,3 +1,96 @@
+# Changes Summary
+
+## 2025-12-03: Configuration Modularization
+
+### Overview
+
+Complete refactor of `src/config.py` (1,126 lines) into a modular `src/config/` package with 16 domain-specific modules.
+
+### Key Changes
+
+#### New Package Structure
+```
+src/config/
+├── __init__.py          # Main Settings class + global instance
+├── _loader.py           # Single cached YAML loader (replaces 5 duplicates)
+├── paths.py             # PathsConfig
+├── sec_parser.py        # SecParserConfig
+├── models.py            # ModelsConfig
+├── preprocessing.py     # PreprocessingConfig
+├── extraction.py        # ExtractionConfig
+├── sec_sections.py      # SecSectionsConfig
+├── testing.py           # TestingConfig + ReproducibilityConfig
+├── run_context.py       # RunContext
+├── legacy.py            # Deprecation warnings for old imports
+└── features/
+    ├── __init__.py
+    ├── sentiment.py     # SentimentConfig (6 sub-configs)
+    ├── topic_modeling.py# TopicModelingConfig (7 sub-configs)
+    ├── readability.py   # ReadabilityConfig (5 sub-configs)
+    └── risk_analysis.py # RiskAnalysisConfig
+```
+
+#### Files Modified
+| File | Change |
+|------|--------|
+| `src/config.py` | **Deleted** (was 1,126 lines) |
+| `src/config/` | **Created** (16 new files) |
+| `src/preprocessing/segmenter.py` | Migrated to use `settings` object |
+| `src/preprocessing/parser.py` | Migrated to use `settings` object |
+| `pyproject.toml` | Added `filterwarnings` for deprecation enforcement |
+
+#### API Changes
+
+**No breaking changes** - existing imports work unchanged:
+
+```python
+# This still works (unchanged)
+from src.config import settings
+settings.paths.data_dir
+settings.models.default_model
+```
+
+**Legacy imports now emit warnings**:
+```python
+# Old (deprecated, emits DeprecationWarning)
+from src.config import DATA_DIR
+
+# New (recommended)
+from src.config import settings
+settings.paths.data_dir
+```
+
+#### Benefits
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Lines in config | 1,126 (single file) | ~65 avg per file (16 files) |
+| YAML loader functions | 5 (duplicated) | 1 (cached) |
+| Module-level I/O | 5 calls | 0 (lazy loading) |
+| Testability | Hard (import-time I/O) | Easy (mockable) |
+
+#### Migration Guide
+
+No immediate migration required. Legacy imports continue to work but emit deprecation warnings. To suppress warnings:
+
+```bash
+# Suppress deprecation warnings (not recommended)
+export PYTHONWARNINGS="ignore::DeprecationWarning"
+```
+
+To migrate existing code:
+```python
+# Before
+from src.config import DATA_DIR, MIN_SEGMENT_LENGTH
+
+# After
+from src.config import settings
+data_dir = settings.paths.data_dir
+min_length = settings.preprocessing.min_segment_length
+```
+
+---
+
 # Changes Summary - sec-parser Integration
 
 ## Overview

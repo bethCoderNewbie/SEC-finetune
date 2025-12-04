@@ -37,24 +37,42 @@ data/raw/company_10k.txt
 
 ```
 sec-filing-analyzer/
+├── configs/
+│   ├── config.yaml              # Main configuration (YAML)
+│   └── features/                # Feature-specific configs
+│       ├── sentiment.yaml
+│       ├── topic_modeling.yaml
+│       ├── readability.yaml
+│       └── risk_analysis.yaml
 ├── data/
-│   ├── raw/              # Place 10-K .txt files here
-│   ├── interim/          # (Future) Intermediate data
-│   └── processed/        # (Future) Final datasets
+│   ├── raw/                     # Place 10-K .html files here
+│   ├── interim/                 # Intermediate data (parsed, extracted)
+│   └── processed/               # Final datasets (labeled, features)
 ├── src/
+│   ├── config/                  # Configuration package (Pydantic Settings)
+│   │   ├── __init__.py          # Main Settings class
+│   │   ├── _loader.py           # Cached YAML loader
+│   │   ├── paths.py             # Path configuration
+│   │   ├── features/            # Feature configs (sentiment, etc.)
+│   │   └── legacy.py            # Backward-compatible constants
 │   ├── preprocessing/
-│   │   ├── parser.py     # Parse .txt files
-│   │   ├── extractor.py  # Extract Risk Factors section
-│   │   ├── cleaning.py   # Clean text
-│   │   └── segmenter.py  # Segment into individual risks
+│   │   ├── parser.py            # Parse HTML files (sec-parser)
+│   │   ├── extractor.py         # Extract Risk Factors section
+│   │   ├── cleaning.py          # Clean text
+│   │   └── segmenter.py         # Segment into individual risks
 │   ├── analysis/
-│   │   ├── inference.py  # Zero-shot classification
+│   │   ├── inference.py         # Zero-shot classification
 │   │   └── taxonomies/
-│   │       └── risk_taxonomy.yaml  # Risk categories
+│   │       └── risk_taxonomy.yaml
+│   ├── features/                # Feature extraction modules
+│   │   ├── sentiment.py
+│   │   ├── readability/
+│   │   └── topic_modeling/
 │   └── visualization/
-│       └── app.py        # Streamlit application
-├── pyproject.toml       # Project metadata and dependencies
-└── README.md            # This file
+│       └── app.py               # Streamlit application
+├── tests/                       # Test suite
+├── pyproject.toml               # Project metadata and dependencies
+└── README.md                    # This file
 ```
 
 ## Installation
@@ -338,20 +356,44 @@ categories:
 
 ### Segmentation Parameters
 
-Edit `src/config.py` to adjust:
+Configuration is managed via Pydantic Settings in `src/config/`. Adjust settings via:
 
+**Option 1: YAML config** (recommended)
+Edit `configs/config.yaml`:
+```yaml
+preprocessing:
+  min_segment_length: 50
+  max_segment_length: 2000
+```
+
+**Option 2: Environment variables**
+```bash
+export PREPROCESSING_MIN_SEGMENT_LENGTH=50
+export PREPROCESSING_MAX_SEGMENT_LENGTH=2000
+```
+
+**Option 3: Python code**
 ```python
-MIN_SEGMENT_LENGTH = 50    # Minimum characters
-MAX_SEGMENT_LENGTH = 2000  # Maximum characters
+from src.config import settings
+
+# Access current values
+print(settings.preprocessing.min_segment_length)  # 50
+print(settings.preprocessing.max_segment_length)  # 2000
 ```
 
 ### Model Selection
 
-Edit `src/config.py` to change the zero-shot model:
+Edit `configs/config.yaml` or use environment variables:
 
-```python
-ZERO_SHOT_MODEL = "facebook/bart-large-mnli"  # Default
-# ZERO_SHOT_MODEL = "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli"  # Alternative
+```yaml
+models:
+  default_model: "ProsusAI/finbert"
+  zero_shot_model: "facebook/bart-large-mnli"
+```
+
+Or via environment:
+```bash
+export MODELS_ZERO_SHOT_MODEL="MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli"
 ```
 
 ## License

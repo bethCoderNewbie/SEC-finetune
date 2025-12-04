@@ -162,8 +162,14 @@ sec-filing-analyzer/
 │       └── app.py          # Streamlit dashboard
 │
 └── tests/                  # Unit and integration tests
-    ├── test_preprocessing.py
-    └── test_analysis.py
+    ├── __init__.py         # Test package initialization
+    ├── conftest.py         # Shared pytest fixtures
+    ├── test_cleaning.py    # Legacy cleaning tests (run standalone)
+    │
+    └── preprocessing/      # Preprocessing module tests
+        ├── __init__.py
+        └── test_parser_section_recall.py  # ⚠️ Key Section Recall QA tests
+                                           # Metrics: recall, latency, idempotency
 
 
 # ========================================
@@ -373,7 +379,42 @@ sec-filing-analyzer/
 #   - MyPy type checking
 #   - Pytest (when available)
 
-## 10. CURRENT PROJECT STATUS
+## 10. TESTING & QA
+
+# Test Suite Structure:
+#   tests/
+#   ├── conftest.py                           # Shared fixtures (parser, paths, sample data)
+#   └── preprocessing/
+#       └── test_parser_section_recall.py     # Parser QA tests
+#
+# Running Tests:
+#   # Run all tests
+#   pytest tests/ -v
+#
+#   # Run parser QA tests with output
+#   pytest tests/preprocessing/test_parser_section_recall.py -v -s
+#
+#   # Run specific test class
+#   pytest tests/preprocessing/test_parser_section_recall.py::TestParserSectionRecall -v
+#
+#   # Generate coverage report
+#   pytest tests/ --cov=src --cov-report=html
+#
+#   # Generate metrics report
+#   pytest tests/preprocessing/test_parser_section_recall.py::TestMetricsReport -v -s
+#
+# Key QA Metrics (from qa.md):
+#   - Key Section Recall: > 99% (Item 1, 1A, 7, 7A for 10-K)
+#   - Parsing Latency: < 5 seconds per document
+#   - Idempotency: Same file = identical output
+#   - Error Rate: < 1% parse failures
+#
+# Test Markers:
+#   @pytest.mark.slow          - Long-running tests
+#   @pytest.mark.integration   - End-to-end tests
+#   pytest -m "not slow" ...   - Skip slow tests
+
+## 11. CURRENT PROJECT STATUS
 #
 # ✅ Complete:
 #   - Pydantic v2 enforcement system

@@ -1,0 +1,25 @@
+[flake8]
+max-line-length = 100
+extend-ignore =
+    E402,  # module level import not at top of file (needed for sys.path modifications)
+    W503,  # line break before binary operator (conflicts with black)
+
+per-file-ignores =
+    # Allow broad exceptions in test files (needed for test error handling)
+    tests/*:W0718
+    # Allow unused imports in __init__.py (re-exports)
+    */__init__.py:F401
+
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    venv,
+    build,
+    dist,
+    *.egg-info,
+    data,
+    models,
+    logs,
+    output,
+    cache,

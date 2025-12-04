@@ -8,7 +8,7 @@ from pathlib import Path
 import json
 import re
 
-from pydantic import BaseModel, ConfigDict, computed_field
+from pydantic import BaseModel, ConfigDict
 
 try:
     import sec_parser as sp
@@ -18,8 +18,8 @@ except ImportError:
     sp = None
 
 from .parser import ParsedFiling, SECFilingParser
-from .constants import SectionIdentifier, SECTION_PATTERNS, MIN_PARAGRAPH_LENGTH
-from ..config import SEC_10K_SECTIONS, SEC_10Q_SECTIONS, EXTRACTED_DATA_DIR
+from .constants import SectionIdentifier, SECTION_PATTERNS, PAGE_HEADER_PATTERN
+from ..config import settings
 
 
 class ExtractedSection(BaseModel):
@@ -131,7 +131,8 @@ class ExtractedSection(BaseModel):
             ValueError: If file doesn't contain valid ExtractedSection data
 
         Example:
-            >>> section = ExtractedSection.load_from_json("data/interim/extracted/AAPL_10K_risks.json")
+            >>> path = "data/interim/extracted/AAPL_10K_risks.json"
+            >>> section = ExtractedSection.load_from_json(path)
             >>> print(f"Loaded: {section.title}")
         """
         file_path = Path(file_path)
@@ -181,8 +182,10 @@ class SECSectionExtractor:
 
     # Load section titles from config for maintainability
     # This allows centralized management of section identifiers
-    SECTION_TITLES_10K = SEC_10K_SECTIONS
-    SECTION_TITLES_10Q = SEC_10Q_SECTIONS
+    # pylint: disable=no-member  # Pydantic dynamic config fields
+    SECTION_TITLES_10K = settings.sec_sections.sections_10k
+    SECTION_TITLES_10Q = settings.sec_sections.sections_10q
+    # pylint: enable=no-member
 
     # Regex patterns imported from constants module
     # SECTION_PATTERNS = SECTION_PATTERNS  # Available via import
@@ -287,7 +290,7 @@ class SECSectionExtractor:
 
         return self.extract_section(filing, section)
 
-    def _find_section_node(
+    def _find_section_node(  # pylint: disable=too-many-branches
         self,
         tree: sp.TreeNode,
         section_id: str,
@@ -407,7 +410,7 @@ class SECSectionExtractor:
         self,
         tree: sp.TreeNode,
         section_node: sp.TreeNode,
-        form_type: str
+        _form_type: str
     ) -> tuple[str, List[str], List[Dict]]:
         """
         Extract content from section node and its siblings (FLAT structure)
@@ -433,7 +436,9 @@ class SECSectionExtractor:
             start_idx = all_nodes.index(section_node)
         except ValueError:
             # Fallback to old method if node not in list
-            return section_node.text, self._extract_subsections(section_node), self._extract_elements(section_node)
+            subsections = self._extract_subsections(section_node)
+            elements = self._extract_elements(section_node)
+            return section_node.text, subsections, elements
 
         # Collect content nodes
         content_nodes = []
@@ -451,9 +456,12 @@ class SECSectionExtractor:
             # Collect the node
             content_nodes.append(node)
 
-            # Track subsections (TitleElement nodes)
+            # Track subsections (TitleElement nodes), filtering out page headers
             if isinstance(node.semantic_element, sp.TitleElement):
-                subsections.append(node.text.strip())
+                title_text = node.text.strip()
+                # Filter out page headers (e.g., "Company | Year Form 10-K | Page")
+                if not PAGE_HEADER_PATTERN.match(title_text):
+                    subsections.append(title_text)
 
             # Track all elements
             element_dict = {
@@ -497,7 +505,7 @@ class SECSectionExtractor:
         if isinstance(node.semantic_element, sp.TitleElement):
             text = node.text.strip().lower()
             # Match "ITEM 1B", "ITEM 2", etc.
-            if re.match(r'item\s+\d+[a-z]?\s*\.?\s*$', text):
+            if re.match(r'item\s+\d+[a-z]?\s*\.', text):
                 return True
 
         return False
@@ -553,13 +561,11 @@ class SECSectionExtractor:
         """Get human-readable title for section identifier"""
         if form_type == "10-K":
             return self.SECTION_TITLES_10K.get(section_id, section_id)
-        else:  # 10-Q
-            return self.SECTION_TITLES_10Q.get(section_id, section_id)
+        return self.SECTION_TITLES_10Q.get(section_id, section_id)
 
     def _normalize_title(self, title: str) -> str:
         """Normalize title for comparison"""
         # Remove extra whitespace, convert to lower, remove punctuation
-        import re
         normalized = re.sub(r'\s+', ' ', title.lower())
         normalized = re.sub(r'[^\w\s]', '', normalized)
         return normalized.strip()
@@ -663,7 +669,8 @@ class RiskFactorExtractor:
             if element['type'] in ['TextElement', 'ParagraphElement']:
                 # Filter out very short paragraphs (likely artifacts)
                 text = element['text'].strip()
-                if len(text) > MIN_PARAGRAPH_LENGTH:
+                # pylint: disable=no-member  # Pydantic dynamic config
+                if len(text) > settings.preprocessing.min_segment_length:
                     paragraphs.append(text)
         return paragraphs
 

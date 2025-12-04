@@ -6,8 +6,20 @@ including section identifiers, regex patterns for section matching,
 and element type definitions.
 """
 
+import re
 from enum import Enum
 from typing import Dict, List
+
+
+# ===========================
+# Page Header Pattern
+# ===========================
+
+# Pattern for filtering page headers (e.g., "Apple Inc. | 2021 Form 10-K | 6")
+PAGE_HEADER_PATTERN = re.compile(
+    r'.+\|\s*\d{4}\s+Form\s+\d+-[KQ]\s*\|\s*\d+',
+    re.IGNORECASE
+)
 
 
 # ===========================
@@ -133,12 +145,6 @@ ALL_CONTENT_TYPES = TEXT_ELEMENT_TYPES | TITLE_ELEMENT_TYPES | TABLE_ELEMENT_TYP
 # ===========================
 # Extraction Defaults
 # ===========================
-
-# Minimum characters for a valid paragraph
-MIN_PARAGRAPH_LENGTH = 50
-
-# Default sections to extract if none specified
-DEFAULT_EXTRACTION_SECTIONS = [
-    SectionIdentifier.ITEM_1A_RISK_FACTORS,
-    SectionIdentifier.ITEM_7_MDNA,
-]
+# NOTE: Runtime-configurable values have been moved to src/config/:
+#   - MIN_PARAGRAPH_LENGTH → settings.preprocessing.min_segment_length
+#   - DEFAULT_EXTRACTION_SECTIONS → settings.extraction.default_sections

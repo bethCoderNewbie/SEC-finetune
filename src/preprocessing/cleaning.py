@@ -187,9 +187,11 @@ class TextCleaner:
         Returns:
             str: Text with normalized punctuation
         """
-        # Normalize quotes
-        text = text.replace('"', '"').replace('"', '"')
-        text = text.replace(''', "'").replace(''', "'")
+        # Normalize curly/smart quotes to straight ASCII quotes
+        # Double quotes: " (U+201C) and " (U+201D) → " (U+0022)
+        text = text.replace('\u201c', '"').replace('\u201d', '"')
+        # Single quotes/apostrophes: ' (U+2018) and ' (U+2019) → ' (U+0027)
+        text = text.replace('\u2018', "'").replace('\u2019', "'")
 
         # Remove excessive punctuation
         text = re.sub(r'([.!?])\1+', r'\1', text)
