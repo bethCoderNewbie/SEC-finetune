@@ -1,5 +1,211 @@
 # Changes Summary
 
+## 2025-12-12: Preprocessing Pipeline Restructure
+
+### Overview
+
+Complete restructure of the preprocessing pipeline to ensure metadata preservation throughout the entire flow. Added new `pipeline.py` orchestrator and `SegmentedRisks` model.
+
+### New Pipeline Flow
+
+```
+1. PARSE   → SECFilingParser    → ParsedFiling (with metadata)
+2. CLEAN   → TextCleaner        → cleaned text
+3. EXTRACT → SECSectionExtractor → ExtractedSection (metadata preserved)
+4. SEGMENT → RiskSegmenter      → SegmentedRisks (metadata preserved)
+```
+
+### Key Changes
+
+#### New Files
+| File | Purpose |
+|------|---------|
+| `src/preprocessing/pipeline.py` | Pipeline orchestrator with `SECPreprocessingPipeline` class |
+
+#### Modified Files
+| File | Changes |
+|------|---------|
+| `src/preprocessing/parser.py` | Added `_extract_sic_name()` method to extract SIC industry name |
+| `src/preprocessing/extractor.py` | Added filing metadata fields to `ExtractedSection` model |
+| `src/preprocessing/segmenter.py` | Added `RiskSegment`, `SegmentedRisks` models with metadata preservation |
+| `src/preprocessing/cleaning.py` | Fixed `deep_clean` logic with lazy spaCy initialization |
+| `src/preprocessing/__init__.py` | Updated exports for new classes and pipeline |
+
+#### New Models
+
+**ExtractedSection** (updated):
+```python
+class ExtractedSection(BaseModel):
+    text: str
+    identifier: str
+    title: str
+    subsections: List[str]
+    elements: List[Dict]
+    metadata: Dict
+    # NEW: Filing-level metadata
+    sic_code: Optional[str]
+    sic_name: Optional[str]      # e.g., "PHARMACEUTICAL PREPARATIONS"
+    cik: Optional[str]
+    ticker: Optional[str]
+    company_name: Optional[str]
+    form_type: Optional[str]
+```
+
+**SegmentedRisks** (new):
+```python
+class SegmentedRisks(BaseModel):
+    segments: List[RiskSegment]
+    sic_code: Optional[str]
+    sic_name: Optional[str]
+    cik: Optional[str]
+    ticker: Optional[str]
+    company_name: Optional[str]
+    form_type: Optional[str]
+    section_title: Optional[str]
+    total_segments: int
+    metadata: Dict
+```
+
+**RiskSegment** (new):
+```python
+class RiskSegment(BaseModel):
+    index: int
+    text: str
+    word_count: int
+    char_count: int
+```
+
+#### New Pipeline Usage
+
+```python
+# Simple usage
+from src.preprocessing import process_filing
+
+result = process_filing("data/raw/AAPL_10K.html")
+print(f"Company: {result.company_name}")
+print(f"SIC: {result.sic_code} - {result.sic_name}")
+print(f"Segments: {len(result)}")
+
+# With configuration
+from src.preprocessing import SECPreprocessingPipeline, PipelineConfig
+
+config = PipelineConfig(
+    deep_clean=True,
+    use_lemmatization=True,
+)
+pipeline = SECPreprocessingPipeline(config)
+result = pipeline.process_risk_factors("data/raw/AAPL_10K.html")
+
+# Save to JSON
+result.save_to_json("output/AAPL_risks.json")
+```
+
+#### Output JSON Structure
+
+```json
+{
+  "segments": [
+    {"index": 0, "text": "...", "word_count": 150, "char_count": 890},
+    {"index": 1, "text": "...", "word_count": 200, "char_count": 1200}
+  ],
+  "sic_code": "2834",
+  "sic_name": "PHARMACEUTICAL PREPARATIONS",
+  "cik": "0000320193",
+  "ticker": null,
+  "company_name": "APPLE INC",
+  "form_type": "10-K",
+  "section_title": "Item 1A. Risk Factors",
+  "total_segments": 45
+}
+```
+
+### Script Updates
+
+#### `scripts/02_data_preprocessing/run_preprocessing_pipeline.py`
+
+Updated to use new pipeline flow with metadata preservation:
+
+| Change | Description |
+|--------|-------------|
+| Output version | `"version": "2.0"` with new JSON structure |
+| Metadata fields | `sic_code`, `sic_name`, `cik`, `ticker`, `company_name` at top level |
+| Imports | Added `SegmentedRisks`, `RiskSegment` from segmenter |
+| Type hints | Full typing with `List`, `Dict`, `Any`, `Tuple`, `Optional` |
+| Segmentation | Uses `segment_extracted_section()` method |
+| Batch results | Include metadata (`sic_code`, `sic_name`, `cik`) per file |
+
+**New Output Structure (v2.0):**
+```json
+{
+  "version": "2.0",
+  "filing_name": "AAPL_10K.html",
+  "sic_code": "3571",
+  "sic_name": "ELECTRONIC COMPUTERS",
+  "cik": "0000320193",
+  "ticker": "AAPL",
+  "company_name": "APPLE INC",
+  "form_type": "10-K",
+  "section_title": "Item 1A. Risk Factors",
+  "num_segments": 45,
+  "segments": [...]
+}
+```
+
+### Pydantic V2 Compliance
+
+#### `src/preprocessing/pipeline.py`
+
+Converted `PipelineConfig` from `@dataclass` to Pydantic V2 `BaseModel`:
+
+```python
+# Before (dataclass)
+@dataclass
+class PipelineConfig:
+    remove_html: bool = True
+    similarity_threshold: float = 0.5
+
+# After (Pydantic V2)
+class PipelineConfig(BaseModel):
+    model_config = ConfigDict(
+        validate_assignment=True,
+        extra='forbid',
+    )
+
+    remove_html: bool = Field(default=True, description="Remove HTML tags")
+    similarity_threshold: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Cosine similarity threshold"
+    )
+```
+
+**Benefits:**
+- Validation on assignment (`validate_assignment=True`)
+- Error on unknown fields (`extra='forbid'`)
+- Range validation (`ge=0.0, le=1.0`)
+- Self-documenting via `Field(description=...)`
+- JSON serialization via `model_dump_json()`
+
+### Bug Fixes
+
+1. **cleaning.py**: Fixed `deep_clean=True` not working when spaCy wasn't pre-initialized
+   - Added lazy initialization of spaCy when `deep_clean=True` is called
+
+2. **segmenter.py**: Replaced `print()` statements with proper `logging` module
+
+### Benefits
+
+| Aspect | Before | After |
+|--------|--------|-------|
+| Metadata flow | Lost after parsing | Preserved throughout |
+| SIC Name | Not extracted | Extracted (e.g., "PHARMACEUTICAL PREPARATIONS") |
+| Output format | List of strings | Structured `SegmentedRisks` with metadata |
+| Pipeline orchestration | Manual chaining | `SECPreprocessingPipeline` class |
+| Serialization | None | JSON save/load methods |
+
+---
+
 ## 2025-12-03: Configuration Modularization
 
 ### Overview

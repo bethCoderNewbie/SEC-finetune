@@ -481,8 +481,9 @@ class SECFilingParser:
             if isinstance(el, sp.TopSectionTitle)
         )
 
-        # Extract SIC Code
+        # Extract SIC Code and SIC Name
         sic_code = self._extract_sic_code(html_content)
+        sic_name = self._extract_sic_name(html_content)
 
         # Extract Company Name
         company_name_match = re.search(
@@ -504,6 +505,7 @@ class SECFilingParser:
             'element_types': element_types,
             'html_size': len(html_content),
             'sic_code': sic_code,
+            'sic_name': sic_name,
             'company_name': company_name,
             'cik': cik,
             'ticker': ticker,  # Placeholder for future ticker extraction
@@ -532,6 +534,30 @@ class SECFilingParser:
         match = re.search(pattern2, html_content, re.IGNORECASE)
         if match:
             return match.group(1)
+
+        return None
+
+    def _extract_sic_name(self, html_content: str) -> Optional[str]:
+        """
+        Extract SIC Name (industry description) from HTML content using regex.
+
+        Common format:
+        - STANDARD INDUSTRIAL CLASSIFICATION:  PHARMACEUTICAL PREPARATIONS [2834]
+
+        Returns:
+            The industry name text (e.g., "PHARMACEUTICAL PREPARATIONS"), or None if not found
+        """
+        # Pattern to capture text between "CLASSIFICATION:" and "[code]"
+        # e.g., "STANDARD INDUSTRIAL CLASSIFICATION:  PHARMACEUTICAL PREPARATIONS [2834]"
+        pattern = r'STANDARD\s+INDUSTRIAL\s+CLASSIFICATION:\s*(.+?)\s*\[\d{3,4}\]'
+
+        match = re.search(pattern, html_content, re.IGNORECASE | re.DOTALL)
+        if match:
+            # Clean up the extracted name (remove extra whitespace, newlines)
+            sic_name = match.group(1).strip()
+            # Collapse multiple whitespace/newlines into single space
+            sic_name = re.sub(r'\s+', ' ', sic_name)
+            return sic_name
 
         return None
 

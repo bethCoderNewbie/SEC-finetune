@@ -18,20 +18,37 @@ This MVP is designed as a **vertical slice** to test the most critical, high-ris
 ## Architecture
 
 ```
-data/raw/company_10k.txt
+data/raw/company_10k.html
         ↓
-    [Parser] → Parse .txt file
+    [Parser] → Parse HTML (sec-parser) → ParsedFiling
+        │                                  ├─ sic_code, sic_name
+        │                                  ├─ cik, company_name
+        │                                  └─ semantic tree
         ↓
-    [Extractor] → Extract Item 1A
+    [Cleaner] → Clean text → normalized text
         ↓
-    [Cleaner] → Clean text
+    [Extractor] → Extract Item 1A → ExtractedSection
+        │                            ├─ metadata preserved
+        │                            └─ subsections, elements
         ↓
-    [Segmenter] → Split into risks
+    [Segmenter] → Split into risks → SegmentedRisks
+        │                             ├─ segments[]
+        │                             ├─ sic_code, sic_name
+        │                             └─ cik, company_name
         ↓
     [Classifier] → Zero-shot categorization
         ↓
     [Streamlit UI] → Display results
 ```
+
+### Metadata Preservation
+
+All filing metadata flows through the entire pipeline:
+- **SIC Code**: Standard Industrial Classification (e.g., "2834")
+- **SIC Name**: Industry name (e.g., "PHARMACEUTICAL PREPARATIONS")
+- **CIK**: Central Index Key
+- **Company Name**: From filing header
+- **Form Type**: 10-K or 10-Q
 
 ## Project Structure
 
@@ -56,6 +73,7 @@ sec-filing-analyzer/
 │   │   ├── features/            # Feature configs (sentiment, etc.)
 │   │   └── legacy.py            # Backward-compatible constants
 │   ├── preprocessing/
+│   │   ├── pipeline.py          # Pipeline orchestrator (NEW)
 │   │   ├── parser.py            # Parse HTML files (sec-parser)
 │   │   ├── extractor.py         # Extract Risk Factors section
 │   │   ├── cleaning.py          # Clean text
@@ -156,11 +174,108 @@ python -m spacy download en_core_web_md
 python -m spacy download en_core_web_lg
 ```
 
-## Usage
+## Quick Start - Pipeline
+
+The simplest way to process a SEC filing:
+
+```python
+from src.preprocessing import process_filing
+
+# Process a single filing
+result = process_filing("data/raw/AAPL_10K.html")
+
+# Access metadata (preserved throughout pipeline)
+print(f"Company: {result.company_name}")
+print(f"CIK: {result.cik}")
+print(f"SIC: {result.sic_code} - {result.sic_name}")
+print(f"Form: {result.form_type}")
+print(f"Segments: {len(result)}")
+
+# Access individual segments
+for seg in result.segments[:3]:
+    print(f"[{seg.index}] {seg.text[:100]}...")
+
+# Save to JSON
+result.save_to_json("output/AAPL_risks.json")
+```
+
+### Pipeline with Custom Configuration
+
+`PipelineConfig` is a Pydantic V2 model with built-in validation:
+
+```python
+from src.preprocessing import SECPreprocessingPipeline, PipelineConfig
+
+config = PipelineConfig(
+    deep_clean=True,           # Apply NLP-based cleaning
+    use_lemmatization=True,    # Convert words to base form
+    remove_stopwords=False,    # Keep stopwords
+    similarity_threshold=0.7,  # Validated: 0.0 <= x <= 1.0
+)
+
+pipeline = SECPreprocessingPipeline(config)
+result = pipeline.process_risk_factors(
+    "data/raw/AAPL_10K.html",
+    save_output="output/AAPL_risks.json"
+)
+
+# Validation catches errors
+# PipelineConfig(similarity_threshold=1.5)  # ValidationError!
+# PipelineConfig(deep_cleann=True)          # ValidationError! (typo caught)
+```
+
+### Batch Processing
+
+```python
+from pathlib import Path
+from src.preprocessing import SECPreprocessingPipeline
+
+pipeline = SECPreprocessingPipeline()
+files = list(Path("data/raw").glob("*.html"))
+
+results = pipeline.process_batch(
+    files,
+    form_type="10-K",
+    output_dir="output/segmented"
+)
+```
+
+### Command-Line Script
+
+For production batch processing with sentiment analysis:
+
+```bash
+# Single file
+python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --input data/raw/AAPL_10K.html
+
+# Batch mode (all files in data/raw/)
+python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --batch
+
+# Batch with options
+python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --batch --workers 4 --resume --quiet
+
+# Skip sentiment analysis (faster)
+python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --batch --no-sentiment
+```
+
+**Output format (v2.0)** - includes full metadata:
+```json
+{
+  "version": "2.0",
+  "sic_code": "3571",
+  "sic_name": "ELECTRONIC COMPUTERS",
+  "cik": "0000320193",
+  "company_name": "APPLE INC",
+  "num_segments": 45,
+  "segments": [...]
+}
+```
+
+## Usage (Streamlit UI)
 
 ### Step 1: Prepare Data
 
-Place a 10-K filing `.txt` file in the `data/raw/` directory.
+Place a 10-K filing `.html` file in the `data/raw/` directory.
 
 Example:
 ```
@@ -289,27 +404,39 @@ This MVP validates the core analysis pipeline. Future enhancements include:
 
 ### Pipeline Components
 
+#### 0. Pipeline Orchestrator (`src/preprocessing/pipeline.py`) - NEW
+- `SECPreprocessingPipeline` class orchestrates entire flow
+- `PipelineConfig` (Pydantic V2) with validation and type safety
+- `process_filing()` convenience function
+- Batch processing support
+- Automatic metadata preservation
+- All models are Pydantic V2 compliant
+
 #### 1. Parser (`src/preprocessing/parser.py`)
-- Reads .txt files with encoding detection
+- Uses `sec-parser` library for semantic parsing
+- Extracts metadata: `sic_code`, `sic_name`, `cik`, `company_name`
+- Returns `ParsedFiling` with semantic tree structure
 - Handles UTF-8 and Latin-1 encodings
-- Returns raw filing text
 
-#### 2. Extractor (`src/preprocessing/extractor.py`)
-- Uses regex patterns to locate Item 1A
-- Identifies section boundaries
-- Extracts Risk Factors text blob
-
-#### 3. Cleaner (`src/preprocessing/cleaning.py`)
+#### 2. Cleaner (`src/preprocessing/cleaning.py`)
 - Removes page numbers and headers
 - Normalizes whitespace
-- Removes HTML artifacts (if present)
-- Standardizes punctuation
+- Removes HTML artifacts
+- Optional NLP cleaning with spaCy (lemmatization, stopwords)
+- Lazy spaCy initialization for `deep_clean` mode
+
+#### 3. Extractor (`src/preprocessing/extractor.py`)
+- Uses semantic tree navigation (not regex)
+- Returns `ExtractedSection` with preserved metadata
+- Identifies subsections and element types
+- Preserves: `sic_code`, `sic_name`, `cik`, `ticker`, `company_name`, `form_type`
 
 #### 4. Segmenter (`src/preprocessing/segmenter.py`)
-- Segments by headers/bullet points (preferred)
+- Segments by semantic breaks (SentenceTransformer) or headers
 - Falls back to paragraph-based segmentation
-- Filters segments by length and quality
-- Splits overly long segments
+- Returns `SegmentedRisks` with preserved metadata
+- `RiskSegment` model with word/char counts
+- JSON save/load methods
 
 #### 5. Classifier (`src/analysis/inference.py`)
 - Loads risk taxonomy categories

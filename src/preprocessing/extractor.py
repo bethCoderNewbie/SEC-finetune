@@ -33,6 +33,12 @@ class ExtractedSection(BaseModel):
         subsections: List of subsection titles within this section
         elements: List of semantic elements (paragraphs, tables, etc.)
         metadata: Additional metadata about the extraction
+        sic_code: Standard Industrial Classification code
+        sic_name: SIC industry name (e.g., "PHARMACEUTICAL PREPARATIONS")
+        cik: Central Index Key
+        ticker: Stock ticker symbol
+        company_name: Company name from filing
+        form_type: SEC form type (10-K, 10-Q)
     """
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
@@ -45,6 +51,13 @@ class ExtractedSection(BaseModel):
     subsections: List[str]
     elements: List[Dict[str, Any]]
     metadata: Dict[str, Any]
+    # Filing-level metadata (preserved through pipeline)
+    sic_code: Optional[str] = None
+    sic_name: Optional[str] = None
+    cik: Optional[str] = None
+    ticker: Optional[str] = None
+    company_name: Optional[str] = None
+    form_type: Optional[str] = None
 
     def __len__(self) -> int:
         """Return character length of extracted text"""
@@ -235,11 +248,13 @@ class SECSectionExtractor:
 
         # Build metadata
         metadata = {
-            'form_type': filing.form_type.value,
             'num_subsections': len(subsections),
             'num_elements': len(elements),
             'element_type_counts': self._count_element_types(elements),
         }
+
+        # Extract filing-level metadata
+        filing_metadata = filing.metadata or {}
 
         return ExtractedSection(
             text=text,
@@ -247,7 +262,14 @@ class SECSectionExtractor:
             title=title,
             subsections=subsections,
             elements=elements,
-            metadata=metadata
+            metadata=metadata,
+            # Filing-level metadata
+            sic_code=filing_metadata.get('sic_code'),
+            sic_name=filing_metadata.get('sic_name'),
+            cik=filing_metadata.get('cik'),
+            ticker=filing_metadata.get('ticker'),
+            company_name=filing_metadata.get('company_name'),
+            form_type=filing.form_type.value,
         )
 
     def extract_risk_factors(self, filing: ParsedFiling) -> Optional[ExtractedSection]:

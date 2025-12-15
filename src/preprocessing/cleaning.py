@@ -45,7 +45,9 @@ class TextCleaner:
         self.remove_numbers = remove_numbers
 
         # Initialize spaCy
+        # Note: spaCy is needed for deep_clean, lemmatization, or stopword removal
         self.nlp = None
+        self._spacy_model = spacy_model
         if SPACY_AVAILABLE and (use_lemmatization or remove_stopwords):
             self._init_spacy(spacy_model)
 
@@ -106,8 +108,12 @@ class TextCleaner:
         text = self._normalize_punctuation(text)
 
         # Apply deep cleaning with spaCy if requested
-        if deep_clean and self.nlp:
-            text = self._apply_nlp_cleaning(text)
+        if deep_clean:
+            # Lazy-initialize spaCy if not already done
+            if self.nlp is None and SPACY_AVAILABLE:
+                self._init_spacy(self._spacy_model)
+            if self.nlp:
+                text = self._apply_nlp_cleaning(text)
 
         # Final whitespace cleanup
         text = self._normalize_whitespace(text)
