@@ -1,0 +1,190 @@
+# ============================================
+# QA Validation - Cleaning & Segmentation Thresholds
+# ============================================
+# Thresholds for TextCleaner and RiskSegmenter validation
+# Source: thoughts/shared/research/2025-12-03_20-23_cleaner_segmenter_qa_metrics.md
+
+categories:
+  cleaner_hygiene:
+    display_name: Cleaner Hygiene
+    description: HTML/entity removal thresholds
+
+  cleaner_continuity:
+    display_name: Cleaner Continuity
+    description: Page number removal and sentence preservation
+
+  segmentation_distribution:
+    display_name: Segmentation Distribution
+    description: Segment count and length distribution
+
+  segmentation_quality:
+    display_name: Segmentation Quality
+    description: Filtering and fallback thresholds
+
+thresholds:
+  # -------------------------
+  # Cleaner Hygiene
+  # -------------------------
+  cleaner_hygiene:
+    html_tag_removal_rate:
+      display_name: HTML Tag Removal
+      metric_type: rate
+      target: 1.0
+      operator: ">="
+      blocking: true
+      description: Rate of HTML tags removed
+      tags: [cleaner, hygiene]
+
+    entity_decode_rate:
+      display_name: Entity Decode Rate
+      metric_type: rate
+      target: 1.0
+      operator: ">="
+      blocking: true
+      description: Rate of HTML entities decoded (&amp;, &nbsp;, etc.)
+      tags: [cleaner, hygiene]
+
+    excessive_whitespace_ratio:
+      display_name: Excessive Whitespace
+      metric_type: rate
+      target: 0.01
+      operator: "<="
+      blocking: false
+      description: Ratio of triple+ spaces remaining
+      tags: [cleaner, hygiene]
+
+    quote_normalization_count:
+      display_name: Quote Normalization
+      metric_type: count
+      target: 0
+      operator: "=="
+      blocking: false
+      description: Count of curly quotes remaining (should be 0)
+      tags: [cleaner, hygiene]
+
+  # -------------------------
+  # Cleaner Continuity
+  # -------------------------
+  cleaner_continuity:
+    page_number_removal_rate:
+      display_name: Page Number Removal
+      metric_type: rate
+      target: 1.0
+      operator: ">="
+      blocking: true
+      description: Rate of page numbers removed
+      tags: [cleaner, continuity]
+
+    toc_entry_removal_rate:
+      display_name: TOC Entry Removal
+      metric_type: rate
+      target: 1.0
+      operator: ">="
+      blocking: true
+      description: Rate of TOC entries removed
+      tags: [cleaner, continuity]
+
+    sentence_preservation_rate:
+      display_name: Sentence Preservation
+      metric_type: rate
+      target: 0.95
+      operator: ">="
+      blocking: true
+      description: Rate of sentences preserved after cleaning
+      tags: [cleaner, continuity]
+
+    word_count_ratio:
+      display_name: Word Count Ratio
+      metric_type: range
+      min_value: 0.85
+      max_value: 0.99
+      blocking: false
+      description: Ratio of words after/before cleaning
+      tags: [cleaner, continuity]
+
+  # -------------------------
+  # Segmentation Distribution
+  # -------------------------
+  segmentation_distribution:
+    segment_count_min:
+      display_name: Minimum Segments
+      metric_type: count
+      target: 5
+      operator: ">="
+      blocking: false
+      description: Minimum segment count per document
+      tags: [segmenter, distribution]
+
+    segment_count_max:
+      display_name: Maximum Segments
+      metric_type: count
+      target: 50
+      operator: "<="
+      blocking: false
+      description: Maximum segment count per document
+      tags: [segmenter, distribution]
+
+    gini_coefficient:
+      display_name: Length Distribution (Gini)
+      metric_type: score
+      target: 0.5
+      operator: "<="
+      blocking: false
+      description: Gini coefficient for segment length distribution (lower is better)
+      tags: [segmenter, distribution]
+
+    length_cv:
+      display_name: Length Coefficient of Variation
+      metric_type: score
+      target: 1.0
+      operator: "<="
+      blocking: false
+      description: std(lengths) / mean(lengths), lower means more uniform
+      tags: [segmenter, distribution]
+
+    min_max_length_ratio:
+      display_name: Min/Max Length Ratio
+      metric_type: rate
+      target: 0.1
+      operator: ">="
+      blocking: false
+      description: min(lengths) / max(lengths), higher means no extreme outliers
+      tags: [segmenter, distribution]
+
+  # -------------------------
+  # Segmentation Quality
+  # -------------------------
+  segmentation_quality:
+    fallback_rate:
+      display_name: Fallback Rate
+      metric_type: rate
+      target: 0.30
+      operator: "<="
+      blocking: false
+      description: Rate of documents using paragraph fallback segmentation
+      tags: [segmenter, quality]
+
+    min_length_filter_pass:
+      display_name: Min Length Filter
+      metric_type: boolean
+      target: true
+      blocking: true
+      description: All segments meet minimum length requirement
+      tags: [segmenter, quality]
+
+    word_count_filter_pass:
+      display_name: Word Count Filter
+      metric_type: boolean
+      target: true
+      blocking: true
+      description: All segments have >= 10 words
+      tags: [segmenter, quality]
+
+    non_risk_filter_precision:
+      display_name: Non-Risk Filter Precision
+      metric_type: rate
+      target: 0.95
+      operator: ">="
+      blocking: false
+      description: Precision of non-risk content filtering (avoid false positives)
+      tags: [segmenter, quality]

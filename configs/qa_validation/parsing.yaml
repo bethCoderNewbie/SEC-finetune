@@ -1,0 +1,61 @@
+# ============================================
+# QA Validation - SEC Parser Thresholds
+# ============================================
+# Thresholds for SECFilingParser performance and stability
+# Source: thoughts/shared/research/2025-12-03_19-45_parser_qa_metrics.md
+
+categories:
+  parser_performance:
+    display_name: Parser Performance
+    description: Latency and throughput thresholds for parsing
+
+  parser_stability:
+    display_name: Parser Stability
+    description: Error rate and idempotency thresholds
+
+thresholds:
+  # -------------------------
+  # Parser Performance
+  # -------------------------
+  parser_performance:
+    parsing_latency_p95:
+      display_name: P95 Parsing Latency
+      metric_type: latency
+      unit: seconds
+      target: 5.0
+      operator: "<="
+      warn_threshold: 4.0
+      blocking: true
+      description: 95th percentile parsing latency per document
+      tags: [parser, performance, latency]
+
+    throughput_mb_per_second:
+      display_name: Throughput
+      metric_type: range
+      unit: MB/s
+      min_value: 1.0
+      target: 2.0
+      blocking: false
+      description: Data processing throughput
+      tags: [parser, performance, throughput]
+
+  # -------------------------
+  # Parser Stability
+  # -------------------------
+  parser_stability:
+    error_rate:
+      display_name: Error Rate
+      metric_type: rate
+      target: 0.01
+      operator: "<="
+      blocking: true
+      description: Rate of parsing errors
+      tags: [parser, stability]
+
+    idempotency:
+      display_name: Idempotency
+      metric_type: boolean
+      target: true
+      blocking: true
+      description: Same file produces identical output on repeated parsing
+      tags: [parser, stability]

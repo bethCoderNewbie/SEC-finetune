@@ -1,0 +1,128 @@
+# ============================================
+# QA Validation - Data Health Check Thresholds
+# ============================================
+# Thresholds for preprocessing output data quality validation
+# Source: thoughts/shared/research/2025-12-20_14-30_data_health_check_architecture.md
+#
+# Framework:
+#   1. Completeness - Are required fields present?
+#   2. Cleanliness - Is the noise removed?
+#   3. Substance - Is the content meaningful?
+#   4. Consistency - Is the data usable?
+
+categories:
+  identity_completeness:
+    display_name: Identity Completeness
+    description: Required identity fields validation (CIK, company name, SIC)
+
+  data_cleanliness:
+    display_name: Data Cleanliness
+    description: Artifact-free content validation (no HTML, page numbers)
+
+  content_substance:
+    display_name: Content Substance
+    description: Meaningful content validation (segment length, word count)
+
+  domain_rules:
+    display_name: Domain Rules
+    description: SEC-specific business logic (duplicates, risk keywords)
+
+thresholds:
+  # -------------------------
+  # Identity Completeness
+  # -------------------------
+  identity_completeness:
+    cik_present_rate:
+      display_name: CIK Present Rate
+      metric_type: rate
+      target: 1.0
+      operator: ">="
+      blocking: true
+      description: All files must have CIK (Central Index Key)
+      tags: [identity, schema, blocking, health_check]
+
+    company_name_present_rate:
+      display_name: Company Name Present Rate
+      metric_type: rate
+      target: 1.0
+      operator: ">="
+      blocking: true
+      description: All files must have company name
+      tags: [identity, schema, blocking, health_check]
+
+    sic_code_present_rate:
+      display_name: SIC Code Present Rate
+      metric_type: rate
+      target: 0.95
+      operator: ">="
+      warn_threshold: 0.90
+      blocking: false
+      description: 95% of files should have SIC code for sector analysis
+      tags: [identity, schema, health_check]
+
+  # -------------------------
+  # Data Cleanliness
+  # -------------------------
+  data_cleanliness:
+    html_artifact_rate:
+      display_name: HTML Artifact Rate
+      metric_type: rate
+      target: 0.0
+      operator: "=="
+      blocking: true
+      description: No HTML tags should remain in segment text
+      tags: [cleanliness, blocking, health_check]
+
+    page_number_artifact_rate:
+      display_name: Page Number Artifact Rate
+      metric_type: rate
+      target: 0.0
+      operator: "=="
+      warn_threshold: 0.01
+      blocking: false
+      description: No page number artifacts should remain
+      tags: [cleanliness, health_check]
+
+  # -------------------------
+  # Content Substance
+  # -------------------------
+  content_substance:
+    empty_segment_rate:
+      display_name: Empty Segment Rate
+      metric_type: rate
+      target: 0.0
+      operator: "=="
+      blocking: true
+      description: No empty segments allowed (zero-length text)
+      tags: [substance, blocking, health_check]
+
+    short_segment_rate:
+      display_name: Short Segment Rate
+      metric_type: rate
+      target: 0.05
+      operator: "<="
+      warn_threshold: 0.10
+      blocking: false
+      description: Max 5% segments below minimum length (50 chars)
+      tags: [substance, health_check]
+
+  # -------------------------
+  # Domain Rules
+  # -------------------------
+  domain_rules:
+    duplicate_rate:
+      display_name: Duplicate Rate
+      metric_type: rate
+      target: 0.0
+      operator: "=="
+      blocking: true
+      description: No duplicate filings allowed (hash-based detection)
+      tags: [domain, blocking, health_check]
+
+    risk_keyword_present:
+      display_name: Risk Keyword Present
+      metric_type: boolean
+      target: true
+      blocking: false
+      description: Risk Factors section should contain risk-related keywords
+      tags: [domain, health_check]

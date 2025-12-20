@@ -1,0 +1,97 @@
+# ============================================
+# QA Validation - Section Extraction Thresholds
+# ============================================
+# Thresholds for SECSectionExtractor and content quality validation
+# Source: thoughts/shared/research/2025-12-03_19-16_extractor_qa_metrics.md
+
+categories:
+  extraction_accuracy:
+    display_name: Extraction Accuracy
+    description: Thresholds for section extraction correctness
+
+  content_quality:
+    display_name: Content Quality
+    description: Thresholds for extracted content cleanliness
+
+thresholds:
+  # -------------------------
+  # Extraction Accuracy
+  # -------------------------
+  extraction_accuracy:
+    section_boundary_precision_start:
+      display_name: Section Start Precision
+      metric_type: rate
+      target: 1.0
+      operator: ">="
+      blocking: true
+      description: Accuracy of section start boundary detection
+      tags: [extractor, boundary, precision]
+
+    section_boundary_precision_end:
+      display_name: Section End Precision
+      metric_type: rate
+      target: 0.95
+      operator: ">="
+      warn_threshold: 0.90
+      blocking: true
+      description: Accuracy of section end boundary detection
+      tags: [extractor, boundary, precision]
+
+    key_item_recall:
+      display_name: Key Item Recall
+      metric_type: rate
+      target: 0.99
+      operator: ">="
+      blocking: true
+      description: Recall of required regulatory sections (Item 1, 1A, 7, 7A)
+      tags: [extractor, recall]
+
+    false_positive_rate:
+      display_name: Ghost Section Rate
+      metric_type: rate
+      target: 0.01
+      operator: "<="
+      blocking: false
+      description: Rate of incorrectly detected sections
+      tags: [extractor, precision]
+
+  # -------------------------
+  # Content Quality
+  # -------------------------
+  content_quality:
+    toc_filtering_rate:
+      display_name: ToC Filtering Rate
+      metric_type: rate
+      target: 1.0
+      operator: ">="
+      blocking: true
+      description: Rate of Table of Contents entries filtered
+      tags: [cleaner, quality]
+
+    page_header_filtering_rate:
+      display_name: Page Header Removal
+      metric_type: rate
+      target: 1.0
+      operator: ">="
+      blocking: true
+      description: Rate of page headers correctly removed
+      tags: [extractor, quality]
+
+    subsection_classification_accuracy:
+      display_name: Subsection Classification
+      metric_type: rate
+      target: 0.95
+      operator: ">="
+      warn_threshold: 0.80
+      blocking: true
+      description: Accuracy of subsection vs page header classification
+      tags: [extractor, quality]
+
+    noise_to_signal_ratio:
+      display_name: Noise-to-Signal Ratio
+      metric_type: rate
+      target: 0.05
+      operator: "<="
+      blocking: false
+      description: Ratio of non-content to content in extracted text
+      tags: [extractor, quality]

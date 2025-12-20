@@ -1,0 +1,105 @@
+# ============================================
+# QA Validation - Feature Extraction Thresholds
+# ============================================
+# Thresholds for Sentiment Analysis and Readability Analysis validation
+# Source: thoughts/shared/research/2025-12-03_21-32_sentiment_readability_qa_metrics.md
+
+categories:
+  sentiment_analysis:
+    display_name: Sentiment Analysis
+    description: Dictionary coverage and feature extraction
+
+  readability_analysis:
+    display_name: Readability Analysis
+    description: Index accuracy and score validation
+
+thresholds:
+  # -------------------------
+  # Sentiment Analysis
+  # -------------------------
+  sentiment_analysis:
+    lm_dictionary_word_count:
+      display_name: LM Dictionary Size
+      metric_type: count
+      target: 4000
+      operator: ">="
+      blocking: true
+      description: Loughran-McDonald dictionary word count
+      tags: [sentiment, dictionary]
+
+    category_coverage:
+      display_name: Category Coverage
+      metric_type: count
+      target: 8
+      operator: ">="
+      blocking: true
+      description: Number of sentiment categories covered
+      tags: [sentiment, dictionary]
+
+    dictionary_load_time:
+      display_name: Dictionary Load Time
+      metric_type: latency
+      unit: seconds
+      target: 0.5
+      operator: "<="
+      blocking: false
+      description: Time to load LM dictionary (with pickle cache)
+      tags: [sentiment, performance]
+
+    feature_field_count:
+      display_name: Sentiment Feature Count
+      metric_type: count
+      target: 30
+      operator: ">="
+      blocking: true
+      description: Number of sentiment features extracted
+      tags: [sentiment, features]
+
+  # -------------------------
+  # Readability Analysis
+  # -------------------------
+  readability_analysis:
+    standard_index_count:
+      display_name: Standard Index Count
+      metric_type: count
+      target: 6
+      operator: ">="
+      blocking: true
+      description: Number of standard readability indices (FK, Fog, SMOG, etc.)
+      tags: [readability, indices]
+
+    financial_adjustment_word_count:
+      display_name: Financial Adjustment Words
+      metric_type: count
+      target: 200
+      operator: ">="
+      blocking: true
+      description: Financial domain words excluded from complexity
+      tags: [readability, adjustments]
+
+    obfuscation_score_range_min:
+      display_name: Obfuscation Score Min
+      metric_type: count
+      target: 0
+      operator: ">="
+      blocking: true
+      description: Minimum obfuscation score
+      tags: [readability, scores]
+
+    obfuscation_score_range_max:
+      display_name: Obfuscation Score Max
+      metric_type: count
+      target: 100
+      operator: "<="
+      blocking: true
+      description: Maximum obfuscation score
+      tags: [readability, scores]
+
+    readability_feature_count:
+      display_name: Readability Feature Count
+      metric_type: count
+      target: 22
+      operator: ">="
+      blocking: true
+      description: Number of readability features extracted
+      tags: [readability, features]
