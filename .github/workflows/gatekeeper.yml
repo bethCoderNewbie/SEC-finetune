@@ -1,0 +1,231 @@
+name: Data Quality Gatekeeper
+
+# Trigger: Manual dispatch (recommended for control)
+# Can be triggered via GitHub UI or by adding workflow_run trigger below
+on:
+  workflow_dispatch:
+    inputs:
+      run_dir:
+        description: 'Run directory path (e.g., data/processed/20251228_143022_preprocessing_ea45dd2)'
+        required: true
+        type: string
+
+# Alternative trigger: Automatically after preprocessing completes
+# Uncomment to enable automatic triggering
+# on:
+#   workflow_run:
+#     workflows: ["CI"]
+#     types: [completed]
+#     branches: [main]
+
+jobs:
+  gatekeeper:
+    runs-on: ubuntu-latest
+    name: Validate Data Quality
+
+    steps:
+      # Step 1: Checkout repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for git operations
+
+      # Step 2: Setup Python environment
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Step 3: Install validation dependencies
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pydantic pydantic-settings pyyaml
+
+      # Step 4: Run data quality validation
+      # Exit code: 0 = PASS, 1 = FAIL (supports pipeline blocking)
+      - name: Run gatekeeper validation
+        id: validate
+        continue-on-error: true  # Capture report even if validation fails
+        run: |
+          python scripts/validation/data_quality/check_preprocessing_batch.py \
+            --run-dir "${{ github.event.inputs.run_dir }}" \
+            --max-workers 8 \
+            --output gatekeeper_report.json \
+            --fail-on-warn \
+            --verbose
+
+      # Step 5: Parse validation report
+      # Extracts status for conditional downstream logic
+      - name: Parse validation report
+        if: always()
+        run: |
+          python3 << 'EOF'
+          import json
+          import sys
+
+          with open('gatekeeper_report.json', 'r') as f:
+              report = json.load(f)
+
+          status = report.get('status', 'ERROR')
+          all_pass = report.get('blocking_summary', {}).get('all_pass', False)
+          total_files = report.get('total_files', 0)
+          failed_checks = report.get('blocking_summary', {}).get('failed', 0)
+
+          # Write to environment for use in later steps
+          with open('validation_status.txt', 'w') as env_file:
+              env_file.write(f'STATUS={status}\n')
+              env_file.write(f'ALL_PASS={all_pass}\n')
+              env_file.write(f'TOTAL_FILES={total_files}\n')
+              env_file.write(f'FAILED_CHECKS={failed_checks}\n')
+
+          print(f"Validation Status: {status}")
+          print(f"All blocking checks passed: {all_pass}")
+          print(f"Total files validated: {total_files}")
+          print(f"Failed checks: {failed_checks}")
+          EOF
+
+      # Step 6: Load status into environment variables
+      - name: Load validation status
+        if: always()
+        run: |
+          cat validation_status.txt >> $GITHUB_ENV
+
+      # Step 7: Upload validation report as artifact
+      # Enables access to detailed report for audit/debugging
+      - name: Upload validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gatekeeper-report-${{ github.run_id }}
+          path: gatekeeper_report.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      # Step 8: Create GitHub issue on validation failure (DISABLED - Testing Mode)
+      # Automatic notification for data quality issues
+      # Uncomment when ready to enforce gatekeeper in production
+      # - name: Create issue on validation failure
+      #   if: failure() || env.STATUS == 'FAIL'
+      #   uses: actions/github-script@v7
+      #   with:
+      #     script: |
+      #       const fs = require('fs');
+      #       const report = JSON.parse(fs.readFileSync('gatekeeper_report.json', 'utf-8'));
+      #
+      #       const failedChecks = report.validation_table
+      #         .filter(check => check.status !== 'PASS')
+      #         .map(check => `- **${check.display_name}**: ${check.actual} vs target ${check.target}`)
+      #         .join('\n');
+      #
+      #       const body = `## 🚨 Data Quality Gate Failed
+      #
+      # **Validation Status:** ${report.status}
+      # **Run Directory:** \`${report.run_directory}\`
+      # **Files Checked:** ${report.total_files}
+      # **Timestamp:** ${report.timestamp}
+      #
+      # ### Blocking Checks Summary
+      # - Total: ${report.blocking_summary.total_blocking}
+      # - ✅ Passed: ${report.blocking_summary.passed}
+      # - ❌ Failed: ${report.blocking_summary.failed}
+      # - ⚠️ Warned: ${report.blocking_summary.warned}
+      #
+      # ### Failed Checks
+      # ${failedChecks || 'None (infrastructure error)'}
+      #
+      # ### File Status Summary
+      # - ✅ Passed: ${report.overall_summary.passed}
+      # - ⚠️ Warned: ${report.overall_summary.warned}
+      # - ❌ Failed: ${report.overall_summary.failed}
+      # - 🔥 Errors: ${report.overall_summary.errors}
+      #
+      # ### Recommended Actions
+      # 1. Review failed checks above
+      # 2. Identify root cause (parser issue, cleaner issue, etc.)
+      # 3. Re-run preprocessing with corrected configuration
+      # 4. Run gatekeeper validation again
+      # 5. Merge when validation passes
+      #
+      # **Run Details:** [GitHub Actions Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+      # `;
+      #
+      #       await github.rest.issues.create({
+      #         owner: context.repo.owner,
+      #         repo: context.repo.repo,
+      #         title: `🚨 Data Quality Gate Failed: ${report.status}`,
+      #         body: body,
+      #         labels: ['data-quality', 'validation-failure', 'gatekeeper'],
+      #         # assignees: ['username1', 'username2']  # Use actual GitHub usernames, not @mentions
+      #       });
+
+      # Step 9: Report validation to GitHub Step Summary
+      # Visible in workflow summary and PR details
+      - name: Report to GitHub summary
+        if: always()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          ## Gatekeeper Validation Report
+
+          | Metric | Value |
+          |--------|-------|
+          | Status | ${{ env.STATUS }} |
+          | Files Checked | ${{ env.TOTAL_FILES }} |
+          | Blocking Checks Passed | ✅ |
+          | Blocking Checks Failed | ${{ env.FAILED_CHECKS }} |
+
+          [View Full Report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+
+      # Step 10: Final gatekeeper decision (TESTING MODE - Non-blocking)
+      # Controls pipeline progression and PR merge blockage
+      # NOTE: In testing mode, all statuses return exit 0 (non-blocking)
+      # To enable blocking: Change FAIL/ERROR/UNKNOWN cases to 'exit 1'
+      - name: Gatekeeper decision
+        if: always()
+        run: |
+          case "${{ env.STATUS }}" in
+            PASS)
+              echo "✅ GATE OPEN - Data validation passed. Pipeline can proceed." >> $GITHUB_STEP_SUMMARY
+              exit 0
+              ;;
+            WARN)
+              echo "⚠️  GATE CONDITIONAL - Data validation passed with warnings." >> $GITHUB_STEP_SUMMARY
+              exit 0  # Allow progression but flag for review
+              ;;
+            FAIL)
+              echo "❌ GATE CLOSED - Data validation failed. (TESTING MODE: Non-blocking)" >> $GITHUB_STEP_SUMMARY
+              exit 0  # TESTING MODE: Change to 'exit 1' to block pipeline
+              ;;
+            ERROR)
+              echo "🔥 GATE ERROR - Validation infrastructure failed. (TESTING MODE: Non-blocking)" >> $GITHUB_STEP_SUMMARY
+              exit 0  # TESTING MODE: Change to 'exit 1' to block on errors
+              ;;
+            *)
+              echo "❓ GATE UNKNOWN - Unexpected validation status. (TESTING MODE: Non-blocking)" >> $GITHUB_STEP_SUMMARY
+              exit 0  # TESTING MODE: Change to 'exit 1' to block on unknown status
+              ;;
+          esac
+
+# Post-workflow notifications (optional)
+# To use: Add secrets and uncomment steps in gatekeeper job above
+
+# Example Slack notification configuration:
+#      - name: Notify Slack on failure
+#        if: failure()
+#        uses: slackapi/slack-github-action@v1
+#        with:
+#          webhook-url: ${{ secrets.SLACK_WEBHOOK }}
+#          payload: |
+#            {
+#              "text": "⚠️ Gatekeeper Validation Failed",
+#              "blocks": [
+#                {
+#                  "type": "section",
+#                  "text": {
+#                    "type": "mrkdwn",
+#                    "text": "*Data Quality Gate Failed*\nRun: ${{ github.run_id }}\nRepository: ${{ github.repository }}"
+#                  }
+#                }
+#              ]
+#            }
