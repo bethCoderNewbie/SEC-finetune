@@ -5,7 +5,7 @@ This script helps you validate that your Item 1A corpus meets the requirements
 for optimal LDA training before investing time in model training.
 
 Usage:
-    python scripts/04_feature_engineering/validate_topic_modeling_corpus.py
+    python scripts/feature_engineering/validate_topic_modeling_corpus.py
 """
 
 import json

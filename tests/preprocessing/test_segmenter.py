@@ -1,9 +1,10 @@
 """
 Tests for RiskSegmenter - validating risk factor segmentation quality using real SEC filing data.
 
-Uses actual data from:
-- data/processed/*_segmented_risks.json (segmented risk factors)
-- data/interim/extracted/*_extracted_risks.json (source text for re-segmentation tests)
+Uses centralized fixtures from conftest.py for dynamic path resolution:
+- segmented_data: Loaded segmented risk data from latest preprocessing run
+- extracted_data: Loaded extracted risk data for re-segmentation tests
+- segmenter: RiskSegmenter instance
 
 Categories:
 1. Segmentation Distribution - segment counts, length consistency (Gini)
@@ -11,40 +12,20 @@ Categories:
 3. Semantic Quality - filtering, non-risk content rejection
 """
 
-import json
 import re
-from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict
+
 import pytest
 
+from src.config.testing import TestMetricsConfig
+from src.config.qa_validation import (
+    ThresholdRegistry,
+    ValidationResult,
+    generate_validation_table,
+    generate_blocking_summary,
+    determine_overall_status,
+)
 from src.preprocessing.segmenter import RiskSegmenter, segment_risk_factors
-
-
-# Data directories
-DATA_DIR = Path(__file__).parent.parent.parent / "data"
-PROCESSED_DIR = DATA_DIR / "processed"
-EXTRACTED_DIR = DATA_DIR / "interim" / "extracted"
-
-
-def get_segmented_files() -> List[Path]:
-    """Get all segmented risk files."""
-    return list(PROCESSED_DIR.glob("*_segmented_risks.json"))
-
-
-def get_extracted_files() -> List[Path]:
-    """Get all extracted risk files for re-segmentation tests."""
-    files = list(EXTRACTED_DIR.glob("*_extracted_risks.json"))
-    # Also check v1_ subdirectory
-    v1_dir = EXTRACTED_DIR / "v1_"
-    if v1_dir.exists():
-        files.extend(v1_dir.glob("*_extracted_risks.json"))
-    return files
-
-
-def load_json(filepath: Path) -> Dict[str, Any]:
-    """Load JSON file."""
-    with open(filepath, 'r', encoding='utf-8') as f:
-        return json.load(f)
 
 
 def calculate_gini(lengths: List[int]) -> float:
@@ -60,34 +41,14 @@ def calculate_gini(lengths: List[int]) -> float:
     return (2 * cumsum) / (n * total) - (n + 1) / n
 
 
-@pytest.fixture(scope="module")
-def segmented_data() -> List[Dict[str, Any]]:
-    """Load all segmented risk data."""
-    files = get_segmented_files()
-    if not files:
-        pytest.skip("No segmented data files found")
-    return [load_json(f) for f in files[:10]]  # Limit to 10 for speed
-
-
-@pytest.fixture(scope="module")
-def extracted_data() -> List[Dict[str, Any]]:
-    """Load extracted risk data for re-segmentation tests."""
-    files = get_extracted_files()
-    if not files:
-        pytest.skip("No extracted data files found")
-    return [load_json(f) for f in files[:5]]  # Limit to 5 for speed
-
-
-@pytest.fixture
-def segmenter():
-    return RiskSegmenter()
-
-
 class TestSegmenterDistributionWithRealData:
     """Tests for segmentation distribution metrics using real SEC filing data."""
 
     def test_segment_count_range(self, segmented_data: List[Dict]):
         """Verify segment count is within expected range (5-100) for 10-K filings."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         for doc in segmented_data:
             num_segments = doc.get("num_segments", len(doc.get("segments", [])))
             assert num_segments >= 5, (
@@ -99,6 +60,9 @@ class TestSegmenterDistributionWithRealData:
 
     def test_non_empty_segmentation(self, segmented_data: List[Dict]):
         """Verify all processed files have segments."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         for doc in segmented_data:
             segments = doc.get("segments", [])
             assert len(segments) > 0, (
@@ -107,6 +71,9 @@ class TestSegmenterDistributionWithRealData:
 
     def test_gini_coefficient_balanced(self, segmented_data: List[Dict]):
         """Verify segment lengths are balanced (Gini < 0.7)."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         for doc in segmented_data:
             segments = doc.get("segments", [])
             if len(segments) < 2:
@@ -122,6 +89,9 @@ class TestSegmenterDistributionWithRealData:
 
     def test_min_max_ratio(self, segmented_data: List[Dict]):
         """Verify no extreme outliers (min/max ratio > 0.01)."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         for doc in segmented_data:
             segments = doc.get("segments", [])
             if len(segments) < 2:
@@ -139,6 +109,9 @@ class TestSegmenterDistributionWithRealData:
 
     def test_average_segment_length(self, segmented_data: List[Dict]):
         """Verify average segment length is reasonable."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         for doc in segmented_data:
             segments = doc.get("segments", [])
             if not segments:
@@ -158,6 +131,9 @@ class TestSegmenterMetadataWithRealData:
 
     def test_segment_has_required_fields(self, segmented_data: List[Dict]):
         """Verify each segment has required fields."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         required_fields = {"id", "text", "length", "word_count"}
         for doc in segmented_data:
             segments = doc.get("segments", [])
@@ -169,6 +145,9 @@ class TestSegmenterMetadataWithRealData:
 
     def test_segment_length_matches_text(self, segmented_data: List[Dict]):
         """Verify segment length field matches actual text length."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         for doc in segmented_data:
             segments = doc.get("segments", [])
             for i, seg in enumerate(segments):
@@ -181,6 +160,9 @@ class TestSegmenterMetadataWithRealData:
 
     def test_segment_word_count_accurate(self, segmented_data: List[Dict]):
         """Verify segment word count is reasonably accurate."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         for doc in segmented_data:
             segments = doc.get("segments", [])
             for i, seg in enumerate(segments):
@@ -196,6 +178,9 @@ class TestSegmenterMetadataWithRealData:
 
     def test_segment_ids_sequential(self, segmented_data: List[Dict]):
         """Verify segment IDs are sequential starting from 1."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         for doc in segmented_data:
             segments = doc.get("segments", [])
             ids = [s.get("id") for s in segments]
@@ -210,6 +195,9 @@ class TestSegmenterQualityWithRealData:
 
     def test_segments_have_substantive_content(self, segmented_data: List[Dict]):
         """Verify segments contain substantive risk content."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         risk_keywords = [
             'risk', 'adverse', 'material', 'significant', 'could',
             'may', 'operations', 'business', 'financial', 'impact'
@@ -230,6 +218,9 @@ class TestSegmenterQualityWithRealData:
 
     def test_no_empty_segments(self, segmented_data: List[Dict]):
         """Verify no segments have empty or whitespace-only text."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         for doc in segmented_data:
             segments = doc.get("segments", [])
             for i, seg in enumerate(segments):
@@ -240,6 +231,9 @@ class TestSegmenterQualityWithRealData:
 
     def test_min_word_count_enforcement(self, segmented_data: List[Dict]):
         """Verify segments have minimum word count."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         min_words = 5  # Relaxed threshold for real data
         for doc in segmented_data:
             segments = doc.get("segments", [])
@@ -251,6 +245,9 @@ class TestSegmenterQualityWithRealData:
 
     def test_segments_have_sentence_structure(self, segmented_data: List[Dict]):
         """Verify segments have proper sentence structure."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         for doc in segmented_data:
             segments = doc.get("segments", [])
             segments_with_sentences = 0
@@ -273,6 +270,9 @@ class TestSegmenterSentimentWithRealData:
 
     def test_sentiment_fields_present(self, segmented_data: List[Dict]):
         """Verify sentiment fields are present when enabled."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         for doc in segmented_data:
             if not doc.get("sentiment_analysis_enabled", False):
                 continue
@@ -292,6 +292,9 @@ class TestSegmenterSentimentWithRealData:
 
     def test_sentiment_ratios_valid(self, segmented_data: List[Dict]):
         """Verify sentiment ratios are between 0 and 1."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         for doc in segmented_data:
             if not doc.get("sentiment_analysis_enabled", False):
                 continue
@@ -307,6 +310,9 @@ class TestSegmenterSentimentWithRealData:
 
     def test_aggregate_sentiment_consistent(self, segmented_data: List[Dict]):
         """Verify aggregate sentiment matches segment averages."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         for doc in segmented_data:
             if not doc.get("sentiment_analysis_enabled", False):
                 continue
@@ -331,8 +337,11 @@ class TestSegmenterSentimentWithRealData:
 class TestSegmenterReprocessingWithRealData:
     """Tests for re-segmenting extracted data using RiskSegmenter."""
 
-    def test_segmenter_on_extracted_text(self, segmenter, extracted_data: List[Dict]):
+    def test_segmenter_on_extracted_text(self, segmenter: RiskSegmenter, extracted_data: List[Dict]):
         """Test RiskSegmenter produces valid output on real extracted text."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
+
         for doc in extracted_data[:3]:  # Limit for speed
             text = doc.get("text", "")
             if len(text) < 100:
@@ -348,8 +357,11 @@ class TestSegmenterReprocessingWithRealData:
             # All segments should be strings
             assert all(isinstance(s, str) for s in segments), "Segments should be strings"
 
-    def test_segmenter_preserves_content(self, segmenter, extracted_data: List[Dict]):
+    def test_segmenter_preserves_content(self, segmenter: RiskSegmenter, extracted_data: List[Dict]):
         """Test that segmenter preserves key content."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
+
         for doc in extracted_data[:3]:
             text = doc.get("text", "")
             if len(text) < 100:
@@ -362,7 +374,7 @@ class TestSegmenterReprocessingWithRealData:
             if "risk" in text.lower():
                 assert "risk" in combined.lower(), "Lost 'risk' keyword during segmentation"
 
-    def test_empty_input_handling(self, segmenter):
+    def test_empty_input_handling(self, segmenter: RiskSegmenter):
         """Verify empty input returns empty list."""
         assert segmenter.segment_risks("") == []
         assert segmenter.segment_risks("   ") == []
@@ -387,6 +399,9 @@ class TestSegmenterFilingMetadata:
 
     def test_filing_metadata_present(self, segmented_data: List[Dict]):
         """Verify filing metadata is present."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         required_fields = {"filing_name", "section_identifier", "num_segments"}
         for doc in segmented_data:
             missing = required_fields - set(doc.keys())
@@ -396,6 +411,9 @@ class TestSegmenterFilingMetadata:
 
     def test_num_segments_accurate(self, segmented_data: List[Dict]):
         """Verify num_segments matches actual segment count."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         for doc in segmented_data:
             reported = doc.get("num_segments", 0)
             actual = len(doc.get("segments", []))
@@ -406,14 +424,20 @@ class TestSegmenterFilingMetadata:
 
     def test_segmentation_settings_present(self, segmented_data: List[Dict]):
         """Verify segmentation settings are recorded."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         for doc in segmented_data:
-            settings = doc.get("segmentation_settings", {})
-            assert "min_segment_length" in settings, (
+            doc_settings = doc.get("segmentation_settings", {})
+            assert "min_segment_length" in doc_settings, (
                 f"{doc.get('filing_name')}: Missing min_segment_length in settings"
             )
 
     def test_section_identifier_valid(self, segmented_data: List[Dict]):
         """Verify section identifier is valid."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         valid_identifiers = {"part1item1a", "item1a", "risk_factors"}
         for doc in segmented_data:
             identifier = doc.get("section_identifier", "").lower()
@@ -429,6 +453,9 @@ class TestSegmenterCrossFilingConsistency:
 
     def test_similar_companies_similar_segment_counts(self, segmented_data: List[Dict]):
         """Verify segment counts are within reasonable range across filings."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         segment_counts = [
             doc.get("num_segments", len(doc.get("segments", [])))
             for doc in segmented_data
@@ -449,6 +476,9 @@ class TestSegmenterCrossFilingConsistency:
 
     def test_tickers_extracted_correctly(self, segmented_data: List[Dict]):
         """Verify ticker symbols are properly extracted."""
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
         for doc in segmented_data:
             ticker = doc.get("ticker", "")
             filing_name = doc.get("filing_name", "")
@@ -461,3 +491,264 @@ class TestSegmenterCrossFilingConsistency:
             assert ticker in filing_name, (
                 f"Ticker {ticker} not found in filing_name {filing_name}"
             )
+
+
+class TestSegmenterMetricsReport:
+    """Generate segmentation quality metrics report for validation."""
+
+    def test_generate_segmentation_metrics(
+        self,
+        segmented_data: List[Dict],
+        save_test_artifact,
+        test_artifact_dir
+    ):
+        """Generate comprehensive segmentation metrics report.
+
+        Saves metrics to persistent test output for QA review and trend analysis.
+        Uses TestMetricsConfig for standardized field names and structure.
+        """
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
+        # Collect metrics across all filings
+        segment_counts = []
+        word_counts = []
+        sentiment_scores = []
+        filings_analyzed = []
+
+        for doc in segmented_data:
+            segments = doc.get("segments", [])
+            num_segments = doc.get("num_segments", len(segments))
+            segment_counts.append(num_segments)
+
+            # Word counts per segment
+            for seg in segments:
+                word_counts.append(seg.get("word_count", 0))
+
+            # Sentiment metrics
+            aggregate = doc.get("aggregate_sentiment", {})
+            if aggregate:
+                sentiment_scores.append({
+                    "ticker": doc.get("ticker", "unknown"),
+                    "avg_negative_ratio": aggregate.get("avg_negative_ratio", 0),
+                    "avg_uncertainty_ratio": aggregate.get("avg_uncertainty_ratio", 0),
+                })
+
+            filings_analyzed.append({
+                "ticker": doc.get("ticker", "unknown"),
+                "filing_name": doc.get("filing_name", "unknown"),
+                "num_segments": num_segments,
+            })
+
+        # Use TestMetricsConfig for standardized metrics
+        segment_stats = TestMetricsConfig.stats_summary(
+            [float(c) for c in segment_counts],
+            label="segments"
+        )
+        word_stats = TestMetricsConfig.stats_summary(
+            [float(w) for w in word_counts],
+            label="words"
+        )
+
+        # Determine status based on having meaningful segmentation
+        avg_segments = segment_stats.get("segments_avg", 0)
+        status = TestMetricsConfig.determine_status(
+            min(1.0, avg_segments / 10),  # Pass if avg >= 10 segments
+            pass_threshold=1.0,
+            warn_threshold=0.5
+        )
+
+        # Create standardized report using TestMetricsConfig
+        metrics_report = TestMetricsConfig.create_report(
+            test_name="segmentation_quality",
+            summary={
+                "total_filings": len(segmented_data),
+                **segment_stats,
+                **TestMetricsConfig.count_metrics(
+                    total=len(segmented_data),
+                    processed=len([d for d in segmented_data if d.get("segments")]),
+                    errors=0
+                ),
+            },
+            status=status
+        )
+
+        # Add detailed metrics
+        metrics_report["word_count_stats"] = word_stats
+        metrics_report["sentiment_by_filing"] = sentiment_scores
+        metrics_report["filings_analyzed"] = filings_analyzed
+
+        # Save metrics to persistent output
+        report_path = save_test_artifact("segmentation_metrics.json", metrics_report)
+
+        # Print summary
+        print(f"\n{'='*60}")
+        print("SEGMENTATION METRICS REPORT")
+        print(f"{'='*60}")
+        print(f"Status: {metrics_report[TestMetricsConfig.FIELD_STATUS]}")
+        print(f"Total filings analyzed: {metrics_report['summary']['total_filings']}")
+        print(f"Total segments: {segment_stats.get('segments_total', 0)}")
+        print(f"Avg segments per filing: {segment_stats.get('segments_avg', 0):.1f}")
+        print(f"Avg words per segment: {word_stats.get('words_avg', 0):.0f}")
+        print(f"{'='*60}")
+        print(f"Report saved to: {report_path}")
+        print(f"Artifact directory: {test_artifact_dir}")
+
+        # Basic validation
+        assert metrics_report["summary"]["total_filings"] > 0
+        assert segment_stats.get("segments_avg", 0) > 0
+
+    def test_segmentation_qa_validation(
+        self,
+        segmented_data: List[Dict],
+        save_test_artifact,
+        test_artifact_dir
+    ):
+        """
+        Validate segmentation against QA thresholds from config.yaml.
+
+        This test demonstrates the flexible qa_validation system:
+        1. Measures actual values from segmented data
+        2. Validates against thresholds defined in configs/config.yaml
+        3. Generates Go/No-Go validation table
+        4. Saves comprehensive report for QA review
+
+        Thresholds can be modified in config.yaml without changing test code.
+        """
+        if not segmented_data:
+            pytest.skip("No segmented data available")
+
+        # Collect measurements
+        segment_counts = []
+        word_counts = []
+
+        for doc in segmented_data:
+            segments = doc.get("segments", [])
+            num_segments = doc.get("num_segments", len(segments))
+            segment_counts.append(num_segments)
+
+            for seg in segments:
+                word_counts.append(seg.get("word_count", 0))
+
+        # Calculate metrics for validation
+        avg_segments = sum(segment_counts) / len(segment_counts) if segment_counts else 0
+        min_segments = min(segment_counts) if segment_counts else 0
+        max_segments = max(segment_counts) if segment_counts else 0
+
+        # Calculate Gini coefficient
+        gini = calculate_gini(segment_counts) if segment_counts else 0
+
+        # Calculate length CV (coefficient of variation)
+        if segment_counts and len(segment_counts) > 1:
+            import statistics
+            mean_len = statistics.mean(segment_counts)
+            std_len = statistics.stdev(segment_counts)
+            length_cv = std_len / mean_len if mean_len > 0 else 0
+        else:
+            length_cv = 0
+
+        # Calculate min/max ratio
+        min_max_ratio = min_segments / max_segments if max_segments > 0 else 0
+
+        # Check if all segments meet word count filter (>= 10 words)
+        word_count_filter_pass = all(wc >= 10 for wc in word_counts) if word_counts else True
+
+        # Validate against thresholds from config.yaml
+        validation_results: List[ValidationResult] = []
+
+        # Segment count min
+        threshold = ThresholdRegistry.get("segment_count_min")
+        if threshold:
+            # Use average as representative value
+            validation_results.append(
+                ValidationResult.from_threshold(threshold, actual=int(avg_segments))
+            )
+
+        # Segment count max
+        threshold = ThresholdRegistry.get("segment_count_max")
+        if threshold:
+            validation_results.append(
+                ValidationResult.from_threshold(threshold, actual=max_segments)
+            )
+
+        # Gini coefficient
+        threshold = ThresholdRegistry.get("gini_coefficient")
+        if threshold:
+            validation_results.append(
+                ValidationResult.from_threshold(threshold, actual=gini)
+            )
+
+        # Length CV
+        threshold = ThresholdRegistry.get("length_cv")
+        if threshold:
+            validation_results.append(
+                ValidationResult.from_threshold(threshold, actual=length_cv)
+            )
+
+        # Min/max length ratio
+        threshold = ThresholdRegistry.get("min_max_length_ratio")
+        if threshold:
+            validation_results.append(
+                ValidationResult.from_threshold(threshold, actual=min_max_ratio)
+            )
+
+        # Word count filter
+        threshold = ThresholdRegistry.get("word_count_filter_pass")
+        if threshold:
+            validation_results.append(
+                ValidationResult.from_threshold(threshold, actual=word_count_filter_pass)
+            )
+
+        # Generate report using qa_validation helpers
+        overall_status = determine_overall_status(validation_results)
+
+        report = TestMetricsConfig.create_report(
+            test_name="segmentation_qa_validation",
+            status=overall_status.value
+        )
+
+        # Add validation table (Go/No-Go format)
+        report["validation_table"] = generate_validation_table(validation_results)
+
+        # Add blocking summary
+        report["blocking_summary"] = generate_blocking_summary(validation_results)
+
+        # Add raw measurements for debugging
+        report["measurements"] = {
+            "total_filings": len(segmented_data),
+            "avg_segments_per_filing": avg_segments,
+            "min_segments": min_segments,
+            "max_segments": max_segments,
+            "gini_coefficient": gini,
+            "length_cv": length_cv,
+            "min_max_ratio": min_max_ratio,
+            "word_count_filter_pass": word_count_filter_pass,
+        }
+
+        # Save report
+        report_path = save_test_artifact("segmentation_qa_validation.json", report)
+
+        # Print validation table
+        print(f"\n{'='*80}")
+        print("SEGMENTATION QA VALIDATION REPORT")
+        print(f"{'='*80}")
+        print(f"Overall Status: {overall_status.value}")
+        print(f"\nValidation Table:")
+        print(f"{'Category':<25} {'Metric':<25} {'Target':<10} {'Actual':<10} {'Status':<8} {'Go/No-Go':<10}")
+        print("-" * 88)
+        for row in report["validation_table"]:
+            print(
+                f"{row['category']:<25} "
+                f"{row['metric']:<25} "
+                f"{str(row['target']):<10} "
+                f"{str(round(row['actual'], 3) if isinstance(row['actual'], float) else row['actual']):<10} "
+                f"{row['status']:<8} "
+                f"{row['go_no_go']:<10}"
+            )
+        print(f"{'='*80}")
+        print(f"Blocking: {report['blocking_summary']['passed']}/{report['blocking_summary']['total_blocking']} passed")
+        print(f"Report saved to: {report_path}")
+
+        # Assert no blocking failures
+        assert report["blocking_summary"]["all_pass"], \
+            f"Blocking thresholds failed: {[r['metric'] for r in report['validation_table'] if r['go_no_go'] == 'NO-GO']}"

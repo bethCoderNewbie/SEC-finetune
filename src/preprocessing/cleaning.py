@@ -8,6 +8,8 @@ from typing import Optional, Set, List
 from html import unescape
 import string
 
+from .constants import TOC_PATTERNS_COMPILED
+
 try:
     import spacy
     from spacy.language import Language
@@ -165,7 +167,17 @@ class TextCleaner:
 
     def _remove_toc_artifacts(self, text: str) -> str:
         """
-        Remove table of contents artifacts
+        Remove table of contents artifacts using multiple patterns.
+
+        Handles diverse ToC formats:
+        - Standard: "Item 1A. Risk Factors..... 25"
+        - Roman numerals: "Part IV Item 15..... 89"
+        - Spaced dots: "Item 1A . . . . . 25"
+        - Middle-dot leaders: "Item 1A · · · · 25"
+        - Alternative separators: "Item 1A ━━━━━ 25"
+        - Subsection numbering: "Item 1A.1..... 45"
+        - No period after Item: "Item 1A Risk Factors..... 25"
+        - Leader-only: "Item 1A....."
 
         Args:
             text: Input text
@@ -173,7 +185,12 @@ class TextCleaner:
         Returns:
             str: Text without TOC artifacts
         """
-        # Remove lines that look like TOC entries (Item X..... Page Y)
+        # Apply all ToC patterns from constants.py
+        for pattern in TOC_PATTERNS_COMPILED:
+            text = pattern.sub('', text)
+
+        # Original pattern (kept for backwards compatibility)
+        # This handles the most common case and is well-tested
         text = re.sub(
             r'^(Item|ITEM)\s+\d+[A-Z]?\..*\.{3,}.*\d+\s*$',
             '',

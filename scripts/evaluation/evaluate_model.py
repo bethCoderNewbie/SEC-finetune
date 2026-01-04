@@ -7,8 +7,8 @@ Input: models/ - Trained model checkpoints, data/processed/ - Test data
 Output: reports/ - Evaluation metrics, confusion matrices, predictions
 
 Usage:
-    python scripts/07_evaluation/evaluate_model.py
-    python scripts/07_evaluation/evaluate_model.py --model models/sec-risk-model/checkpoint-1000
+    python scripts/evaluation/evaluate_model.py
+    python scripts/evaluation/evaluate_model.py --model models/sec-risk-model/checkpoint-1000
 """
 
 import argparse
@@ -19,7 +19,10 @@ import json
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.config import PROCESSED_DATA_DIR
+from src.config import settings
+
+# Directory shortcuts from settings (avoids deprecated legacy constants)
+PROCESSED_DATA_DIR = settings.paths.processed_data_dir
 
 
 def load_test_data(data_dir: Path):

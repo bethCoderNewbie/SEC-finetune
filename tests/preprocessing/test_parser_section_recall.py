@@ -546,9 +546,13 @@ class TestMetricsReport:
         parser: SECFilingParser,
         test_10k_files: List[Path],
         test_10q_files: List[Path],
-        tmp_path: Path
+        save_test_artifact,
+        test_artifact_dir: Path
     ):
-        """Generate comprehensive metrics report."""
+        """Generate comprehensive metrics report.
+
+        Saves report to persistent test output directory for validation and review.
+        """
         report = {
             "test_date": time.strftime("%Y-%m-%d %H:%M:%S"),
             "parser_info": parser.get_parser_info(),
@@ -633,10 +637,8 @@ class TestMetricsReport:
             status = "WARN" if status != "FAIL" else status
         report["status"] = status
 
-        # Save report
-        report_path = tmp_path / "parser_metrics_report.json"
-        with open(report_path, 'w', encoding='utf-8') as f:
-            json.dump(report, f, indent=2)
+        # Save report to persistent test output directory
+        report_path = save_test_artifact("parser_metrics_report.json", report)
 
         # Print report
         print(f"\n{'='*60}")
@@ -645,6 +647,7 @@ class TestMetricsReport:
         print(json.dumps(report, indent=2))
         print(f"{'='*60}")
         print(f"Report saved to: {report_path}")
+        print(f"Artifact directory: {test_artifact_dir}")
 
         # Assert basic validity
         assert report["status"] in ["PASS", "WARN", "FAIL"]

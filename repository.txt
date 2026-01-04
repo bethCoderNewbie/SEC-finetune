@@ -1,5 +1,5 @@
 # SEC Filing Analyzer - Repository Structure
-# Updated: 2025-12-01
+# Updated: 2025-12-28
 #
 # GUIDANCE:
 # - All code must use Pydantic v2.12.4+ (enforced by validation script)
@@ -118,8 +118,12 @@ sec-filing-analyzer/
 ├── src/                    # Main source code (importable Python package)
 │   ├── __init__.py
 │   │
-│   ├── config.py           # ⚠️ Global configuration (Pydantic Settings + YAML)
-│   │                       # Includes RunContext, RiskAnalysisConfig
+│   ├── config/             # ⚠️ Configuration Subsystem (Pydantic Settings)
+│   │   ├── __init__.py     # Exports PipelineConfig, RunContext
+│   │   ├── run_context.py  # ⚠️ RunContext (Versioned output management)
+│   │   ├── qa_validation.py # ⚠️ Data Quality & Validation Config
+│   │   ├── naming.py       # Naming conventions
+│   │   └── ...
 │   │
 │   ├── preprocessing/      # SEC filing parsing and extraction
 │   │   ├── __init__.py
@@ -156,6 +160,12 @@ sec-filing-analyzer/
 │   │       ├── risk_taxonomy.yaml      # Base taxonomy
 │   │       ├── sasb_sics_mapping.json  # ⚠️ SIC -> SASB Industry Map
 │   │       └── taxonomy_manager.py     # ⚠️ TaxonomyManager (Pydantic V2)
+│   │
+│   ├── utils/              # Shared utilities
+│   │   ├── __init__.py
+│   │   ├── state_manager.py # ⚠️ MLOps: StateManifest & Atomic Writes
+│   │   ├── reporting.py     # ⚠️ MLOps: Markdown Reporting & Audit Trails
+│   │   └── ...
 │   │
 │   └── visualization/      # Visualization and UI
 │       ├── __init__.py

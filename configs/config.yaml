@@ -52,6 +52,48 @@ preprocessing:
   normalize_whitespace: true
   remove_page_numbers: true
 
+  # HTML Sanitization (pre-parser cleaning)
+  # These settings improve ParsedFiling quality by cleaning HTML before sec-parser
+  sanitizer:
+    # Enable pre-parser HTML sanitization
+    enabled: true
+    # Remove SEC EDGAR submission header boilerplate
+    # WARNING: Set to false to preserve metadata (CIK, SIC, company name)
+    remove_edgar_header: false
+    # Remove EDGAR SGML tags (<PAGE>, <S>, <C>, etc.)
+    # WARNING: Set to false - these tags are used by sec-parser for structure
+    remove_edgar_tags: false
+    # Decode HTML entities (&amp; → &)
+    decode_entities: true
+    # Apply NFKC Unicode normalization
+    normalize_unicode: true
+    # Remove zero-width spaces and control characters
+    remove_invisible_chars: true
+    # Convert curly/smart quotes to straight ASCII quotes
+    normalize_quotes: true
+    # Attempt to fix mojibake (requires ftfy library)
+    fix_encoding: false
+    # Remove redundant nested tags (div, span, font)
+    flatten_nesting: true
+
+  # Parallel Processing & Timeout Configuration
+  # Task timeout in seconds (20 minutes = 1200 seconds)
+  # Offline batch processing can tolerate latency for data quality
+  task_timeout: 1200
+
+  # Resource limits
+  max_workers: null  # Auto-detect based on CPU count
+  max_tasks_per_child: 50  # Restart workers for memory management
+
+  # File size monitoring (for logging only, not rejection)
+  # Large files are processed to maintain dataset integrity (no bias)
+  warn_file_size_mb: 50
+
+  # Recursion limits (dynamic scaling for deeply nested HTML)
+  recursion_limit_base: 10000
+  recursion_limit_per_mb: 2000
+  recursion_limit_max: 100000  # Increased from default 50,000
+
 # ===========================
 # Extraction Configuration
 # ===========================
@@ -103,3 +145,27 @@ testing:
 reproducibility:
   # Random seed for reproducibility
   random_seed: 42
+
+# ===========================
+# Naming Convention
+# ===========================
+naming:
+  # Timestamp format for run_id (strftime format)
+  timestamp_format: "%Y%m%d_%H%M%S"
+
+  # Folder naming patterns
+  # Placeholders: {run_id}, {name}, {git_sha}
+  folder_pattern: "{run_id}_{name}_{git_sha}"
+  folder_pattern_no_sha: "{run_id}_{name}"
+
+  # File naming pattern
+  # Placeholders: {stem}, {run_id}, {output_type}
+  file_pattern: "{stem}_{run_id}_{output_type}.json"
+
+  # Output type suffixes for each processing stage
+  output_types:
+    parsed: "parsed"
+    extracted: "extracted_risks"
+    cleaned: "cleaned_risks"
+    segmented: "segmented_risks"
+    labeled: "labeled"

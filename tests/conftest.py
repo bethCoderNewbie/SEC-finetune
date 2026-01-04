@@ -14,7 +14,7 @@ Usage:
 
 import pytest
 from pathlib import Path
-from typing import List, Optional, Generator
+from typing import Any, Callable, Dict, List, Optional, Generator
 import sys
 import json
 
@@ -215,6 +215,45 @@ def sample_html_content() -> str:
 
 
 # ===========================
+# Extracted Data Fixtures
+# ===========================
+
+@pytest.fixture(scope="module")
+def extracted_risk_files(project_root: Path) -> List[Path]:
+    """
+    Get all extracted risk JSON files from data/interim/extracted.
+    
+    Returns:
+        List of Path objects for extracted risk files.
+    """
+    extracted_dir = project_root / "data" / "interim" / "extracted"
+    if not extracted_dir.exists():
+        return []
+        
+    return list(extracted_dir.glob("*_extracted_risks.json"))
+
+@pytest.fixture(scope="module")
+def extracted_risk_sections(extracted_risk_files: List[Path]) -> List['ExtractedSection']:
+    """
+    Load ExtractedSection objects from JSON files.
+    
+    Returns:
+        List of ExtractedSection objects.
+    """
+    from src.preprocessing.extractor import ExtractedSection
+    
+    sections = []
+    for file_path in extracted_risk_files:
+        try:
+            section = ExtractedSection.load_from_json(file_path)
+            sections.append(section)
+        except Exception as e:
+            print(f"Warning: Failed to load {file_path}: {e}")
+            
+    return sections
+
+
+# ===========================
 # Temporary Directory Fixtures
 # ===========================
 
@@ -334,3 +373,488 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "integration: mark test as integration test"
     )
+    config.addinivalue_line(
+        "markers", "requires_preprocessing_data: mark test to skip if no preprocessing data available"
+    )
+
+
+# ===========================
+# Dynamic Test Data Fixtures
+# ===========================
+
+@pytest.fixture(scope="session")
+def test_data_config():
+    """
+    Get test data configuration for dynamic path resolution.
+
+    Returns:
+        TestDataConfig instance for finding run directories
+    """
+    return settings.testing.data
+
+
+@pytest.fixture(scope="session")
+def latest_preprocessing_run(test_data_config) -> Optional[Path]:
+    """
+    Get the latest preprocessing run directory.
+
+    Returns:
+        Path to latest preprocessing run, or None if not found
+    """
+    return test_data_config.find_latest_run("preprocessing")
+
+
+@pytest.fixture(scope="session")
+def aapl_10k_data_path(test_data_config) -> Optional[Path]:
+    """
+    Get path to AAPL 10-K segmented risks file.
+
+    Dynamically resolves from latest preprocessing run.
+
+    Returns:
+        Path to AAPL_10K_2021_segmented_risks.json, or None if not found
+    """
+    return test_data_config.get_test_file(
+        run_name="preprocessing",
+        filename="AAPL_10K_2021_segmented_risks.json"
+    )
+
+
+@pytest.fixture(scope="module")
+def aapl_10k_data(aapl_10k_data_path) -> Optional[dict]:
+    """
+    Load actual AAPL 10-K 2021 segmented risk factors.
+
+    Returns None if file not available (allows graceful skip).
+
+    Returns:
+        Dict with segments and aggregate_sentiment, or None
+    """
+    if aapl_10k_data_path is None or not aapl_10k_data_path.exists():
+        return None
+
+    with open(aapl_10k_data_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+@pytest.fixture(scope="module")
+def aapl_segments(aapl_10k_data) -> List[dict]:
+    """
+    Get list of segment dictionaries from AAPL 10-K data.
+
+    Returns empty list if data unavailable.
+
+    Returns:
+        List of 54 segment dictionaries, or empty list
+    """
+    if aapl_10k_data is None:
+        return []
+    return aapl_10k_data.get("segments", [])
+
+
+@pytest.fixture(scope="module")
+def aapl_aggregate_sentiment(aapl_10k_data) -> Optional[dict]:
+    """
+    Get aggregate sentiment statistics from AAPL 10-K data.
+
+    Returns:
+        Dict with avg_negative_ratio, avg_positive_ratio, etc., or None
+    """
+    if aapl_10k_data is None:
+        return None
+    return aapl_10k_data.get("aggregate_sentiment")
+
+
+# ===========================
+# Golden Sentence Fixtures (No File Dependency)
+# ===========================
+
+@pytest.fixture(scope="session")
+def golden_sentence() -> str:
+    """
+    Deterministic test sentence with known LM word matches.
+
+    This sentence contains verified LM dictionary words for exact testing.
+
+    Returns:
+        Test sentence with known sentiment word composition
+    """
+    return "The company anticipates potential litigation and catastrophic losses."
+
+
+@pytest.fixture(scope="session")
+def golden_sentence_expected() -> dict:
+    """
+    Expected feature values for golden sentence (verified).
+
+    Verified against LM dictionary:
+    - anticipates: Uncertainty
+    - litigation: Litigious, Negative, Complexity
+    - catastrophic: Negative
+    - losses: Negative
+
+    Returns:
+        Dict with expected counts for each category
+    """
+    return {
+        'negative_count': 3,       # catastrophic, losses, litigation
+        'positive_count': 0,
+        'uncertainty_count': 1,    # anticipates
+        'litigious_count': 1,      # litigation
+        'total_sentiment_words': 5,
+        'word_count': 8,
+    }
+
+
+@pytest.fixture(scope="module")
+def long_segment_texts(aapl_segments) -> List[str]:
+    """
+    Get segments with >200 chars for readability analysis.
+
+    Short segments don't provide reliable readability metrics.
+
+    Returns:
+        List of text strings from segments with sufficient length
+    """
+    return [seg["text"] for seg in aapl_segments if len(seg["text"]) > 200]
+
+
+# ===========================
+# Preprocessing Data Fixtures (Dynamic)
+# ===========================
+
+@pytest.fixture(scope="session")
+def processed_data_dir(test_data_config) -> Optional[Path]:
+    """
+    Get latest preprocessing run directory.
+
+    Uses TestDataConfig for dynamic path resolution.
+
+    Returns:
+        Path to latest preprocessing run directory, or None if not found
+    """
+    return test_data_config.find_latest_run("preprocessing")
+
+
+@pytest.fixture(scope="module")
+def segmented_data_files(processed_data_dir) -> List[Path]:
+    """
+    Get all segmented risk files from latest preprocessing run.
+
+    Returns:
+        List of Path objects for segmented risk JSON files
+    """
+    if processed_data_dir is None or not processed_data_dir.exists():
+        return []
+    return list(processed_data_dir.glob("*_segmented_risks.json"))
+
+
+@pytest.fixture(scope="module")
+def segmented_data(segmented_data_files) -> List[dict]:
+    """
+    Load segmented risk data from files.
+
+    Limits to 10 files for test speed.
+
+    Returns:
+        List of loaded JSON data dictionaries
+    """
+    if not segmented_data_files:
+        return []
+    data = []
+    for f in segmented_data_files[:10]:
+        with open(f, 'r', encoding='utf-8') as fp:
+            data.append(json.load(fp))
+    return data
+
+
+@pytest.fixture(scope="module")
+def extracted_data_dir(project_root: Path) -> Path:
+    """
+    Get the extracted data directory path.
+
+    Returns:
+        Path to data/interim/extracted directory
+    """
+    return project_root / "data" / "interim" / "extracted"
+
+
+@pytest.fixture(scope="module")
+def extracted_data_files(extracted_data_dir: Path) -> List[Path]:
+    """
+    Get all extracted risk JSON files.
+
+    Includes files from v1_ subdirectory if present.
+
+    Returns:
+        List of Path objects for extracted risk JSON files
+    """
+    if not extracted_data_dir.exists():
+        return []
+
+    files = list(extracted_data_dir.glob("*_extracted_risks.json"))
+
+    # Also check v1_ subdirectory
+    v1_dir = extracted_data_dir / "v1_"
+    if v1_dir.exists():
+        files.extend(v1_dir.glob("*_extracted_risks.json"))
+
+    return files
+
+
+@pytest.fixture(scope="module")
+def extracted_data(extracted_data_files: List[Path]) -> List[dict]:
+    """
+    Load extracted risk data from files.
+
+    Limits to 5 files for test speed.
+
+    Returns:
+        List of loaded JSON data dictionaries
+    """
+    if not extracted_data_files:
+        return []
+    data = []
+    for f in extracted_data_files[:5]:
+        with open(f, 'r', encoding='utf-8') as fp:
+            data.append(json.load(fp))
+    return data
+
+
+@pytest.fixture(scope="module")
+def cleaned_data_files(extracted_data_dir: Path) -> List[Path]:
+    """
+    Get all cleaned risk JSON files.
+
+    Includes files from v1_ subdirectory if present.
+
+    Returns:
+        List of Path objects for cleaned risk JSON files
+    """
+    if not extracted_data_dir.exists():
+        return []
+
+    files = list(extracted_data_dir.glob("*_cleaned_risks.json"))
+
+    # Also check v1_ subdirectory
+    v1_dir = extracted_data_dir / "v1_"
+    if v1_dir.exists():
+        files.extend(v1_dir.glob("*_cleaned_risks.json"))
+
+    return files
+
+
+@pytest.fixture(scope="module")
+def cleaned_data(cleaned_data_files: List[Path]) -> List[dict]:
+    """
+    Load cleaned risk data from files.
+
+    Limits to 5 files for test speed.
+
+    Returns:
+        List of loaded JSON data dictionaries
+    """
+    if not cleaned_data_files:
+        return []
+    data = []
+    for f in cleaned_data_files[:5]:
+        with open(f, 'r', encoding='utf-8') as fp:
+            data.append(json.load(fp))
+    return data
+
+
+@pytest.fixture
+def segmenter():
+    """
+    Initialize RiskSegmenter for tests.
+
+    Returns:
+        RiskSegmenter instance
+    """
+    from src.preprocessing.segmenter import RiskSegmenter
+    return RiskSegmenter()
+
+
+@pytest.fixture
+def cleaner():
+    """
+    Initialize TextCleaner for tests.
+
+    Returns:
+        TextCleaner instance
+    """
+    from src.preprocessing.cleaning import TextCleaner
+    return TextCleaner()
+
+
+# ===========================
+# Test Output Persistence Fixtures
+# ===========================
+
+# Global test run context - shared across all tests in a session
+_test_output_run = None
+
+
+def pytest_configure(config):
+    """
+    Initialize test output run at pytest startup.
+
+    Creates a timestamped output directory for this test session.
+    """
+    global _test_output_run
+
+    from src.config.testing import TestOutputConfig
+
+    output_config = TestOutputConfig()
+    _test_output_run = output_config.create_test_run(name="pytest")
+    _test_output_run.create()
+
+    # Save initial metadata
+    _test_output_run.save_metadata({
+        "pytest_args": list(config.invocation_params.args) if hasattr(config, 'invocation_params') else [],
+        "rootdir": str(config.rootdir) if hasattr(config, 'rootdir') else None,
+    })
+
+
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """
+    Capture test results after each test phase.
+
+    Records pass/fail/skip status with timing information.
+    """
+    outcome = yield
+    report = outcome.get_result()
+
+    # Only capture 'call' phase (not setup/teardown)
+    if report.when == "call" and _test_output_run is not None:
+        error_msg = None
+        skip_reason = None
+
+        if report.failed:
+            if hasattr(report, 'longrepr') and report.longrepr:
+                error_msg = str(report.longrepr)[:500]  # Truncate long errors
+
+        if report.skipped:
+            if hasattr(report, 'longrepr') and report.longrepr:
+                # Skip reason is in longrepr tuple
+                if isinstance(report.longrepr, tuple) and len(report.longrepr) > 2:
+                    skip_reason = str(report.longrepr[2])
+                else:
+                    skip_reason = str(report.longrepr)
+
+        _test_output_run.add_test_result(
+            nodeid=item.nodeid,
+            outcome=report.outcome,
+            duration=report.duration,
+            error=error_msg,
+            reason=skip_reason
+        )
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """
+    Save final results when test session completes.
+
+    Creates test_results.json with summary and details of all tests.
+    """
+    global _test_output_run
+
+    if _test_output_run is not None:
+        _test_output_run.finalize()
+
+        # Print output location
+        print(f"\n{'='*60}")
+        print(f"Test outputs saved to: {_test_output_run.run_dir}")
+        print(f"{'='*60}\n")
+
+
+@pytest.fixture(scope="session")
+def test_output_run():
+    """
+    Get the current test output run context.
+
+    This session-scoped fixture provides access to the test run context
+    for saving artifacts and results.
+
+    Usage:
+        def test_example(test_output_run):
+            # Save an artifact
+            test_output_run.save_artifact(
+                "test_module", "test_name", "output.json", {"key": "value"}
+            )
+
+    Returns:
+        TestRunContext instance for the current test session
+    """
+    global _test_output_run
+    return _test_output_run
+
+
+@pytest.fixture(scope="function")
+def test_artifact_dir(request, test_output_run) -> Path:
+    """
+    Get artifact directory for the current test.
+
+    Creates a directory specific to this test for storing artifacts.
+    Directory structure: artifacts/{module}/{test_name}/
+
+    Usage:
+        def test_example(test_artifact_dir):
+            output_path = test_artifact_dir / "results.json"
+            with open(output_path, 'w') as f:
+                json.dump(results, f)
+
+    Returns:
+        Path to the test-specific artifact directory
+    """
+    if test_output_run is None:
+        # Fallback to tmp_path if no output run (e.g., in isolation)
+        return request.getfixturevalue('tmp_path')
+
+    # Extract module and test name from node
+    module_name = request.node.module.__name__.split(".")[-1] if request.node.module else "unknown"
+    test_name = request.node.name
+
+    return test_output_run.get_artifact_dir(module_name, test_name)
+
+
+@pytest.fixture(scope="function")
+def save_test_artifact(request, test_output_run) -> Callable:
+    """
+    Helper fixture to save test artifacts easily.
+
+    Provides a callable that saves data to the test's artifact directory.
+
+    Usage:
+        def test_example(save_test_artifact):
+            # Save JSON artifact
+            save_test_artifact("output.json", {"result": 42})
+
+            # Save text artifact
+            save_test_artifact("debug.txt", "Some debug info", format="text")
+
+    Args:
+        filename: Name of the artifact file
+        data: Data to save (dict for JSON, str for text)
+        format: "json" (default) or "text"
+
+    Returns:
+        Callable that saves artifacts
+    """
+    def _save(filename: str, data: Any, format: str = "json") -> Optional[Path]:
+        if test_output_run is None:
+            return None
+
+        module_name = request.node.module.__name__.split(".")[-1] if request.node.module else "unknown"
+        test_name = request.node.name
+
+        return test_output_run.save_artifact(
+            test_module=module_name,
+            test_name=test_name,
+            filename=filename,
+            data=data,
+            format=format
+        )
+
+    return _save

@@ -23,6 +23,46 @@ PAGE_HEADER_PATTERN = re.compile(
 
 
 # ===========================
+# Table of Contents Patterns
+# ===========================
+
+# Table of Contents patterns for removal
+# Handles diverse ToC formats found in SEC filings
+TOC_PATTERNS = [
+    # Pattern 1: Roman numerals with Item number
+    # Example: "Part IV Item 15. Exhibits..... 89"
+    r'^Part\s+[IVX]+\s+Item\s+\d+[A-Z]?\..*\.{3,}.*\d+\s*$',
+
+    # Pattern 2: Spaced dots (spaces between dots)
+    # Example: "Item 1A. Risk Factors . . . . . 25"
+    r'^(Item|ITEM)\s+\d+[A-Z]?\..*\s\.(\s+\.)+\s+\d+\s*$',
+
+    # Pattern 3: Middle-dot leaders (·) - spaced or consecutive
+    # Example: "Item 1A. Risk Factors · · · · · 25"
+    r'^(Item|ITEM)\s+\d+[A-Z]?\..*\s·(\s+·)+\s+\d+\s*$',
+
+    # Pattern 4: No period after Item number
+    # Example: "Item 1A Risk Factors..... 25"
+    r'^(Item|ITEM)\s+\d+[A-Z]?\s+[^.]+\.{3,}.*\d+\s*$',
+
+    # Pattern 5: Alternative separators (dashes, underscores)
+    # Example: "Item 1A. Risk Factors ━━━━━ 25"
+    r'^(Item|ITEM)\s+\d+[A-Z]?\..*[━─–—_-]{3,}.*\d+\s*$',
+
+    # Pattern 6: Subsection numbering
+    # Example: "Item 1A.1. Sub-risk factors..... 45"
+    r'^(Item|ITEM)\s+\d+[A-Z]?\.\d+\..*\.{3,}.*\d+\s*$',
+
+    # Pattern 7: No trailing page number (just ToC leaders)
+    # Example: "Item 1A. Risk Factors....."
+    r'^(Item|ITEM)\s+\d+[A-Z]?\..*\.{5,}\s*$',
+]
+
+# Compile patterns for performance
+TOC_PATTERNS_COMPILED = [re.compile(p, re.MULTILINE | re.IGNORECASE) for p in TOC_PATTERNS]
+
+
+# ===========================
 # Section Identifiers
 # ===========================
 
@@ -102,7 +142,8 @@ SECTION_PATTERNS: Dict[str, List[str]] = {
         r'(?i)^item\s*7\s*\.?$',
     ],
     "part2item7a": [
-        r'(?i)item\s*7\s*a\.?\s*market\s*risk',
+        r'(?i)item\s*7\s*a\.?\s*quantitative',
+        r'(?i)item\s*7\s*a\.?.*market\s*risk',
         r'(?i)item\s*7a\.?',
     ],
     "part2item8": [

@@ -7,9 +7,9 @@ Input: data/processed/ - Prepared training data
 Output: models/ - Trained model checkpoints
 
 Usage:
-    python scripts/06_training/train_model.py
-    python scripts/06_training/train_model.py --config configs/model/llm_base.yaml
-    python scripts/06_training/train_model.py --resume models/checkpoint-1000
+    python scripts/training/train_model.py
+    python scripts/training/train_model.py --config configs/model/llm_base.yaml
+    python scripts/training/train_model.py --resume models/checkpoint-1000
 """
 
 import argparse
@@ -20,7 +20,10 @@ import json
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.config import PROCESSED_DATA_DIR, ensure_directories
+from src.config import settings, ensure_directories, RunContext
+
+# Directory shortcuts from settings (avoids deprecated legacy constants)
+PROCESSED_DATA_DIR = settings.paths.processed_data_dir
 
 
 def load_training_data(data_dir: Path):

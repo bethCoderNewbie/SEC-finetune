@@ -1,0 +1,12 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.5, pytest-9.0.1, pluggy-1.6.0
+rootdir: C:\Users\bichn\MSBA\SEC finetune
+configfile: pyproject.toml
+plugins: anyio-4.11.0, cov-7.0.0
+collected 426 items
+
+tests\features\test_golden_sentences.py ..........                       [  2%]
+tests\features\test_readability_validation.py ..........                 [  4%]
+tests\features\test_sentiment_validation.py .........                    [  6%]
+tests\preprocessing\test_cleaner.py sssssssssssssssss                    [ 10%]
+tests\preprocessing\test_extractor.py ssssss........sssssss.....

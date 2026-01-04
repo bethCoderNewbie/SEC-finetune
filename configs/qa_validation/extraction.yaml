@@ -60,13 +60,19 @@ thresholds:
   # -------------------------
   content_quality:
     toc_filtering_rate:
-      display_name: ToC Filtering Rate
+      display_name: ToC Filtering Rate (Raw Extraction)
       metric_type: rate
-      target: 1.0
+      target: 0.90
       operator: ">="
-      blocking: true
-      description: Rate of Table of Contents entries filtered
-      tags: [cleaner, quality]
+      warn_threshold: 0.75
+      blocking: false
+      description: |
+        Measures ToC artifact filtering during EXTRACTION stage (Stage 2).
+        Validates removal of ToC LEADER patterns (e.g., "Item 1A..... 25").
+        Page headers ("Table of Contents") are cleaned in TextCleaner (Stage 3).
+        Target: 90% - allows page headers that will be cleaned downstream.
+        Historical baseline: 43.4% (134/309 files) with legacy patterns.
+      tags: [extractor, quality, advisory, pre-cleaning]
 
     page_header_filtering_rate:
       display_name: Page Header Removal

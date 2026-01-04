@@ -1,10 +1,11 @@
 """Preprocessing modules for SEC filings
 
 Pipeline Flow:
-    1. Parse   → SECFilingParser → ParsedFiling
-    2. Clean   → TextCleaner → cleaned text
-    3. Extract → SECSectionExtractor → ExtractedSection
-    4. Segment → RiskSegmenter → SegmentedRisks
+    1. Sanitize → HTMLSanitizer → cleaned HTML (NEW)
+    2. Parse    → SECFilingParser → ParsedFiling
+    3. Extract  → SECSectionExtractor → ExtractedSection
+    4. Clean    → TextCleaner → cleaned text
+    5. Segment  → RiskSegmenter → SegmentedRisks
 
 All metadata (sic_code, sic_name, cik, ticker, company_name) is preserved
 throughout the pipeline.
@@ -16,6 +17,10 @@ Quick Start:
     >>> print(f"Segments: {len(result)}")
 """
 
+# Data models (canonical location)
+from .models import ParsedFiling, FormType, ExtractedSection, RiskSegment, SegmentedRisks
+
+from .sanitizer import HTMLSanitizer, SanitizerConfig, sanitize_html
 from .parser import SECFilingParser, ParsedFiling, parse_filing_from_path
 from .cleaning import TextCleaner, clean_filing_text
 from .extractor import (
@@ -37,9 +42,14 @@ from .pipeline import (
 from .constants import SectionIdentifier
 
 __all__ = [
+    # Sanitizer (NEW)
+    'HTMLSanitizer',
+    'SanitizerConfig',
+    'sanitize_html',
     # Parser
     'SECFilingParser',
     'ParsedFiling',
+    'FormType',
     'parse_filing_from_path',
     # Cleaner
     'TextCleaner',

@@ -10,7 +10,7 @@ Benefits of preprocessing:
 4. Validated data (ensures all required columns present)
 
 Usage:
-    python scripts/04_feature_engineering/utils/preprocess_lm_dict.py
+    python scripts/feature_engineering/utils/preprocess_lm_dict.py
 
 Output:
     data/dictionary/lm_dictionary_cache.pkl

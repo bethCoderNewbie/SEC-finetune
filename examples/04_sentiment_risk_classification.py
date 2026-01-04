@@ -9,7 +9,7 @@ This example demonstrates how to:
 
 Usage:
     # First, run the preprocessing pipeline:
-    python scripts/02_data_preprocessing/run_preprocessing_pipeline.py
+    python scripts/data_preprocessing/run_preprocessing_pipeline.py
 
     # Then run this integration example:
     python examples/04_sentiment_risk_classification.py
@@ -26,7 +26,10 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.analysis.inference import RiskClassifier
-from src.config import PROCESSED_DATA_DIR
+from src.config import settings
+
+# Directory shortcuts from settings (avoids deprecated legacy constants)
+PROCESSED_DATA_DIR = settings.paths.processed_data_dir
 
 
 def load_segments_with_sentiment(filepath: Path) -> Dict:
@@ -206,7 +209,7 @@ def main():
     if not segmented_files:
         print("\nERROR: No segmented risk files found!")
         print("Please run the preprocessing pipeline first:")
-        print("  python scripts/02_data_preprocessing/run_preprocessing_pipeline.py")
+        print("  python scripts/data_preprocessing/run_preprocessing_pipeline.py")
         return
 
     # Use most recent file

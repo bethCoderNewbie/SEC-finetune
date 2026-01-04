@@ -7,8 +7,8 @@ Input: data/raw/ or data/interim/ - New filings
 Output: Predictions, risk categorizations, insights
 
 Usage:
-    python scripts/08_inference/predict.py --input data/raw/AAPL_10K.html
-    python scripts/08_inference/predict.py --batch --input-dir data/raw/
+    python scripts/inference/predict.py --input data/raw/AAPL_10K.html
+    python scripts/inference/predict.py --batch --input-dir data/raw/
 """
 
 import argparse
@@ -20,7 +20,10 @@ from typing import List, Dict
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.config import RAW_DATA_DIR
+from src.config import settings
+
+# Directory shortcuts from settings (avoids deprecated legacy constants)
+RAW_DATA_DIR = settings.paths.raw_data_dir
 
 
 def load_inference_model(model_path: Path):

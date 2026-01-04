@@ -18,15 +18,15 @@ For **best balance of efficiency, latency, and quality**:
 Run the scripts to download sec filling in html:
 
 ```bash
-python scripts/01_data_collection/download_sec_filings.py --mode topic-modeling
+python scripts/data_collection/download_sec_filings.py --mode topic-modeling
 ```
 ## Before You Start: Validate Your Corpus
 
 Run the validation script to check if your data is ready:
 
 ```bash
-python scripts/01_data_collection/download_sec_filings.py --mode topic-modeling
-python scripts/04_feature_engineering/validate_topic_modeling_corpus.py
+python scripts/data_collection/download_sec_filings.py --mode topic-modeling
+python scripts/feature_engineering/validate_topic_modeling_corpus.py
 ```
 
 This will tell you:
@@ -258,12 +258,12 @@ X_topics = features.to_feature_vector(15)
 
 1. **Validate your corpus:**
    ```bash
-   python scripts/04_feature_engineering/validate_topic_modeling_corpus.py
+   python scripts/feature_engineering/validate_topic_modeling_corpus.py
    ```
 
 2. **Run the demo:**
    ```bash
-   python scripts/04_feature_engineering/topic_modeling_demo.py
+   python scripts/feature_engineering/topic_modeling_demo.py
    ```
 
 3. **Read detailed docs:**

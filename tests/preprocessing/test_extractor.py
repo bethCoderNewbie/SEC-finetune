@@ -11,78 +11,26 @@ Categories:
 3. Subsection Classification - filtering, page header removal
 4. ExtractedSection Model - serialization, field validation
 5. Integration Tests - end-to-end extraction from real files
+
+Note: This module uses centralized fixtures from conftest.py:
+- extracted_data: List of extracted risk JSON data
+- test_10k_files: List of raw 10-K HTML file paths
+- extractor: SECSectionExtractor instance
+- risk_extractor: RiskFactorExtractor instance
+- parser: SECFilingParser instance
 """
 
-import json
 import re
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict
 import pytest
 
-from src.preprocessing.extractor import (
-    SECSectionExtractor,
-    ExtractedSection,
-    RiskFactorExtractor
-)
+from src.preprocessing.extractor import ExtractedSection
 from src.preprocessing.constants import PAGE_HEADER_PATTERN, SectionIdentifier
 
 
-# Data directories
-DATA_DIR = Path(__file__).parent.parent.parent / "data"
-RAW_DIR = DATA_DIR / "raw"
-EXTRACTED_DIR = DATA_DIR / "interim" / "extracted"
-
-
-def get_extracted_files() -> List[Path]:
-    """Get all extracted risk files."""
-    files = list(EXTRACTED_DIR.glob("*_extracted_risks.json"))
-    v1_dir = EXTRACTED_DIR / "v1_"
-    if v1_dir.exists():
-        files.extend(v1_dir.glob("*_extracted_risks.json"))
-    return files
-
-
-def get_raw_10k_files() -> List[Path]:
-    """Get all raw 10-K HTML files."""
-    patterns = ["*10K*.html", "*10-K*.html", "*_10K_*.html"]
-    files = []
-    for pattern in patterns:
-        files.extend(RAW_DIR.glob(pattern))
-    return sorted(set(files), key=lambda p: p.name)
-
-
-def load_json(filepath: Path) -> Dict[str, Any]:
-    """Load JSON file."""
-    with open(filepath, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-
-@pytest.fixture(scope="module")
-def extracted_data() -> List[Dict[str, Any]]:
-    """Load all extracted risk data."""
-    files = get_extracted_files()
-    if not files:
-        pytest.skip("No extracted data files found")
-    return [load_json(f) for f in files[:5]]
-
-
-@pytest.fixture(scope="module")
-def raw_10k_files() -> List[Path]:
-    """Get raw 10-K HTML files for testing."""
-    files = get_raw_10k_files()
-    if not files:
-        pytest.skip("No raw 10-K files found in data/raw/")
-    return files[:5]  # Limit for speed
-
-
-@pytest.fixture
-def extractor():
-    return SECSectionExtractor()
-
-
-@pytest.fixture
-def risk_extractor():
-    return RiskFactorExtractor()
+# Note: All fixtures (extracted_data, test_10k_files, extractor, risk_extractor, parser)
+# are provided by conftest.py
 
 
 # =============================================================================
@@ -94,6 +42,8 @@ class TestBoundaryDetectionWithRealData:
 
     def test_extracted_sections_have_valid_identifier(self, extracted_data: List[Dict]):
         """Verify all extracted sections have valid identifiers."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         valid_identifiers = {"part1item1a", "item1a", "part2item1a"}
         for doc in extracted_data:
             identifier = doc.get("identifier", "").lower()
@@ -104,6 +54,8 @@ class TestBoundaryDetectionWithRealData:
 
     def test_extracted_sections_have_title(self, extracted_data: List[Dict]):
         """Verify all extracted sections have a title."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         for doc in extracted_data:
             title = doc.get("title", "")
             assert len(title) > 0, "Missing section title"
@@ -114,6 +66,8 @@ class TestBoundaryDetectionWithRealData:
 
     def test_extracted_sections_have_content(self, extracted_data: List[Dict]):
         """Verify all extracted sections have substantial content."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         for doc in extracted_data:
             text = doc.get("text", "")
             assert len(text) > 1000, (
@@ -127,6 +81,8 @@ class TestBoundaryPatternMatching:
     @pytest.fixture
     def real_section_titles(self, extracted_data: List[Dict]) -> List[str]:
         """Extract real section titles from data."""
+        if not extracted_data:
+            return []
         titles = []
         for doc in extracted_data:
             titles.append(doc.get("title", ""))
@@ -137,6 +93,8 @@ class TestBoundaryPatternMatching:
 
     def test_item_pattern_matches_real_titles(self, extractor, real_section_titles):
         """Verify Item pattern matches real extracted titles."""
+        if not real_section_titles:
+            pytest.skip("No section titles available")
         item_pattern = re.compile(r'item\s+\d+[a-z]?\s*\.?', re.IGNORECASE)
         matched = [t for t in real_section_titles if item_pattern.search(t)]
         # At least some titles should match Item pattern
@@ -157,6 +115,8 @@ class TestPageHeaderFilteringWithRealData:
         Note: This test documents a known gap in the extraction process.
         Some extracted files were processed before page header filtering was improved.
         """
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         for doc in extracted_data:
             subsections = doc.get("subsections", [])
             for subsection in subsections:
@@ -169,6 +129,8 @@ class TestPageHeaderFilteringWithRealData:
 
     def test_subsections_are_meaningful(self, extracted_data: List[Dict]):
         """Verify subsections contain meaningful risk-related content."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         risk_keywords = ['risk', 'adverse', 'material', 'may', 'could', 'impact']
         for doc in extracted_data:
             subsections = doc.get("subsections", [])
@@ -221,6 +183,8 @@ class TestContentQualityWithRealData:
 
     def test_extracted_text_length_in_range(self, extracted_data: List[Dict]):
         """Verify extracted text length is within expected range."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         for doc in extracted_data:
             text = doc.get("text", "")
             text_len = len(text)
@@ -233,6 +197,8 @@ class TestContentQualityWithRealData:
 
     def test_risk_keyword_density(self, extracted_data: List[Dict]):
         """Verify risk-related keyword density in extracted text."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         risk_keywords = ["risk", "adversely", "material", "significant", "uncertain"]
         for doc in extracted_data:
             text = doc.get("text", "").lower()
@@ -250,6 +216,8 @@ class TestContentQualityWithRealData:
 
     def test_sentence_structure_preserved(self, extracted_data: List[Dict]):
         """Verify extracted text has proper sentence structure."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         for doc in extracted_data:
             text = doc.get("text", "")
             if len(text) < 500:
@@ -276,6 +244,8 @@ class TestElementsStructureWithRealData:
 
     def test_elements_have_required_fields(self, extracted_data: List[Dict]):
         """Verify elements have type and text fields."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         for doc in extracted_data:
             elements = doc.get("elements", [])
             for i, elem in enumerate(elements):
@@ -284,6 +254,8 @@ class TestElementsStructureWithRealData:
 
     def test_element_types_are_valid(self, extracted_data: List[Dict]):
         """Verify element types are from expected set."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         valid_types = {
             "TextElement", "TitleElement", "SupplementaryText",
             "EmptyElement", "TableElement", "ListElement",
@@ -300,6 +272,8 @@ class TestElementsStructureWithRealData:
 
     def test_elements_count_matches_metadata(self, extracted_data: List[Dict]):
         """Verify element count matches stats if present."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         for doc in extracted_data:
             elements = doc.get("elements", [])
             stats = doc.get("stats", {})
@@ -310,6 +284,8 @@ class TestElementsStructureWithRealData:
 
     def test_title_elements_present(self, extracted_data: List[Dict]):
         """Verify TitleElement types are present for structure."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         for doc in extracted_data:
             elements = doc.get("elements", [])
             title_elements = [e for e in elements if e.get("type") == "TitleElement"]
@@ -416,14 +392,14 @@ class TestExtractorIntegrationWithRealFiles:
     def test_extract_risk_factors_from_real_file(
         self,
         extractor,
-        raw_10k_files: List[Path],
+        test_10k_files: List[Path],
         parser
     ):
         """Test extracting risk factors from real 10-K file."""
-        if not raw_10k_files:
+        if not test_10k_files:
             pytest.skip("No raw 10-K files available")
 
-        file_path = raw_10k_files[0]
+        file_path = test_10k_files[0]
         filing = parser.parse_filing(file_path, form_type="10-K")
         section = extractor.extract_risk_factors(filing)
 
@@ -432,17 +408,43 @@ class TestExtractorIntegrationWithRealFiles:
         assert section.identifier == "part1item1a"
         assert "risk" in section.title.lower()
 
+    def test_extract_item_7a_market_risk_from_real_file(
+        self,
+        extractor,
+        test_10k_files: List[Path],
+        parser
+    ):
+        """Test extracting Item 7A (Market Risk) from real 10-K file."""
+        if not test_10k_files:
+            pytest.skip("No raw 10-K files available")
+
+        # Try up to 3 files as some might not have Item 7A (it's optional for smaller companies)
+        found = False
+        for file_path in test_10k_files[:3]:
+            filing = parser.parse_filing(file_path, form_type="10-K")
+            # Item 7A identifier is part2item7a
+            section = extractor.extract_section(filing, SectionIdentifier.ITEM_7A_MARKET_RISK)
+            
+            if section:
+                found = True
+                assert section.identifier == "part2item7a"
+                assert len(section.text) > 100, "Extracted Item 7A text too short"
+                break
+        
+        if not found:
+            pytest.skip("Item 7A not found in available test files (might be optional for these companies)")
+
     def test_extract_preserves_subsections(
         self,
         extractor,
-        raw_10k_files: List[Path],
+        test_10k_files: List[Path],
         parser
     ):
         """Test that extraction preserves subsection structure."""
-        if not raw_10k_files:
+        if not test_10k_files:
             pytest.skip("No raw 10-K files available")
 
-        file_path = raw_10k_files[0]
+        file_path = test_10k_files[0]
         filing = parser.parse_filing(file_path, form_type="10-K")
         section = extractor.extract_risk_factors(filing)
 
@@ -455,14 +457,14 @@ class TestExtractorIntegrationWithRealFiles:
     def test_extract_metadata_populated(
         self,
         extractor,
-        raw_10k_files: List[Path],
+        test_10k_files: List[Path],
         parser
     ):
         """Test that extraction populates metadata."""
-        if not raw_10k_files:
+        if not test_10k_files:
             pytest.skip("No raw 10-K files available")
 
-        file_path = raw_10k_files[0]
+        file_path = test_10k_files[0]
         filing = parser.parse_filing(file_path, form_type="10-K")
         section = extractor.extract_risk_factors(filing)
 
@@ -474,13 +476,13 @@ class TestExtractorIntegrationWithRealFiles:
     def test_risk_extractor_convenience_class(
         self,
         risk_extractor,
-        raw_10k_files: List[Path]
+        test_10k_files: List[Path]
     ):
         """Test RiskFactorExtractor convenience methods."""
-        if not raw_10k_files:
+        if not test_10k_files:
             pytest.skip("No raw 10-K files available")
 
-        file_path = raw_10k_files[0]
+        file_path = test_10k_files[0]
         section = risk_extractor.extract_from_file(str(file_path), form_type="10-K")
 
         assert section is not None, f"Failed to extract from {file_path.name}"
@@ -505,15 +507,15 @@ class TestCrossFilingConsistency:
     def test_multiple_filings_extract_successfully(
         self,
         extractor,
-        raw_10k_files: List[Path],
+        test_10k_files: List[Path],
         parser
     ):
         """Test that multiple filings can be extracted."""
-        if len(raw_10k_files) < 2:
+        if not test_10k_files or len(test_10k_files) < 2:
             pytest.skip("Need at least 2 files for consistency test")
 
         success_count = 0
-        for file_path in raw_10k_files[:5]:
+        for file_path in test_10k_files[:5]:
             try:
                 filing = parser.parse_filing(file_path, form_type="10-K")
                 section = extractor.extract_risk_factors(filing)
@@ -523,13 +525,15 @@ class TestCrossFilingConsistency:
                 pass
 
         # At least 80% should succeed
-        success_rate = success_count / min(5, len(raw_10k_files))
+        success_rate = success_count / min(5, len(test_10k_files))
         assert success_rate >= 0.6, (
             f"Low extraction success rate: {success_rate:.1%}"
         )
 
     def test_extracted_lengths_reasonable_variance(self, extracted_data: List[Dict]):
         """Verify extracted text lengths have reasonable variance."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         lengths = [len(doc.get("text", "")) for doc in extracted_data]
         if len(lengths) < 2:
             pytest.skip("Need multiple documents for variance test")

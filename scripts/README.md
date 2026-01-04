@@ -31,8 +31,8 @@ Scripts for downloading SEC filings from EDGAR.
 
 **Usage:**
 ```bash
-python scripts/01_data_collection/download_sec_filings.py --ticker AAPL
-python scripts/01_data_collection/download_sec_filings.py --ticker-file tickers.txt
+python scripts/data_collection/download_sec_filings.py --ticker AAPL
+python scripts/data_collection/download_sec_filings.py --ticker-file tickers.txt
 ```
 
 ### Stage 2: Data Preprocessing
@@ -47,10 +47,10 @@ Parse, extract, clean, and segment SEC filings.
 **Usage:**
 ```bash
 # Batch parsing
-python scripts/02_data_preprocessing/batch_parse.py
+python scripts/data_preprocessing/batch_parse.py
 
 # Full pipeline
-python scripts/02_data_preprocessing/run_preprocessing_pipeline.py
+python scripts/data_preprocessing/run_preprocessing_pipeline.py
 ```
 
 ### Stage 3: Exploratory Data Analysis
@@ -63,7 +63,7 @@ Analyze data distributions, patterns, and characteristics.
 
 **Usage:**
 ```bash
-python scripts/03_eda/exploratory_analysis.py
+python scripts/eda/exploratory_analysis.py
 ```
 
 ### Stage 4: Feature Engineering
@@ -76,8 +76,8 @@ Extract features and create embeddings for ML models.
 
 **Usage:**
 ```bash
-python scripts/04_feature_engineering/extract_features.py
-python scripts/04_feature_engineering/extract_features.py --embedding-model sentence-transformers
+python scripts/feature_engineering/extract_features.py
+python scripts/feature_engineering/extract_features.py --embedding-model sentence-transformers
 ```
 
 ### Stage 5: Data Splitting
@@ -91,10 +91,10 @@ Create train/validation/test splits.
 **Usage:**
 ```bash
 # Stratified split
-python scripts/05_data_splitting/create_train_test_split.py --test-size 0.2 --val-size 0.1
+python scripts/data_splitting/create_train_test_split.py --test-size 0.2 --val-size 0.1
 
 # Temporal split
-python scripts/05_data_splitting/create_train_test_split.py --split-type temporal \
+python scripts/data_splitting/create_train_test_split.py --split-type temporal \
     --temporal-val-year 2021 --temporal-test-year 2022
 ```
 
@@ -108,9 +108,9 @@ Train and fine-tune language models.
 
 **Usage:**
 ```bash
-python scripts/06_training/train_model.py
-python scripts/06_training/train_model.py --model-name meta-llama/Llama-2-7b-hf
-python scripts/06_training/train_model.py --resume models/checkpoint-1000
+python scripts/training/train_model.py
+python scripts/training/train_model.py --model-name meta-llama/Llama-2-7b-hf
+python scripts/training/train_model.py --resume models/checkpoint-1000
 ```
 
 ### Stage 7: Evaluation
@@ -123,8 +123,8 @@ Evaluate trained model performance.
 
 **Usage:**
 ```bash
-python scripts/07_evaluation/evaluate_model.py
-python scripts/07_evaluation/evaluate_model.py --model models/sec-risk-model
+python scripts/evaluation/evaluate_model.py
+python scripts/evaluation/evaluate_model.py --model models/sec-risk-model
 ```
 
 ### Stage 8: Inference
@@ -138,10 +138,10 @@ Run predictions on new SEC filings.
 **Usage:**
 ```bash
 # Single file
-python scripts/08_inference/predict.py --input data/raw/AAPL_10K.html
+python scripts/inference/predict.py --input data/raw/AAPL_10K.html
 
 # Batch inference
-python scripts/08_inference/predict.py --batch --input-dir data/raw/
+python scripts/inference/predict.py --batch --input-dir data/raw/
 ```
 
 ### Stage 9: Deployment

@@ -7,8 +7,8 @@ Input: data/interim/ - Extracted and cleaned risk factors
 Output: data/processed/ - Feature matrices, embeddings
 
 Usage:
-    python scripts/04_feature_engineering/extract_features.py
-    python scripts/04_feature_engineering/extract_features.py --embedding-model sentence-transformers
+    python scripts/feature_engineering/extract_features.py
+    python scripts/feature_engineering/extract_features.py --embedding-model sentence-transformers
 """
 
 import argparse
@@ -20,7 +20,11 @@ import numpy as np
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.config import EXTRACTED_DATA_DIR, PROCESSED_DATA_DIR, ensure_directories
+from src.config import settings, ensure_directories, RunContext
+
+# Directory shortcuts from settings (avoids deprecated legacy constants)
+EXTRACTED_DATA_DIR = settings.paths.extracted_data_dir
+PROCESSED_DATA_DIR = settings.paths.processed_data_dir
 from src.preprocessing.cleaning import TextCleaner
 from src.features import SentimentAnalyzer, ReadabilityAnalyzer
 

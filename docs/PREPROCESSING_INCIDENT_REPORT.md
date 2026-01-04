@@ -148,7 +148,7 @@ finally:
 Always test with a single file before batch processing:
 
 ```bash
-python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --input data/raw/AAPL_10K_2024.html
+python scripts/data_preprocessing/run_preprocessing_pipeline.py --input data/raw/AAPL_10K_2024.html
 ```
 
 ### 2. Use Smaller Batch Sizes for Testing
@@ -156,7 +156,7 @@ python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --input data/
 Start with 2 workers to catch errors early:
 
 ```bash
-python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --batch --workers 2
+python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch --workers 2
 ```
 
 ### 3. Check Intermediate Outputs
@@ -337,5 +337,5 @@ preprocessing:
 ## Contact
 
 For questions about this incident or the preprocessing pipeline:
-- Review code at: `scripts/02_data_preprocessing/run_preprocessing_pipeline.py`
+- Review code at: `scripts/data_preprocessing/run_preprocessing_pipeline.py`
 - Parser module: `src/preprocessing/parser.py`

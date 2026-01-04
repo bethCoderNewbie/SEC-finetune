@@ -7,7 +7,7 @@ This script demonstrates how to:
 3. Use these features for downstream classification
 
 Usage:
-    python scripts/04_feature_engineering/topic_modeling_demo.py
+    python scripts/feature_engineering/topic_modeling_demo.py
 """
 
 import json

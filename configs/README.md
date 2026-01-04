@@ -2,6 +2,20 @@
 
 This directory contains YAML configuration files that define default values for the SEC Filing Analyzer application.
 
+## Structure
+
+```
+configs/
+├── README.md              # This file
+├── config.yaml            # Main application configuration
+└── qa_validation/         # QA validation thresholds
+    ├── README.md          # QA validation documentation
+    ├── extraction.yaml    # Extractor thresholds
+    ├── parsing.yaml       # Parser thresholds
+    ├── cleaning.yaml      # Cleaner/segmenter thresholds
+    └── features.yaml      # Sentiment/readability thresholds
+```
+
 ## Files
 
 ### `config.yaml`
@@ -15,6 +29,11 @@ Main configuration file containing all application defaults, organized by domain
 - **`sec_sections`**: Section identifiers for 10-K and 10-Q forms
 - **`testing`**: Testing and validation settings
 - **`reproducibility`**: Reproducibility settings (random seed, versions)
+- **`naming`**: Naming conventions for output files and directories
+
+### `qa_validation/`
+
+QA validation thresholds for Go/No-Go test criteria. See [qa_validation/README.md](qa_validation/README.md) for details.
 
 ## How It Works
 

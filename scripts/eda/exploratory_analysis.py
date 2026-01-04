@@ -7,8 +7,8 @@ Input: data/interim/ - Parsed filings, extracted sections
 Output: reports/figures/ - Visualizations and statistical summaries
 
 Usage:
-    python scripts/03_eda/exploratory_analysis.py
-    python scripts/03_eda/exploratory_analysis.py --output-dir reports/eda_2024
+    python scripts/eda/exploratory_analysis.py
+    python scripts/eda/exploratory_analysis.py --output-dir reports/eda_2024
 """
 
 import argparse
@@ -20,7 +20,11 @@ import json
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.config import PARSED_DATA_DIR, EXTRACTED_DATA_DIR
+from src.config import settings
+
+# Directory shortcuts from settings (avoids deprecated legacy constants)
+PARSED_DATA_DIR = settings.paths.parsed_data_dir
+EXTRACTED_DATA_DIR = settings.paths.extracted_data_dir
 
 
 def analyze_filing_statistics(data_dir: Path) -> Dict:

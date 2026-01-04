@@ -1,5 +1,114 @@
 # Changes Summary
 
+## 2025-12-12: HTML Sanitizer for Pre-Parser Cleaning
+
+### Overview
+
+Added `HTMLSanitizer` to clean raw HTML **before** sec-parser processing. This improves `ParsedFiling` quality by removing noise while preserving metadata and structure needed for section extraction.
+
+### New Pipeline Flow
+
+```
+1. SANITIZE → HTMLSanitizer       → cleaned HTML (NEW)
+2. PARSE    → SECFilingParser     → ParsedFiling (with metadata)
+3. EXTRACT  → SECSectionExtractor → ExtractedSection (metadata preserved)
+4. CLEAN    → TextCleaner         → cleaned text
+5. SEGMENT  → RiskSegmenter       → SegmentedRisks (metadata preserved)
+```
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `src/preprocessing/sanitizer.py` | `HTMLSanitizer` class with 8 configurable cleaning steps |
+
+### Modified Files
+
+| File | Changes |
+|------|---------|
+| `configs/config.yaml` | Added `sanitizer` section under `preprocessing` |
+| `src/config/preprocessing.py` | Added `SanitizerConfig` class with settings |
+| `src/preprocessing/pipeline.py` | Integrated sanitizer as Step 1/5 |
+| `src/preprocessing/__init__.py` | Exported `HTMLSanitizer`, `SanitizerConfig`, `sanitize_html` |
+
+### Sanitization Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `true` | Enable pre-parser HTML sanitization |
+| `remove_edgar_header` | `false` | Remove EDGAR header (WARNING: disables metadata) |
+| `remove_edgar_tags` | `false` | Remove `<PAGE>`, `<S>` tags (WARNING: breaks structure) |
+| `decode_entities` | `true` | `&amp;` → `&`, `&nbsp;` → space |
+| `normalize_unicode` | `true` | NFKC normalization (`ﬁ` → `fi`) |
+| `remove_invisible_chars` | `true` | Remove zero-width spaces, control chars |
+| `normalize_quotes` | `true` | Curly → straight quotes |
+| `fix_encoding` | `false` | Fix mojibake (requires `ftfy` library) |
+| `flatten_nesting` | `true` | Remove redundant nested tags |
+
+### Safe Defaults
+
+Two options are disabled by default because they break functionality:
+
+1. **`remove_edgar_header: false`** - EDGAR header contains CIK, SIC, company name metadata
+2. **`remove_edgar_tags: false`** - `<PAGE>` tags are used by sec-parser for section structure
+
+### Usage
+
+```python
+# Default (sanitizer enabled with safe defaults)
+from src.preprocessing import process_filing
+result = process_filing("data/raw/AAPL_10K.html")
+
+# With custom config
+from src.preprocessing import SECPreprocessingPipeline, PipelineConfig
+from src.preprocessing.sanitizer import SanitizerConfig
+
+config = PipelineConfig(
+    pre_sanitize=True,
+    sanitizer_config=SanitizerConfig(
+        decode_entities=True,
+        normalize_unicode=True,
+        normalize_quotes=True,
+    )
+)
+pipeline = SECPreprocessingPipeline(config)
+result = pipeline.process_risk_factors("data/raw/AAPL_10K.html")
+
+# Standalone sanitization
+from src.preprocessing import HTMLSanitizer, sanitize_html
+
+sanitizer = HTMLSanitizer()
+clean_html = sanitizer.sanitize(raw_html)
+stats = sanitizer.get_stats(raw_html, clean_html)
+print(f"Reduction: {stats['reduction_percent']:.1f}%")
+```
+
+### Test Results
+
+With safe defaults on AAPL_10K_2021.html:
+- **1.9% HTML reduction** (10.5MB → 10.3MB)
+- **Metadata preserved**: CIK, SIC code, company name
+- **54 segments extracted** successfully
+- **Cleaner text**: No mojibake, normalized quotes
+
+### Configuration in `configs/config.yaml`
+
+```yaml
+preprocessing:
+  sanitizer:
+    enabled: true
+    remove_edgar_header: false  # Preserves metadata
+    remove_edgar_tags: false    # Preserves sec-parser structure
+    decode_entities: true
+    normalize_unicode: true
+    remove_invisible_chars: true
+    normalize_quotes: true
+    fix_encoding: false
+    flatten_nesting: true
+```
+
+---
+
 ## 2025-12-12: Preprocessing Pipeline Restructure
 
 ### Overview
@@ -121,7 +230,7 @@ result.save_to_json("output/AAPL_risks.json")
 
 ### Script Updates
 
-#### `scripts/02_data_preprocessing/run_preprocessing_pipeline.py`
+#### `scripts/data_preprocessing/run_preprocessing_pipeline.py`
 
 Updated to use new pipeline flow with metadata preservation:
 

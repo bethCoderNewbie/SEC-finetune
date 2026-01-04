@@ -9,69 +9,19 @@ Categories:
 1. Hygiene & Artifact Metrics - HTML/entity removal, whitespace normalization
 2. Continuity Metrics - Page/header removal without destroying content
 3. Data Integrity - Preserving financial figures, dates, percentages
+
+Note: This module uses centralized fixtures from conftest.py:
+- extracted_data: List of extracted risk JSON data
+- cleaned_data: List of cleaned risk JSON data
+- cleaner: TextCleaner instance
 """
 
-import json
 import re
-from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict
 import pytest
 
-from src.preprocessing.cleaning import TextCleaner, clean_filing_text
 
-
-# Data directories
-DATA_DIR = Path(__file__).parent.parent.parent / "data"
-EXTRACTED_DIR = DATA_DIR / "interim" / "extracted"
-
-
-def get_extracted_files() -> List[Path]:
-    """Get all extracted risk files."""
-    files = list(EXTRACTED_DIR.glob("*_extracted_risks.json"))
-    # Also check v1_ subdirectory
-    v1_dir = EXTRACTED_DIR / "v1_"
-    if v1_dir.exists():
-        files.extend(v1_dir.glob("*_extracted_risks.json"))
-    return files
-
-
-def get_cleaned_files() -> List[Path]:
-    """Get all cleaned risk files."""
-    files = list(EXTRACTED_DIR.glob("*_cleaned_risks.json"))
-    # Also check v1_ subdirectory
-    v1_dir = EXTRACTED_DIR / "v1_"
-    if v1_dir.exists():
-        files.extend(v1_dir.glob("*_cleaned_risks.json"))
-    return files
-
-
-def load_json(filepath: Path) -> Dict[str, Any]:
-    """Load JSON file."""
-    with open(filepath, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-
-@pytest.fixture(scope="module")
-def extracted_data() -> List[Dict[str, Any]]:
-    """Load all extracted risk data."""
-    files = get_extracted_files()
-    if not files:
-        pytest.skip("No extracted data files found")
-    return [load_json(f) for f in files[:5]]  # Limit to 5 for speed
-
-
-@pytest.fixture(scope="module")
-def cleaned_data() -> List[Dict[str, Any]]:
-    """Load all cleaned risk data."""
-    files = get_cleaned_files()
-    if not files:
-        pytest.skip("No cleaned data files found")
-    return [load_json(f) for f in files[:5]]  # Limit to 5 for speed
-
-
-@pytest.fixture
-def cleaner():
-    return TextCleaner()
+# Note: extracted_data, cleaned_data, and cleaner fixtures are provided by conftest.py
 
 
 class TestCleanerHygieneWithRealData:
@@ -79,6 +29,8 @@ class TestCleanerHygieneWithRealData:
 
     def test_no_html_tags_in_cleaned_text(self, cleaned_data: List[Dict]):
         """Verify cleaned text contains no HTML tags."""
+        if not cleaned_data:
+            pytest.skip("No cleaned data available")
         for doc in cleaned_data:
             text = doc.get("text", "")
             tags_found = re.findall(r'<[^>]+>', text)
@@ -88,6 +40,8 @@ class TestCleanerHygieneWithRealData:
 
     def test_no_html_entities_in_cleaned_text(self, cleaned_data: List[Dict]):
         """Verify cleaned text contains no unescaped HTML entities."""
+        if not cleaned_data:
+            pytest.skip("No cleaned data available")
         for doc in cleaned_data:
             text = doc.get("text", "")
             # Check for common HTML entities that should be decoded
@@ -100,6 +54,8 @@ class TestCleanerHygieneWithRealData:
 
     def test_no_excessive_whitespace(self, cleaned_data: List[Dict]):
         """Verify no excessive whitespace (3+ consecutive spaces) in cleaned text."""
+        if not cleaned_data:
+            pytest.skip("No cleaned data available")
         for doc in cleaned_data:
             text = doc.get("text", "")
             # Count triple+ spaces
@@ -116,6 +72,8 @@ class TestCleanerHygieneWithRealData:
         Note: This tests the cleaner's behavior, not the pre-processed files.
         Pre-processed files may have been created before this fix was applied.
         """
+        if not cleaned_data:
+            pytest.skip("No cleaned data available")
         for doc in cleaned_data:
             text = doc.get("text", "")
             # Apply the cleaner to normalize any curly quotes
@@ -131,6 +89,8 @@ class TestCleanerContinuityWithRealData:
 
     def test_page_headers_removed(self, cleaned_data: List[Dict]):
         """Verify page headers like 'Apple Inc. | 2021 Form 10-K | 6' are handled."""
+        if not cleaned_data:
+            pytest.skip("No cleaned data available")
         for doc in cleaned_data:
             text = doc.get("text", "")
             # Page number patterns that should be removed or minimal
@@ -142,6 +102,8 @@ class TestCleanerContinuityWithRealData:
 
     def test_text_has_substantive_content(self, cleaned_data: List[Dict]):
         """Verify cleaned text contains substantive risk content."""
+        if not cleaned_data:
+            pytest.skip("No cleaned data available")
         risk_keywords = [
             'risk', 'adverse', 'material', 'significant', 'could',
             'may', 'operations', 'business', 'financial'
@@ -155,6 +117,8 @@ class TestCleanerContinuityWithRealData:
 
     def test_sentence_structure_preserved(self, cleaned_data: List[Dict]):
         """Verify sentences end with proper punctuation."""
+        if not cleaned_data:
+            pytest.skip("No cleaned data available")
         for doc in cleaned_data:
             text = doc.get("text", "")
             if len(text) < 100:
@@ -168,6 +132,8 @@ class TestCleanerContinuityWithRealData:
 
     def test_subsections_identified(self, extracted_data: List[Dict]):
         """Verify that subsections are extracted from the documents."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         for doc in extracted_data:
             subsections = doc.get("subsections", [])
             # Most 10-K filings have multiple risk subsections
@@ -182,6 +148,8 @@ class TestCleanerIntegrityWithRealData:
 
     def test_financial_figures_preserved(self, cleaned_data: List[Dict]):
         """Verify dollar amounts and percentages are preserved."""
+        if not cleaned_data:
+            pytest.skip("No cleaned data available")
         for doc in cleaned_data:
             text = doc.get("text", "")
             # Check for dollar signs and percentages
@@ -192,6 +160,8 @@ class TestCleanerIntegrityWithRealData:
 
     def test_years_preserved(self, cleaned_data: List[Dict]):
         """Verify fiscal years are preserved in the text."""
+        if not cleaned_data:
+            pytest.skip("No cleaned data available")
         for doc in cleaned_data:
             text = doc.get("text", "")
             # Look for year patterns (2020-2025)
@@ -200,12 +170,16 @@ class TestCleanerIntegrityWithRealData:
 
     def test_non_empty_output(self, cleaned_data: List[Dict]):
         """Verify all cleaned documents have non-empty text."""
+        if not cleaned_data:
+            pytest.skip("No cleaned data available")
         for doc in cleaned_data:
             text = doc.get("text", "")
             assert len(text) > 100, "Cleaned text is too short"
 
     def test_word_count_reasonable(self, cleaned_data: List[Dict]):
         """Verify word count is reasonable for risk factors section."""
+        if not cleaned_data:
+            pytest.skip("No cleaned data available")
         for doc in cleaned_data:
             text = doc.get("text", "")
             word_count = len(text.split())
@@ -220,6 +194,8 @@ class TestCleanerElementsStructure:
 
     def test_elements_have_valid_types(self, extracted_data: List[Dict]):
         """Verify elements have valid type fields."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         valid_types = {
             "TextElement", "TitleElement", "SupplementaryText",
             "EmptyElement", "TableElement", "ListElement"
@@ -233,6 +209,8 @@ class TestCleanerElementsStructure:
 
     def test_elements_have_text(self, extracted_data: List[Dict]):
         """Verify elements have text content (except EmptyElement)."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         for doc in extracted_data:
             elements = doc.get("elements", [])
             text_elements = [
@@ -250,6 +228,8 @@ class TestCleanerComparison:
 
     def test_cleaned_shorter_than_extracted(self, extracted_data: List[Dict], cleaned_data: List[Dict]):
         """Verify cleaning reduces text length (removes artifacts)."""
+        if not extracted_data or not cleaned_data:
+            pytest.skip("No extracted or cleaned data available")
         # Match files by comparing text content patterns
         for extracted in extracted_data:
             ext_text = extracted.get("text", "")
@@ -275,6 +255,8 @@ class TestCleanerIntegration:
 
     def test_cleaner_on_extracted_text(self, cleaner, extracted_data: List[Dict]):
         """Test TextCleaner on actual extracted text."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         for doc in extracted_data[:2]:  # Limit for speed
             text = doc.get("text", "")
             cleaned = cleaner.clean_text(text)
@@ -291,6 +273,8 @@ class TestCleanerIntegration:
 
     def test_cleaner_preserves_structure(self, cleaner, extracted_data: List[Dict]):
         """Test that cleaning preserves paragraph structure."""
+        if not extracted_data:
+            pytest.skip("No extracted data available")
         for doc in extracted_data[:2]:
             text = doc.get("text", "")
             cleaned = cleaner.clean_text(text)

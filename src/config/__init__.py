@@ -31,6 +31,19 @@ from src.config.extraction import ExtractionConfig
 from src.config.sec_sections import SecSectionsConfig
 from src.config.testing import TestingConfig, ReproducibilityConfig
 from src.config.run_context import RunContext
+from src.config.naming import NamingConfig
+from src.config.qa_validation import (
+    QAValidationConfig,
+    ThresholdRegistry,
+    ValidationResult,
+    ThresholdDefinition,
+    ValidationStatus,
+    GoNoGo,
+    MetricType,
+    generate_validation_table,
+    generate_blocking_summary,
+    determine_overall_status,
+)
 
 # Feature configs
 from src.config.features import (
@@ -72,6 +85,8 @@ class Settings(BaseSettings):
     readability: ReadabilityConfig = Field(default_factory=ReadabilityConfig)
     topic_modeling: TopicModelingConfig = Field(default_factory=TopicModelingConfig)
     risk_analysis: RiskAnalysisConfig = Field(default_factory=RiskAnalysisConfig)
+    naming: NamingConfig = Field(default_factory=NamingConfig)
+    qa_validation: QAValidationConfig = Field(default_factory=QAValidationConfig)
 
 
 # ===========================
@@ -113,6 +128,19 @@ __all__ = [
     "TopicModelingConfig",
     "ReadabilityConfig",
     "RiskAnalysisConfig",
+    # Naming config
+    "NamingConfig",
+    # QA Validation
+    "QAValidationConfig",
+    "ThresholdRegistry",
+    "ValidationResult",
+    "ThresholdDefinition",
+    "ValidationStatus",
+    "GoNoGo",
+    "MetricType",
+    "generate_validation_table",
+    "generate_blocking_summary",
+    "determine_overall_status",
 ]
 
 

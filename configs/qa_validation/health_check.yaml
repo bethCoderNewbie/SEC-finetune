@@ -106,6 +106,48 @@ thresholds:
       description: Max 5% segments below minimum length (50 chars)
       tags: [substance, health_check]
 
+    # Smart Integrity Check - File Size Validation
+    min_file_size_kb:
+      display_name: Minimum File Size (Strict Floor)
+      metric_type: count
+      target: 100
+      operator: ">="
+      blocking: true
+      description: Raw HTML file must be >= 100 KB (below this indicates corrupt download)
+      tags: [substance, size_validation, corrupt_data, blocking]
+      unit: kilobytes
+
+    max_file_size_mb_standard:
+      display_name: Maximum File Size (Standard Industries)
+      metric_type: count
+      target: 50
+      operator: "<="
+      blocking: false
+      description: Raw HTML file should be <= 50 MB for non-financial sectors (flags bloat)
+      tags: [substance, size_validation, industry_standard]
+      unit: megabytes
+
+    max_file_size_mb_financial:
+      display_name: Maximum File Size (Financials/REITs)
+      metric_type: count
+      target: 150
+      operator: "<="
+      blocking: false
+      description: Raw HTML file allowed up to 150 MB for SIC 6000-6799 (asset tables)
+      tags: [substance, size_validation, industry_specific, financials]
+      unit: megabytes
+      sic_range: [6000, 6799]
+
+    extraction_yield_ppm:
+      display_name: Extraction Yield (PPM)
+      metric_type: count
+      target: 1000
+      operator: ">="
+      blocking: false
+      description: Parts-per-million ratio of extracted chars to file bytes (validates proportionality)
+      tags: [substance, size_validation, extraction_efficiency]
+      unit: ppm
+
   # -------------------------
   # Domain Rules
   # -------------------------

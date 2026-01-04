@@ -9,7 +9,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.preprocessing.parser import SECFilingParser
 from src.preprocessing.extractor import SECSectionExtractor
-from src.config import RAW_DATA_DIR
+from src.config import settings
+
+# Directory shortcuts from settings (avoids deprecated legacy constants)
+RAW_DATA_DIR = settings.paths.raw_data_dir
+EXTRACTED_DATA_DIR = settings.paths.extracted_data_dir
 
 def test_fixed_extractor():
     print("=" * 80)
@@ -56,7 +60,7 @@ def test_fixed_extractor():
 
         # Save to file
         print("\n[3/3] Saving extracted section...")
-        output_path = RAW_DATA_DIR.parent / "interim" / "extracted" / f"{input_file.stem}_risks_fixed.json"
+        output_path = EXTRACTED_DATA_DIR / f"{input_file.stem}_risks_fixed.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         risk_section.save_to_json(output_path, overwrite=True)
         print(f"  [OK] Saved to: {output_path}")

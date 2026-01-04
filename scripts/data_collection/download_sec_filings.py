@@ -10,13 +10,13 @@ This script downloads SEC 10-K filings optimized for LDA topic modeling:
 
 Usage:
     # Download optimal corpus for topic modeling
-    python scripts/01_data_collection/download_sec_filings.py --mode topic-modeling
+    python scripts/data_collection/download_sec_filings.py --mode topic-modeling
 
     # Download specific companies
-    python scripts/01_data_collection/download_sec_filings.py --ticker AAPL --years 3
+    python scripts/data_collection/download_sec_filings.py --ticker AAPL --years 3
 
     # Download from ticker file
-    python scripts/01_data_collection/download_sec_filings.py --ticker-file tickers.txt
+    python scripts/data_collection/download_sec_filings.py --ticker-file tickers.txt
 """
 
 import argparse
@@ -885,13 +885,13 @@ def main():
         epilog="""
 Examples:
   # Download optimal corpus for topic modeling (1000 docs, 300 companies, 8-12 industries)
-  python scripts/01_data_collection/download_sec_filings.py --mode topic-modeling
+  python scripts/data_collection/download_sec_filings.py --mode topic-modeling
 
   # Download specific ticker
-  python scripts/01_data_collection/download_sec_filings.py --ticker AAPL --years 3
+  python scripts/data_collection/download_sec_filings.py --ticker AAPL --years 3
 
   # Download from file
-  python scripts/01_data_collection/download_sec_filings.py --ticker-file tickers.txt --years 5
+  python scripts/data_collection/download_sec_filings.py --ticker-file tickers.txt --years 5
         """
     )
 

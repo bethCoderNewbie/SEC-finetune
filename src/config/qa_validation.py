@@ -630,6 +630,60 @@ class HealthCheckValidator:
         """Initialize the validator with threshold registry."""
         self.registry = ThresholdRegistry
 
+    def check_single(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Validate a single in-memory data object (inline validation).
+
+        This method enables inline validation during processing to support
+        the quarantine pattern. Files that fail validation are quarantined
+        instead of being written to production directories.
+
+        Args:
+            data: Dictionary containing preprocessed data (e.g., SegmentedRisks.model_dump())
+
+        Returns:
+            Report dict with status ("PASS" or "FAIL"), blocking_summary, and validation_table
+
+        Usage:
+            from src.config.qa_validation import HealthCheckValidator
+
+            validator = HealthCheckValidator()
+            result = filing.to_dict()  # or segmented_risks.model_dump()
+            report = validator.check_single(result)
+
+            if report["status"] == "FAIL":
+                # Quarantine the file
+                quarantine_file(result, report)
+        """
+        # Wrap single file in list for consistency with check_run
+        file_data = [data]
+
+        # Collect all validation results
+        results: List[ValidationResult] = []
+
+        # 1. Identity completeness
+        results.extend(self._check_identity(file_data))
+
+        # 2. Cleanliness
+        results.extend(self._check_cleanliness(file_data))
+
+        # 3. Substance
+        results.extend(self._check_substance(file_data))
+
+        # 4. Domain rules (duplicates, keywords)
+        results.extend(self._check_domain(file_data))
+
+        # Generate report using existing infrastructure
+        overall_status = determine_overall_status(results)
+        blocking_summary = generate_blocking_summary(results)
+
+        return {
+            "status": overall_status.value,
+            "timestamp": datetime.now().isoformat(),
+            "blocking_summary": blocking_summary,
+            "validation_table": generate_validation_table(results),
+        }
+
     def check_run(self, run_dir: Path) -> Dict[str, Any]:
         """
         Run all health checks on a preprocessing run directory.
@@ -781,6 +835,47 @@ class HealthCheckValidator:
             results.append(ValidationResult.from_threshold(
                 threshold, short_segments / total_segments
             ))
+
+        # Smart Integrity Check - File Size Validation
+        for data in file_data:
+            file_size_bytes = data.get("file_size_bytes")
+            sic_code = data.get("sic_code")
+
+            if file_size_bytes:
+                # Convert bytes to KB and MB
+                file_size_kb = file_size_bytes / 1024
+                file_size_mb = file_size_bytes / (1024 * 1024)
+
+                # Check minimum file size (strict floor - blocking)
+                threshold = self.registry.get("min_file_size_kb")
+                if threshold:
+                    results.append(ValidationResult.from_threshold(
+                        threshold, file_size_kb
+                    ))
+
+                # Check maximum file size with SIC code exemption (flexible ceiling)
+                # Financials/REITs (SIC 6000-6799) get 150 MB limit
+                # Others get 50 MB limit
+                if sic_code and 6000 <= int(sic_code) <= 6799:
+                    threshold = self.registry.get("max_file_size_mb_financial")
+                else:
+                    threshold = self.registry.get("max_file_size_mb_standard")
+
+                if threshold:
+                    results.append(ValidationResult.from_threshold(
+                        threshold, file_size_mb
+                    ))
+
+                # Calculate extraction yield (PPM)
+                # Ratio of extracted text chars to raw file bytes
+                extracted_chars = sum(len(seg.get("text", "")) for seg in data.get("segments", []))
+                if file_size_bytes > 0:
+                    yield_ppm = (extracted_chars / file_size_bytes) * 1_000_000
+                    threshold = self.registry.get("extraction_yield_ppm")
+                    if threshold:
+                        results.append(ValidationResult.from_threshold(
+                            threshold, yield_ppm
+                        ))
 
         return results
 

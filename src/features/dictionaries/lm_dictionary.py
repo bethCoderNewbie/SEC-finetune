@@ -103,7 +103,7 @@ class LMDictionaryManager:
             raise FileNotFoundError(
                 f"Dictionary cache not found at {self._dictionary_path}. "
                 f"Please run preprocessing script: "
-                f"python scripts/04_feature_engineering/utils/preprocess_lm_dict.py"
+                f"python scripts/feature_engineering/utils/preprocess_lm_dict.py"
             )
 
         logger.info(f"Loading LM dictionary from {self._dictionary_path}")

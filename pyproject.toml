@@ -230,14 +230,17 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 check_untyped_defs = true
 # Pydantic plugin for better type checking of Pydantic models
-plugins = ["pydantic.mypy"]
+# NOTE: Plugin disabled due to incompatibility with mypy 1.18.2+
+#       See: thoughts/shared/research/2025-12-28_12-38_mlops_improvements_feasibility_validation.md
+#       Basic mypy type checking still works without plugin
+# plugins = ["pydantic.mypy"]
 
-# Pydantic-specific mypy configuration
-[[tool.mypy.overrides]]
-module = "pydantic"
-init_forbid_extra = true
-init_typed = true
-warn_required_dynamic_aliases = true
+# Pydantic-specific mypy configuration (requires plugin)
+# [[tool.mypy.overrides]]
+# module = "pydantic"
+# init_forbid_extra = true
+# init_typed = true
+# warn_required_dynamic_aliases = true
 
 [tool.ruff]
 line-length = 100

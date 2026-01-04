@@ -73,6 +73,7 @@ processed_data/
 sec_filings/
 downloads/
 cache/
+*.md
 
 # Logs
 *.log
@@ -84,6 +85,12 @@ wandb/
 .coverage
 htmlcov/
 .tox/
+
+# Test output runs (keep README.md and .gitkeep, ignore timestamped directories)
+tests/outputs/*/
+tests/outputs/.latest
+!tests/outputs/README.md
+!tests/outputs/.gitkeep
 
 # System files
 Thumbs.db

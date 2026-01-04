@@ -2,28 +2,114 @@
 Preprocessing Pipeline for SEC Filings
 
 Orchestrates the complete preprocessing flow:
-1. Parse - Parse HTML filing into semantic structure
-2. Clean - Clean and normalize text
+1. Sanitize - Clean raw HTML before parsing ("Sanitize HTML before parsing (Default: False, sec-parser prefers raw HTML)")
+2. Parse - Parse HTML filing into semantic structure
 3. Extract - Extract specific sections with metadata
-4. Segment - Split into individual risk segments
+4. Clean - Clean and normalize text
+5. Segment - Split into individual risk segments
 
 All metadata (sic_code, sic_name, cik, ticker, company_name) is preserved
 throughout the pipeline.
 """
 
 import logging
+import time
 from pathlib import Path
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Dict, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .parser import SECFilingParser, ParsedFiling
+# Import data models from models package
+from .models import ParsedFiling, ExtractedSection, SegmentedRisks
+# Import processing classes
+from .parser import SECFilingParser
 from .cleaning import TextCleaner
-from .extractor import SECSectionExtractor, ExtractedSection
-from .segmenter import RiskSegmenter, SegmentedRisks
+from .extractor import SECSectionExtractor
+from .segmenter import RiskSegmenter
+from .sanitizer import HTMLSanitizer, SanitizerConfig as SanitizerConfigModel
 from .constants import SectionIdentifier
+# Import parallel processing utility
+from src.utils.parallel import ParallelProcessor
 
 logger = logging.getLogger(__name__)
+
+
+# Module-level worker function for parallel processing
+def _process_single_filing_worker(args: tuple) -> Dict[str, Any]:
+    """
+    Worker function for parallel batch processing with elapsed time tracking.
+
+    Args:
+        args: Tuple of (file_path, config_dict, form_type, output_dir, overwrite)
+
+    Returns:
+        Dict with status, result, and elapsed time
+    """
+    file_path, config_dict, form_type, output_dir, overwrite = args
+    file_path = Path(file_path)
+
+    # Start timing
+    start_time = time.time()
+
+    # Get file size for logging
+    file_size_mb = file_path.stat().st_size / (1024 * 1024) if file_path.exists() else 0
+
+    try:
+        # Reconstruct pipeline config from dict
+        config = PipelineConfig(**config_dict) if config_dict else PipelineConfig()
+
+        # Create pipeline instance for this worker
+        pipeline = SECPreprocessingPipeline(config)
+
+        # Generate output path if output_dir is provided
+        save_output = None
+        if output_dir:
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            save_output = output_dir / f"{file_path.stem}_segmented.json"
+
+        # Process the file
+        result = pipeline.process_risk_factors(
+            file_path,
+            form_type=form_type,
+            save_output=save_output,
+            overwrite=overwrite,
+        )
+
+        elapsed_time = time.time() - start_time
+
+        if result:
+            return {
+                'status': 'success',
+                'file': file_path.name,
+                'result': result,  # Include actual SegmentedRisks object
+                'num_segments': len(result),
+                'sic_code': result.sic_code,
+                'company_name': result.company_name,
+                'elapsed_time': elapsed_time,
+                'file_size_mb': file_size_mb,
+            }
+        else:
+            return {
+                'status': 'warning',
+                'file': file_path.name,
+                'result': None,
+                'error': 'No result returned from processing',
+                'elapsed_time': elapsed_time,
+                'file_size_mb': file_size_mb,
+            }
+
+    except Exception as e:
+        elapsed_time = time.time() - start_time
+        logger.error("Failed to process %s (%.1fs): %s", file_path.name, elapsed_time, e)
+        return {
+            'status': 'error',
+            'file': file_path.name,
+            'result': None,
+            'error': str(e),
+            'elapsed_time': elapsed_time,
+            'file_size_mb': file_size_mb,
+        }
 
 
 class PipelineConfig(BaseModel):
@@ -31,6 +117,8 @@ class PipelineConfig(BaseModel):
     Configuration for the preprocessing pipeline (Pydantic V2)
 
     Attributes:
+        pre_sanitize: Whether to sanitize HTML before parsing (recommended)
+        sanitizer_config: Configuration for HTML sanitization
         remove_html: Whether to remove HTML tags from text
         deep_clean: Whether to apply NLP-based deep cleaning
         use_lemmatization: Whether to lemmatize words
@@ -45,6 +133,16 @@ class PipelineConfig(BaseModel):
     model_config = ConfigDict(
         validate_assignment=True,
         extra='forbid',  # Raise error on unknown fields
+    )
+
+    # Pre-parser sanitization options (NEW)
+    pre_sanitize: bool = Field(
+        default=False,
+        description="Sanitize HTML before parsing (Default: False, sec-parser prefers raw HTML)"
+    )
+    sanitizer_config: Optional[SanitizerConfigModel] = Field(
+        default=None,
+        description="Configuration for HTML sanitization (None = use defaults from settings)"
     )
 
     # Cleaning options
@@ -80,7 +178,7 @@ class SECPreprocessingPipeline:
     """
     Complete preprocessing pipeline for SEC filings
 
-    Flow: Parse → Clean → Extract → Segment
+    Flow: Sanitize → Parse → Extract → Clean → Segment
 
     All metadata is preserved through the pipeline:
     - sic_code: Standard Industrial Classification code
@@ -109,7 +207,27 @@ class SECPreprocessingPipeline:
         """
         self.config = config or PipelineConfig()
 
-        # Initialize components
+        # Initialize sanitizer (NEW - runs before parser)
+        if self.config.pre_sanitize:
+            sanitizer_config = self.config.sanitizer_config
+            if sanitizer_config is None:
+                # Load from settings if not provided
+                from src.config import settings
+                sanitizer_config = SanitizerConfigModel(
+                    remove_edgar_header=settings.preprocessing.sanitizer.remove_edgar_header,
+                    remove_edgar_tags=settings.preprocessing.sanitizer.remove_edgar_tags,
+                    decode_entities=settings.preprocessing.sanitizer.decode_entities,
+                    normalize_unicode=settings.preprocessing.sanitizer.normalize_unicode,
+                    remove_invisible_chars=settings.preprocessing.sanitizer.remove_invisible_chars,
+                    normalize_quotes=settings.preprocessing.sanitizer.normalize_quotes,
+                    fix_encoding=settings.preprocessing.sanitizer.fix_encoding,
+                    flatten_nesting=settings.preprocessing.sanitizer.flatten_nesting,
+                )
+            self.sanitizer = HTMLSanitizer(sanitizer_config)
+        else:
+            self.sanitizer = None
+
+        # Initialize other components
         self.parser = SECFilingParser()
         self.cleaner = TextCleaner(
             use_lemmatization=self.config.use_lemmatization,
@@ -137,10 +255,11 @@ class SECPreprocessingPipeline:
         Process a SEC filing through the complete pipeline
 
         Flow:
-        1. Parse HTML → ParsedFiling (with metadata)
-        2. Extract section → ExtractedSection (with metadata)
-        3. Clean text → cleaned text
-        4. Segment → SegmentedRisks (with metadata)
+        1. Sanitize HTML → cleaned HTML (NEW)
+        2. Parse HTML → ParsedFiling (with metadata)
+        3. Extract section → ExtractedSection (with metadata)
+        4. Clean text → cleaned text
+        5. Segment → SegmentedRisks (with metadata)
 
         Args:
             file_path: Path to the HTML filing file
@@ -161,9 +280,33 @@ class SECPreprocessingPipeline:
         file_path = Path(file_path)
         logger.info("Processing filing: %s", file_path.name)
 
-        # Step 1: Parse
-        logger.info("Step 1/4: Parsing HTML filing...")
-        parsed = self.parser.parse_filing(file_path, form_type)
+        # Step 1: Sanitize HTML (NEW)
+        if self.sanitizer:
+            logger.info("Step 1/5: Sanitizing HTML...")
+            # Read raw HTML
+            try:
+                html_content = file_path.read_text(encoding='utf-8')
+            except UnicodeDecodeError:
+                html_content = file_path.read_text(encoding='latin-1')
+
+            original_len = len(html_content)
+            html_content = self.sanitizer.sanitize(html_content)
+            sanitized_len = len(html_content)
+            reduction = (1 - sanitized_len / original_len) * 100 if original_len > 0 else 0
+            logger.info(
+                "Sanitized HTML: %d → %d chars (%.1f%% reduction)",
+                original_len, sanitized_len, reduction
+            )
+
+            # Parse from sanitized content
+            logger.info("Step 2/5: Parsing sanitized HTML...")
+            parsed = self.parser.parse_from_content(html_content, form_type)
+        else:
+            # No sanitization - parse directly from file
+            logger.info("Step 1/5: Skipping sanitization (disabled)")
+            logger.info("Step 2/5: Parsing HTML filing...")
+            parsed = self.parser.parse_filing(file_path, form_type)
+
         logger.info(
             "Parsed %d elements. Metadata: CIK=%s, SIC=%s (%s)",
             len(parsed),
@@ -172,8 +315,8 @@ class SECPreprocessingPipeline:
             parsed.metadata.get('sic_name'),
         )
 
-        # Step 2: Extract section (metadata flows through)
-        logger.info("Step 2/4: Extracting section '%s'...", section.value)
+        # Step 3: Extract section (metadata flows through)
+        logger.info("Step 3/5: Extracting section '%s'...", section.value)
         extracted = self.extractor.extract_section(parsed, section)
 
         if extracted is None:
@@ -186,8 +329,8 @@ class SECPreprocessingPipeline:
             len(extracted.subsections),
         )
 
-        # Step 3: Clean text
-        logger.info("Step 3/4: Cleaning text...")
+        # Step 4: Clean text
+        logger.info("Step 4/5: Cleaning text...")
         if self.config.remove_html:
             cleaned_text = self.cleaner.remove_html_tags(extracted.text)
         else:
@@ -199,8 +342,8 @@ class SECPreprocessingPipeline:
         )
         logger.info("Cleaned text: %d chars", len(cleaned_text))
 
-        # Step 4: Segment (metadata preserved)
-        logger.info("Step 4/4: Segmenting risks...")
+        # Step 5: Segment (metadata preserved)
+        logger.info("Step 5/5: Segmenting risks...")
         result = self.segmenter.segment_extracted_section(
             extracted,
             cleaned_text=cleaned_text
@@ -213,6 +356,72 @@ class SECPreprocessingPipeline:
             logger.info("Saved result to: %s", output_path)
 
         return result
+
+    def process_and_validate(
+        self,
+        file_path: Union[str, Path],
+        form_type: str = "10-K",
+        section: SectionIdentifier = SectionIdentifier.ITEM_1A_RISK_FACTORS,
+        validator=None
+    ) -> tuple[Optional[SegmentedRisks], str, Optional[dict]]:
+        """
+        Process a filing and validate the result inline (for quarantine pattern).
+
+        This method enables inline validation during processing to support
+        the quarantine pattern. Files that fail validation are NOT written
+        to production directories.
+
+        Args:
+            file_path: Path to the HTML filing file
+            form_type: Type of SEC form ("10-K" or "10-Q")
+            section: Section to extract (default: Risk Factors)
+            validator: HealthCheckValidator instance (if None, creates one)
+
+        Returns:
+            Tuple of (result, status, validation_report):
+            - result: SegmentedRisks if processing succeeded, None if failed
+            - status: "PASS" or "FAIL" (validation status)
+            - validation_report: Validation report dict (if validation performed)
+
+        Example:
+            >>> pipeline = SECPreprocessingPipeline()
+            >>> result, status, report = pipeline.process_and_validate("AAPL_10K.html")
+            >>> if status == "FAIL":
+            ...     # Quarantine the file
+            ...     quarantine_file(result, report)
+            ... else:
+            ...     # Write to production
+            ...     result.save_to_json("output.json")
+        """
+        # Process the filing
+        try:
+            result = self.process_filing(
+                file_path=file_path,
+                form_type=form_type,
+                section=section,
+                save_output=None,  # Don't save yet (wait for validation)
+                overwrite=False
+            )
+
+            if result is None:
+                return None, "FAIL", {"reason": "extraction_failed"}
+
+        except Exception as e:
+            logger.error(f"Processing failed: {e}")
+            return None, "FAIL", {"reason": "processing_error", "error": str(e)}
+
+        # Validate the result
+        if validator is None:
+            from src.config.qa_validation import HealthCheckValidator
+            validator = HealthCheckValidator()
+
+        # Convert result to dict for validation
+        data_dict = result.model_dump()
+        validation_report = validator.check_single(data_dict)
+
+        status = validation_report["status"]
+
+        return result, status, validation_report
 
     def process_risk_factors(
         self,
@@ -252,44 +461,74 @@ class SECPreprocessingPipeline:
         form_type: str = "10-K",
         output_dir: Optional[Union[str, Path]] = None,
         overwrite: bool = False,
+        max_workers: Optional[int] = None,
+        verbose: bool = True,
     ) -> List[SegmentedRisks]:
         """
-        Process multiple filings
+        Process multiple filings with optional parallel processing
 
         Args:
             file_paths: List of paths to HTML filing files
             form_type: Type of SEC form ("10-K" or "10-Q")
             output_dir: Optional directory to save results
             overwrite: Whether to overwrite existing files
+            max_workers: Number of parallel workers (None=auto, 1=sequential)
+            verbose: Print progress information
 
         Returns:
-            List of SegmentedRisks objects
+            List of SegmentedRisks objects (successful results only)
+
+        Note:
+            Uses ParallelProcessor for efficient batch processing.
+            Set max_workers=1 for sequential processing.
         """
-        results = []
+        if not file_paths:
+            logger.warning("No file paths provided for batch processing")
+            return []
 
-        for file_path in file_paths:
-            file_path = Path(file_path)
+        # Convert config to dict for serialization (needed for parallel processing)
+        config_dict = self.config.model_dump() if self.config else {}
 
-            # Generate output path if output_dir is provided
-            save_output = None
-            if output_dir:
-                output_dir = Path(output_dir)
-                output_dir.mkdir(parents=True, exist_ok=True)
-                save_output = output_dir / f"{file_path.stem}_segmented.json"
+        # Prepare arguments for worker function
+        worker_args = [
+            (file_path, config_dict, form_type, output_dir, overwrite)
+            for file_path in file_paths
+        ]
 
-            try:
-                result = self.process_risk_factors(
-                    file_path,
-                    form_type=form_type,
-                    save_output=save_output,
-                    overwrite=overwrite,
-                )
-                if result:
-                    results.append(result)
-            except Exception as e:
-                logger.error("Failed to process %s: %s", file_path.name, e)
+        # Use ParallelProcessor for batch processing with timeout
+        processor = ParallelProcessor(
+            max_workers=max_workers,
+            max_tasks_per_child=50,  # Restart workers periodically for memory management
+            task_timeout=1200  # 20 minutes timeout per task
+        )
 
-        logger.info("Processed %d/%d filings successfully", len(results), len(file_paths))
+        # Process files (handles both sequential and parallel modes)
+        processing_results = processor.process_batch(
+            items=worker_args,
+            worker_func=_process_single_filing_worker,
+            verbose=verbose
+        )
+
+        # Extract results by status
+        successful = [r for r in processing_results if r.get('status') == 'success']
+        warnings = [r for r in processing_results if r.get('status') == 'warning']
+        errors = [r for r in processing_results if r.get('status') == 'error']
+
+        # Log summary
+        logger.info(
+            "Batch processing complete: %d successful, %d warnings, %d errors (total: %d)",
+            len(successful), len(warnings), len(errors), len(file_paths)
+        )
+
+        if verbose and (warnings or errors):
+            if warnings:
+                logger.warning("Files with warnings: %s", [r['file'] for r in warnings])
+            if errors:
+                logger.error("Files with errors: %s", [r['file'] for r in errors])
+
+        # Extract SegmentedRisks objects from successful results
+        results = [r['result'] for r in successful if r.get('result') is not None]
+
         return results
 
 
@@ -368,4 +607,4 @@ if __name__ == "__main__":
             print("Failed to process filing")
     else:
         print("\nUsage: python -m src.preprocessing.pipeline <file_path> [form_type]")
-        print("Example: python -m src.preprocessing.pipeline data/raw/AAPL_10K.html 10-K")
+        print("Example: python -m src.preprocessing.pipeline data/raw/AFL_10K_2025.html")

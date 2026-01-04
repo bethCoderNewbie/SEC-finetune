@@ -15,7 +15,7 @@ A JSONL file where each line is a labeled risk segment, suitable for
 fine-tuning a Student model.
 
 Usage:
-    python scripts/04_feature_engineering/auto_label.py
+    python scripts/feature_engineering/auto_label.py
 """
 
 import argparse
@@ -30,7 +30,10 @@ from tqdm import tqdm
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.config import settings, RunContext
+from src.config import settings, RunContext, ensure_directories
+
+# Directory shortcuts from settings (avoids deprecated legacy constants)
+PARSED_DATA_DIR = settings.paths.parsed_data_dir
 from src.preprocessing.parser import ParsedFiling
 from src.preprocessing.segmenter import RiskSegmenter
 from src.analysis.taxonomies.taxonomy_manager import TaxonomyManager
@@ -133,8 +136,8 @@ def main():
 
     ensure_directories()
     
-    # Initialize RunContext
-    run_context = RunContext(name="auto_label_sasb")
+    # Initialize RunContext with auto git SHA for data-code linkage
+    run_context = RunContext(name="auto_label_sasb", auto_git_sha=True)
     run_context.create()
     
     # Save Run Config

@@ -716,6 +716,6 @@ This configuration provides:
 ## Additional Resources
 
 - See `src/features/topic_modeling/README.md` for usage examples
-- See `scripts/04_feature_engineering/topic_modeling_demo.py` for complete workflow
+- See `scripts/feature_engineering/topic_modeling_demo.py` for complete workflow
 - Gensim LDA Tuning: https://radimrehurek.com/gensim/auto_examples/tutorials/run_lda.html
 - Topic Coherence Metrics: https://radimrehurek.com/gensim/models/coherencemodel.html

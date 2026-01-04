@@ -103,3 +103,134 @@ thresholds:
       blocking: true
       description: Number of readability features extracted
       tags: [readability, features]
+
+  # -------------------------
+  # Sentiment Validation Metrics
+  # -------------------------
+  sentiment_validation:
+    lm_hit_rate:
+      display_name: LM Dictionary Hit Rate
+      metric_type: rate
+      unit: "%"
+      target: 0.02
+      operator: ">="
+      warn_threshold: 0.015
+      blocking: true
+      description: Percentage of tokens found in LM dictionary (should be >2% for 10-Ks)
+      tags: [sentiment, validation, quality]
+
+    zero_vector_rate:
+      display_name: Zero-Vector Rate
+      metric_type: rate
+      unit: "%"
+      target: 0.50
+      operator: "<="
+      warn_threshold: 0.60
+      blocking: true
+      description: Percentage of segments with no sentiment words (should be <50%)
+      tags: [sentiment, validation, quality]
+
+    polarity_ratio_negative_gt_positive:
+      display_name: Negative > Positive Ratio
+      metric_type: boolean
+      target: true
+      blocking: true
+      description: Risk Factors should have more negative than positive words
+      tags: [sentiment, validation, domain]
+
+    uncertainty_negative_correlation:
+      display_name: Uncertainty-Negative Correlation
+      metric_type: score
+      target: 0.3
+      operator: ">="
+      warn_threshold: 0.2
+      blocking: false
+      description: Risk and uncertainty words should correlate
+      tags: [sentiment, validation, domain]
+
+  # -------------------------
+  # Readability Validation Metrics
+  # -------------------------
+  readability_validation:
+    gunning_fog_avg:
+      display_name: Gunning Fog Average
+      metric_type: score
+      target: 14.0
+      min_value: 14.0
+      max_value: 22.0
+      operator: "[]"
+      warn_threshold: 12.0
+      blocking: true
+      description: Average Gunning Fog index should be 14-22 for 10-K Risk Factors
+      tags: [readability, validation, quality]
+
+    gunning_fog_min:
+      display_name: Gunning Fog Minimum
+      metric_type: score
+      target: 8.0
+      operator: ">="
+      warn_threshold: 6.0
+      blocking: false
+      description: Minimum Fog score should be >8 (avoid over-splitting)
+      tags: [readability, validation, quality]
+
+    gunning_fog_max:
+      display_name: Gunning Fog Maximum
+      metric_type: score
+      target: 35.0
+      operator: "<="
+      warn_threshold: 40.0
+      blocking: false
+      description: Maximum Fog score should be <35 (avoid missing periods)
+      tags: [readability, validation, quality]
+
+    metric_correlation_fk_fog:
+      display_name: FK-Fog Correlation
+      metric_type: score
+      target: 0.7
+      operator: ">="
+      warn_threshold: 0.6
+      blocking: true
+      description: Flesch-Kincaid and Gunning Fog should correlate (>0.7)
+      tags: [readability, validation, consistency]
+
+    metric_correlation_fk_ari:
+      display_name: FK-ARI Correlation
+      metric_type: score
+      target: 0.7
+      operator: ">="
+      warn_threshold: 0.6
+      blocking: true
+      description: Flesch-Kincaid and ARI should correlate (>0.7)
+      tags: [readability, validation, consistency]
+
+    financial_adjustment_delta:
+      display_name: Financial Adjustment Delta
+      metric_type: rate
+      unit: "%"
+      target: 0.005
+      operator: ">="
+      warn_threshold: 0.003
+      blocking: false
+      description: Financial term adjustment should reduce complexity by >0.5%
+      tags: [readability, validation, domain]
+
+    obfuscation_score_avg:
+      display_name: Obfuscation Score Average
+      metric_type: score
+      min_value: 35.0
+      max_value: 80.0
+      operator: "[]"
+      blocking: false
+      description: Average obfuscation score for Risk Factors (35-80)
+      tags: [readability, validation, custom]
+
+    obfuscation_complexity_correlation:
+      display_name: Obfuscation-Complexity Correlation
+      metric_type: score
+      target: 0.6
+      operator: ">="
+      warn_threshold: 0.5
+      blocking: false
+      description: Obfuscation score should correlate with complexity (>0.6)
+      tags: [readability, validation, custom]

@@ -20,154 +20,8 @@ except ImportError:
 from .parser import ParsedFiling, SECFilingParser
 from .constants import SectionIdentifier, SECTION_PATTERNS, PAGE_HEADER_PATTERN
 from ..config import settings
-
-
-class ExtractedSection(BaseModel):
-    """
-    Extracted section with metadata and structure
-
-    Attributes:
-        text: Full text content of the section
-        identifier: Section identifier (e.g., "part1item1a")
-        title: Human-readable section title
-        subsections: List of subsection titles within this section
-        elements: List of semantic elements (paragraphs, tables, etc.)
-        metadata: Additional metadata about the extraction
-        sic_code: Standard Industrial Classification code
-        sic_name: SIC industry name (e.g., "PHARMACEUTICAL PREPARATIONS")
-        cik: Central Index Key
-        ticker: Stock ticker symbol
-        company_name: Company name from filing
-        form_type: SEC form type (10-K, 10-Q)
-    """
-    model_config = ConfigDict(
-        arbitrary_types_allowed=True,
-        validate_assignment=True,
-    )
-
-    text: str
-    identifier: str
-    title: str
-    subsections: List[str]
-    elements: List[Dict[str, Any]]
-    metadata: Dict[str, Any]
-    # Filing-level metadata (preserved through pipeline)
-    sic_code: Optional[str] = None
-    sic_name: Optional[str] = None
-    cik: Optional[str] = None
-    ticker: Optional[str] = None
-    company_name: Optional[str] = None
-    form_type: Optional[str] = None
-
-    def __len__(self) -> int:
-        """Return character length of extracted text"""
-        return len(self.text)
-
-    def get_tables(self) -> List[Dict[str, Any]]:
-        """Get all tables in this section"""
-        return [el for el in self.elements if el['type'] == 'TableElement']
-
-    def get_paragraphs(self) -> List[Dict[str, Any]]:
-        """Get all text paragraphs in this section"""
-        return [el for el in self.elements if el['type'] in ['TextElement', 'ParagraphElement']]
-
-    def save_to_json(
-        self,
-        output_path: Union[str, Path],
-        overwrite: bool = False
-    ) -> Path:
-        """
-        Save the ExtractedSection to a JSON file
-
-        Args:
-            output_path: Path where the file should be saved (will use .json extension)
-            overwrite: Whether to overwrite existing file (default: False)
-
-        Returns:
-            Path to the saved file
-
-        Raises:
-            FileExistsError: If file exists and overwrite=False
-
-        Example:
-            >>> risk_section = extractor.extract_risk_factors(filing)
-            >>> risk_section.save_to_json("data/interim/extracted/AAPL_10K_risks.json")
-        """
-        output_path = Path(output_path)
-
-        # Ensure .json extension
-        if output_path.suffix != '.json':
-            output_path = output_path.with_suffix('.json')
-
-        # Check if file exists
-        if output_path.exists() and not overwrite:
-            raise FileExistsError(
-                f"File already exists: {output_path}. "
-                f"Set overwrite=True to replace it."
-            )
-
-        # Create parent directory if needed
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Convert to serializable dict using Pydantic V2
-        data = {
-            'version': '1.0',  # Format version for future compatibility
-            **self.model_dump(),
-            'stats': {
-                'text_length': len(self.text),
-                'num_subsections': len(self.subsections),
-                'num_elements': len(self.elements),
-                'num_tables': len(self.get_tables()),
-                'num_paragraphs': len(self.get_paragraphs()),
-            }
-        }
-
-        # Save to JSON
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-
-        return output_path
-
-    @staticmethod
-    def load_from_json(file_path: Union[str, Path]) -> 'ExtractedSection':
-        """
-        Load an ExtractedSection from a JSON file
-
-        Args:
-            file_path: Path to the JSON file
-
-        Returns:
-            ExtractedSection object
-
-        Raises:
-            FileNotFoundError: If file doesn't exist
-            ValueError: If file doesn't contain valid ExtractedSection data
-
-        Example:
-            >>> path = "data/interim/extracted/AAPL_10K_risks.json"
-            >>> section = ExtractedSection.load_from_json(path)
-            >>> print(f"Loaded: {section.title}")
-        """
-        file_path = Path(file_path)
-
-        if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-
-        if not isinstance(data, dict) or 'version' not in data:
-            raise ValueError(
-                f"File does not contain valid ExtractedSection data: {file_path}"
-            )
-
-        # Reconstruct ExtractedSection using Pydantic V2 model_validate
-        # Exclude 'version' and 'stats' which are not model fields
-        model_data = {
-            k: v for k, v in data.items()
-            if k not in ('version', 'stats')
-        }
-        return ExtractedSection.model_validate(model_data)
+# Import data model from models package
+from .models.extraction import ExtractedSection
 
 
 class SECSectionExtractor:
@@ -179,6 +33,7 @@ class SECSectionExtractor:
     - Subsection identification
     - Element type preservation (text, tables, titles)
     - Metadata tracking
+    - Dict-based extraction from saved JSON files
 
     Example:
         >>> parser = SECFilingParser()
@@ -191,6 +46,10 @@ class SECSectionExtractor:
         ... )
         >>> print(f"Extracted {len(risk_section)} characters")
         >>> print(f"Found {len(risk_section.subsections)} risk subsections")
+
+    Dict-based extraction example:
+        >>> data = ParsedFiling.load_from_json("parsed_filing.json")
+        >>> risk_section = extractor.extract_risk_factors_from_dict(data)
     """
 
     # Load section titles from config for maintainability
@@ -294,6 +153,117 @@ class SECSectionExtractor:
             section = SectionIdentifier.ITEM_1A_RISK_FACTORS_10Q
 
         return self.extract_section(filing, section)
+
+    def extract_risk_factors_from_dict(self, data: Dict[str, Any]) -> Optional[ExtractedSection]:
+        """
+        Extract Risk Factors section from a parsed filing dict (loaded from JSON).
+
+        This method works with the simplified dict format saved by ParsedFiling.save_to_pickle(),
+        which can be loaded via ParsedFiling.load_from_json().
+
+        Args:
+            data: Dictionary from ParsedFiling.load_from_json() with keys:
+                - tree: list of node dicts with 'text', 'type', 'level'
+                - form_type: "10-K" or "10-Q"
+                - metadata: dict with sic_code, cik, etc.
+
+        Returns:
+            ExtractedSection with Risk Factors content, or None if not found
+
+        Example:
+            >>> data = ParsedFiling.load_from_json("parsed_filing.json")
+            >>> extractor = SECSectionExtractor()
+            >>> risks = extractor.extract_risk_factors_from_dict(data)
+        """
+        tree = data.get('tree', [])
+        form_type = data.get('form_type', '10-K')
+        metadata = data.get('metadata', {})
+
+        # Find Item 1A section start
+        start_idx = None
+        for i, node in enumerate(tree):
+            text = node.get('text', '').strip().lower()
+            node_type = node.get('type', '')
+
+            # Match "Item 1A" patterns
+            if node_type in ('TopSectionTitle', 'TitleElement'):
+                if re.match(r'item\s*1a[\.\s]', text) or 'risk factors' in text:
+                    start_idx = i
+                    break
+
+        if start_idx is None:
+            return None
+
+        # Collect content until next section
+        content_nodes = []
+        subsections = []
+        elements = []
+
+        for i in range(start_idx + 1, len(tree)):
+            node = tree[i]
+            text = node.get('text', '').strip()
+            node_type = node.get('type', '')
+            lower_text = text.lower()
+
+            # Stop at next Item section
+            if node_type in ('TopSectionTitle', 'TitleElement'):
+                if re.match(r'item\s*\d+[a-z]?[\.\s]', lower_text):
+                    if not re.match(r'item\s*1a[\.\s]', lower_text):
+                        break
+
+            # Collect content
+            if text:
+                content_nodes.append(node)
+
+                # Track subsections (TitleElement nodes)
+                if node_type == 'TitleElement':
+                    # Filter out page headers
+                    if not PAGE_HEADER_PATTERN.match(text):
+                        subsections.append(text)
+
+                # Track all elements
+                elements.append({
+                    'type': node_type,
+                    'text': text,
+                    'level': node.get('level', 0),
+                    'is_table': node_type == 'TableElement',
+                })
+
+        # Build full text
+        full_text = "\n\n".join([
+            node.get('text', '') for node in content_nodes
+            if node.get('text', '').strip()
+        ])
+
+        # Include header
+        header_text = tree[start_idx].get('text', '') if start_idx < len(tree) else ''
+        if header_text:
+            full_text = header_text + "\n\n" + full_text
+
+        if not full_text.strip():
+            return None
+
+        section_id = 'part1item1a'
+        title = self._get_section_title(section_id, form_type)
+
+        return ExtractedSection(
+            text=full_text,
+            identifier=section_id,
+            title=title,
+            subsections=subsections,
+            elements=elements,
+            metadata={
+                'num_subsections': len(subsections),
+                'num_elements': len(elements),
+                'element_type_counts': self._count_element_types(elements),
+            },
+            sic_code=metadata.get('sic_code'),
+            sic_name=metadata.get('sic_name'),
+            cik=metadata.get('cik'),
+            ticker=metadata.get('ticker'),
+            company_name=metadata.get('company_name'),
+            form_type=form_type,
+        )
 
     def extract_mdna(self, filing: ParsedFiling) -> Optional[ExtractedSection]:
         """

@@ -7,8 +7,8 @@ Input: data/processed/ - Processed features and labels
 Output: data/processed/splits/ - Train/val/test datasets
 
 Usage:
-    python scripts/05_data_splitting/create_train_test_split.py
-    python scripts/05_data_splitting/create_train_test_split.py --test-size 0.2 --val-size 0.1
+    python scripts/data_splitting/create_train_test_split.py
+    python scripts/data_splitting/create_train_test_split.py --test-size 0.2 --val-size 0.1
 """
 
 import argparse
@@ -20,7 +20,10 @@ from typing import Tuple
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.config import PROCESSED_DATA_DIR
+from src.config import settings
+
+# Directory shortcuts from settings (avoids deprecated legacy constants)
+PROCESSED_DATA_DIR = settings.paths.processed_data_dir
 
 
 def load_processed_data(data_dir: Path):

@@ -204,8 +204,8 @@ def main():
         if args.directory:
             directory = args.directory
         else:
-            from src.config import PARSED_DATA_DIR
-            directory = PARSED_DATA_DIR
+            from src.config import settings
+            directory = settings.paths.parsed_data_dir
 
         list_parsed_filings(directory)
     else:

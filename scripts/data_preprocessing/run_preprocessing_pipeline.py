@@ -1,26 +1,44 @@
 """
-Run complete preprocessing pipeline: Parse → Clean → Extract → Segment → Sentiment Analysis
+Run complete preprocessing pipeline: Parse -> Clean -> Extract -> Segment -> Sentiment Analysis
+
+ARCHITECTURAL NOTE:
+    This script currently mixes two concerns for convenience:
+    - Preprocessing (structural): Parse -> Extract -> Clean -> Segment
+    - Feature Engineering (semantic): Sentiment Analysis
+
+    For production MLOps workflows, use the separated pipeline:
+    1. scripts/data_preprocessing/run_preprocessing.py (structural only)
+    2. scripts/feature_engineering/extract_sentiment_features.py (semantic only)
+
+    This combined script is maintained for backward compatibility and experimental work.
+    See: thoughts/shared/research/2025-12-28_19-30_preprocessing_script_deduplication.md
 
 Pipeline Flow (with metadata preservation):
-    1. Parse   → ParsedFiling (sic_code, sic_name, cik, company_name)
-    2. Clean   → cleaned text
-    3. Extract → ExtractedSection (metadata preserved)
-    4. Segment → SegmentedRisks (metadata preserved)
-    5. Sentiment → sentiment features (optional)
+    1. Parse   -> ParsedFiling (sic_code, sic_name, cik, company_name)
+    2. Clean   -> cleaned text
+    3. Extract -> ExtractedSection (metadata preserved)
+    4. Segment -> SegmentedRisks (metadata preserved)
+    5. Sentiment -> sentiment features (optional, feature engineering step)
 
 Usage:
     # Single file mode
-    python scripts/02_data_preprocessing/run_preprocessing_pipeline.py
-    python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --input data/raw/AAPL_10K.html
-    python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --input data/raw/AAPL_10K.html --no-sentiment
+    python scripts/data_preprocessing/run_preprocessing_pipeline.py
+    python scripts/data_preprocessing/run_preprocessing_pipeline.py --input data/raw/AAPL_10K.html
+    python scripts/data_preprocessing/run_preprocessing_pipeline.py --input data/raw/AAPL_10K.html --no-sentiment
 
     # Batch mode (concurrent processing)
-    python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --batch
-    python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --batch --workers 4
-    python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --batch --no-sentiment
-    python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --batch --resume  # Skip already processed files
-    python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --batch --quiet  # Minimal output
-    python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --batch --chunk-size 50  # Process in chunks
+    python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch
+    python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch --workers 4
+    python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch --no-sentiment
+    python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch --resume  # Skip already processed files
+    python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch --quiet  # Minimal output
+    python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch --chunk-size 50  # Process in chunks
+
+Migration Path:
+    For separated pipeline (recommended for production):
+    1. python scripts/data_preprocessing/run_preprocessing.py --batch
+    2. python scripts/feature_engineering/extract_sentiment_features.py --batch
+    Or use: python scripts/feature_engineering/run_feature_pipeline.py --batch
 """
 
 import argparse
@@ -29,7 +47,8 @@ import logging
 import time
 import os
 from pathlib import Path
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, TimeoutError, as_completed
+from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 
 from src.preprocessing.parser import SECFilingParser, ParsedFiling
@@ -45,6 +64,7 @@ from src.config import (
     settings,
     ensure_directories
 )
+from src.utils.progress_logger import ProgressLogger
 
 # Configure logging
 logging.basicConfig(
@@ -143,11 +163,11 @@ def run_pipeline(
     Run the full preprocessing pipeline on a single filing
 
     Pipeline Flow:
-        1. Parse   → ParsedFiling (with metadata: sic_code, sic_name, cik, company_name)
-        2. Clean   → cleaned text
-        3. Extract → ExtractedSection (metadata preserved)
-        4. Segment → SegmentedRisks (metadata preserved)
-        5. Sentiment → sentiment features (optional)
+        1. Parse   -> ParsedFiling (with metadata: sic_code, sic_name, cik, company_name)
+        2. Clean   -> cleaned text
+        3. Extract -> ExtractedSection (metadata preserved)
+        4. Segment -> SegmentedRisks (metadata preserved)
+        5. Sentiment -> sentiment features (optional)
 
     Args:
         input_file: Path to input HTML file
@@ -592,7 +612,8 @@ def run_batch_pipeline(
     extract_sentiment: bool = True,
     max_workers: Optional[int] = None,
     quiet: bool = False,
-    chunk_size: Optional[int] = None
+    chunk_size: Optional[int] = None,
+    task_timeout: int = 1200
 ) -> List[Dict[str, Any]]:
     """
     Run the preprocessing pipeline on multiple files concurrently with optimizations.
@@ -604,6 +625,7 @@ def run_batch_pipeline(
         max_workers: Maximum number of concurrent workers (default: number of CPUs)
         quiet: If True, minimize output for better performance
         chunk_size: If set, process files in chunks to manage memory
+        task_timeout: Timeout per task in seconds (default: 1200 = 20 minutes)
 
     Returns:
         List of processing results for each file
@@ -615,13 +637,24 @@ def run_batch_pipeline(
 
     total_files = len(input_files)
 
+    # Initialize progress logger
+    progress_log_path = PROCESSED_DATA_DIR / "_progress.log"
+    progress_logger = ProgressLogger(
+        log_path=progress_log_path,
+        console=not quiet,
+        quiet=quiet
+    )
+
     if not quiet:
         print(f"\nBatch Processing: {total_files} files")
         print(f"Max workers: {max_workers if max_workers else 'auto (CPU count)'}")
         print(f"Mode: Optimized (fast) with metadata preservation")
         if chunk_size:
             print(f"Chunk size: {chunk_size}")
+        print(f"Progress log: {progress_log_path}")
         print("=" * 80)
+
+    progress_logger.section(f"Batch Pipeline Processing: {total_files} files")
 
     # Determine optimal worker count
     if max_workers is None:
@@ -648,7 +681,7 @@ def run_batch_pipeline(
 
             chunk_results = _process_chunk(
                 chunk, extract_sentiment, max_workers, quiet,
-                len(results), total_files
+                len(results), total_files, progress_logger, task_timeout
             )
             results.extend(chunk_results)
 
@@ -663,7 +696,7 @@ def run_batch_pipeline(
     else:
         # Process all at once
         chunk_results = _process_chunk(
-            task_args, extract_sentiment, max_workers, quiet, 0, total_files
+            task_args, extract_sentiment, max_workers, quiet, 0, total_files, progress_logger, task_timeout
         )
         results.extend(chunk_results)
 
@@ -677,7 +710,19 @@ def run_batch_pipeline(
 
     total_time = time.time() - start_time
 
-    # Summary
+    # Log summary
+    progress_logger.section("Batch Processing Complete", char="=")
+    progress_logger.log(f"Total files: {total_files}", timestamp=False)
+    progress_logger.log(f"Successful: {successful}", timestamp=False)
+    if warnings > 0:
+        progress_logger.log(f"Warnings: {warnings}", timestamp=False)
+    progress_logger.log(f"Failed: {failed}", timestamp=False)
+    progress_logger.log(f"Total time: {total_time:.1f}s", timestamp=False)
+    if total_files > 0:
+        progress_logger.log(f"Avg time per file: {total_time / total_files:.1f}s", timestamp=False)
+        progress_logger.log(f"Throughput: {total_files / total_time:.2f} files/sec", timestamp=False)
+
+    # Summary to console
     if not quiet:
         print("\n" + "=" * 80)
         print("Batch Processing Complete!")
@@ -690,6 +735,10 @@ def run_batch_pipeline(
         if total_files > 0:
             print(f"  Avg time per file: {total_time / total_files:.1f}s")
             print(f"  Throughput: {total_files / total_time:.2f} files/sec")
+        print(f"\nProgress log: {progress_log_path}")
+
+    # Close progress logger
+    progress_logger.close()
 
     return results
 
@@ -700,10 +749,12 @@ def _process_chunk(
     max_workers: int,
     quiet: bool,
     offset: int,
-    total_files: int
+    total_files: int,
+    progress_logger: ProgressLogger,
+    task_timeout: int = 1200
 ) -> List[Dict[str, Any]]:
     """
-    Process a chunk of files using ProcessPoolExecutor with worker initialization.
+    Process a chunk of files using ProcessPoolExecutor with worker initialization and timeout.
 
     Args:
         task_args: List of (input_file, save_intermediates) tuples
@@ -712,11 +763,14 @@ def _process_chunk(
         quiet: If True, minimize output
         offset: Number of files already processed
         total_files: Total number of files being processed
+        progress_logger: ProgressLogger instance for real-time logging
+        task_timeout: Timeout per task in seconds (default: 1200 = 20 minutes)
 
     Returns:
         List of processing results
     """
     results = []
+    failed_files = []  # Track timeouts for dead letter queue
 
     # Use initializer to set up worker processes once
     with ProcessPoolExecutor(
@@ -731,36 +785,131 @@ def _process_chunk(
             for args in task_args
         }
 
-        # Process completed tasks as they finish
+        # Process completed tasks as they finish with timeout
         for i, future in enumerate(as_completed(future_to_file), 1):
-            result = future.result()
-            results.append(result)
-
+            input_file = future_to_file[future]
             current = offset + i
 
-            if quiet:
-                # Minimal progress indicator
-                if current % 10 == 0 or current == total_files:
-                    print(f"Progress: {current}/{total_files}", end='\r')
-            else:
-                if result['status'] == 'success':
-                    sic_info = f", SIC={result.get('sic_code', 'N/A')}" if result.get('sic_code') else ""
-                    print(f"[{current}/{total_files}] OK: {result['file']} "
-                          f"({result['num_segments']} segments, {result['elapsed_time']:.1f}s{sic_info})")
-                elif result['status'] == 'warning':
-                    print(f"[{current}/{total_files}] WARN: {result['file']} - {result['error']}")
-                else:
-                    print(f"[{current}/{total_files}] FAIL: {result['file']} - {result['error']}")
+            try:
+                # Get result with timeout
+                result = future.result(timeout=task_timeout)
+
+                # Warn about slow tasks (> 5 minutes)
+                if result.get('elapsed_time', 0) > 300:
+                    progress_logger.warning(
+                        f"Slow task ({result['elapsed_time']:.1f}s): {result['file']}"
+                    )
+
+            except TimeoutError:
+                # Task exceeded timeout limit
+                logger.error(f"Task timeout ({task_timeout}s): {input_file.name}")
+                progress_logger.error(
+                    f"[{current}/{total_files}] TIMEOUT: {input_file.name} "
+                    f"exceeded {task_timeout}s limit"
+                )
+                result = {
+                    'file': input_file.name,
+                    'status': 'error',
+                    'num_segments': 0,
+                    'sic_code': None,
+                    'sic_name': None,
+                    'cik': None,
+                    'elapsed_time': task_timeout,
+                    'error': f'Processing timeout ({task_timeout}s)',
+                    'error_type': 'timeout'
+                }
+                failed_files.append(input_file)
+                # Cancel the future to free resources
+                future.cancel()
+
+            except Exception as e:
+                # Task raised an exception
+                logger.error(f"Task failed with exception: {input_file.name} - {e}")
+                progress_logger.error(f"[{current}/{total_files}] ERROR: {input_file.name} - {e}")
+                result = {
+                    'file': input_file.name,
+                    'status': 'error',
+                    'num_segments': 0,
+                    'sic_code': None,
+                    'sic_name': None,
+                    'cik': None,
+                    'elapsed_time': 0,
+                    'error': str(e),
+                    'error_type': 'exception'
+                }
+                failed_files.append(input_file)
+
+            results.append(result)
+
+            # Log to progress logger for successful results
+            if result['status'] == 'success':
+                sic_info = f", SIC={result.get('sic_code', 'N/A')}" if result.get('sic_code') else ""
+                progress_logger.log(
+                    f"[{current}/{total_files}] OK: {result['file']} -> "
+                    f"{result['num_segments']} segments, {result['elapsed_time']:.1f}s{sic_info}"
+                )
+            elif result['status'] == 'warning':
+                progress_logger.warning(f"[{current}/{total_files}] {result['file']} - {result['error']}")
+
+            # Update progress indicator
+            if quiet and (current % 10 == 0 or current == total_files):
+                progress_logger.progress(f"Progress: {current}/{total_files}")
 
     if quiet and (offset + len(task_args)) == total_files:
         print()  # New line after progress
 
+    # Write failed files to dead letter queue
+    if failed_files:
+        _write_dead_letter_queue(failed_files)
+
     return results
+
+
+def _write_dead_letter_queue(failed_files: List[Path]) -> None:
+    """
+    Write failed files to logs/failed_files.json for retry.
+
+    Args:
+        failed_files: List of file paths that failed processing
+    """
+    log_dir = Path('logs')
+    log_dir.mkdir(exist_ok=True)
+
+    dlq_file = log_dir / 'failed_files.json'
+
+    # Load existing failures
+    if dlq_file.exists():
+        try:
+            with open(dlq_file, 'r', encoding='utf-8') as f:
+                failures = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            logger.warning(f"Could not read {dlq_file}, starting fresh")
+            failures = []
+    else:
+        failures = []
+
+    # Add new failures with timestamp
+    timestamp = datetime.now().isoformat()
+    for file_path in failed_files:
+        failures.append({
+            'file': str(file_path),
+            'timestamp': timestamp,
+            'reason': 'timeout_or_exception',
+            'script': 'run_preprocessing_pipeline.py'
+        })
+
+    # Save updated failures
+    try:
+        with open(dlq_file, 'w', encoding='utf-8') as f:
+            json.dump(failures, f, indent=2)
+        logger.info(f"Wrote {len(failed_files)} failed items to {dlq_file}")
+    except IOError as e:
+        logger.error(f"Failed to write dead letter queue: {e}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run complete preprocessing pipeline: Parse → Clean → Extract → Segment"
+        description="Run complete preprocessing pipeline: Parse -> Clean -> Extract -> Segment"
     )
     parser.add_argument(
         '--input',
@@ -804,6 +953,12 @@ def main():
         default=None,
         help='Process files in chunks of this size to manage memory'
     )
+    parser.add_argument(
+        '--timeout',
+        type=int,
+        default=1200,
+        help='Timeout per file in seconds (default: 1200 = 20 minutes)'
+    )
 
     args = parser.parse_args()
 
@@ -829,7 +984,8 @@ def main():
             extract_sentiment=not args.no_sentiment,
             max_workers=args.workers,
             quiet=args.quiet,
-            chunk_size=args.chunk_size
+            chunk_size=args.chunk_size,
+            task_timeout=args.timeout
         )
 
         # Save batch results summary with metadata

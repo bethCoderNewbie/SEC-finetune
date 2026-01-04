@@ -12,7 +12,7 @@ Methodology:
 4. Report "New Topics" (low max similarity to any reference topic).
 
 Usage:
-    python scripts/04_feature_engineering/detect_drift.py --ref data/processed/2022 --target data/processed/2023
+    python scripts/feature_engineering/detect_drift.py --ref data/processed/2022 --target data/processed/2023
 """
 
 import argparse

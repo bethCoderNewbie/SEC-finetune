@@ -234,15 +234,27 @@ Decision on whether to move to models/registry/
 ```python
 from src.config import RunContext
 
-run = RunContext(name="{{EXPERIMENT_NAME}}")
+# Auto-capture git SHA for data-code linkage
+run = RunContext(name="{{EXPERIMENT_NAME}}", auto_git_sha=True)
 run.create()
 
 # Your experiment code here
 
+# Save configuration
 run.save_config({
     "model": "{{MODEL_NAME}}",
     "learning_rate": {{LR}},
-    "seed": {{SEED}},
-    "git_commit": "{{GIT_COMMIT}}"
+    "seed": {{SEED}}
 })
+
+# Save metrics after training
+run.save_metrics({
+    "accuracy": {{ACC_TEST}},
+    "f1_score": {{F1_TEST}},
+    "loss": {{LOSS_TEST}}
+})
+
+# Output directory now includes git SHA:
+# data/processed/labeled/{timestamp}_{name}_{git_sha}/
+print(f"Artifacts at: {run.output_dir}")
 ```

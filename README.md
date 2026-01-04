@@ -246,16 +246,16 @@ For production batch processing with sentiment analysis:
 
 ```bash
 # Single file
-python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --input data/raw/AAPL_10K.html
+python scripts/data_preprocessing/run_preprocessing_pipeline.py --input data/raw/AAPL_10K.html
 
 # Batch mode (all files in data/raw/)
-python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --batch
+python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch
 
 # Batch with options
-python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --batch --workers 4 --resume --quiet
+python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch --workers 4 --resume --quiet
 
 # Skip sentiment analysis (faster)
-python scripts/02_data_preprocessing/run_preprocessing_pipeline.py --batch --no-sentiment
+python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch --no-sentiment
 ```
 
 **Output format (v2.0)** - includes full metadata:

@@ -9,7 +9,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.preprocessing.parser import SECFilingParser
 from src.preprocessing.extractor import SECSectionExtractor
-from src.config import RAW_DATA_DIR
+from src.config import settings
+
+# Directory shortcuts from settings (avoids deprecated legacy constants)
+RAW_DATA_DIR = settings.paths.raw_data_dir
 import sec_parser as sp
 
 def debug_node_structure():

@@ -36,7 +36,7 @@ Already installed in this project ✓
 ### Download Optimal Corpus for Topic Modeling (Recommended)
 
 ```bash
-python scripts/01_data_collection/download_sec_filings.py --mode topic-modeling
+python scripts/data_collection/download_sec_filings.py --mode topic-modeling
 ```
 
 This single command will:
@@ -63,7 +63,7 @@ data/raw/
 ### Mode 1: Topic Modeling (Optimal Corpus)
 
 ```bash
-python scripts/01_data_collection/download_sec_filings.py --mode topic-modeling
+python scripts/data_collection/download_sec_filings.py --mode topic-modeling
 ```
 
 **What happens:**
@@ -117,7 +117,7 @@ python scripts/01_data_collection/download_sec_filings.py --mode topic-modeling
 
 **Single Company:**
 ```bash
-python scripts/01_data_collection/download_sec_filings.py --ticker AAPL --years 3
+python scripts/data_collection/download_sec_filings.py --ticker AAPL --years 3
 ```
 
 Output:
@@ -130,7 +130,7 @@ data/raw/
 
 **Multiple Companies from File:**
 ```bash
-python scripts/01_data_collection/download_sec_filings.py --ticker-file my_tickers.txt --years 5
+python scripts/data_collection/download_sec_filings.py --ticker-file my_tickers.txt --years 5
 ```
 
 `my_tickers.txt`:
@@ -143,7 +143,7 @@ AMZN
 
 **Download 10-Q Filings:**
 ```bash
-python scripts/01_data_collection/download_sec_filings.py --ticker AAPL --form-type 10-Q --years 2
+python scripts/data_collection/download_sec_filings.py --ticker AAPL --form-type 10-Q --years 2
 ```
 
 Output: `AAPL_10Q_2024.html`, `AAPL_10Q_2023.html`, etc.
@@ -519,13 +519,13 @@ python scripts/02_extraction/extract_sections.py --section part1item1a
 ### Step 4: Validate Corpus
 ```bash
 # Validate corpus meets topic modeling requirements
-python scripts/04_feature_engineering/validate_topic_modeling_corpus.py
+python scripts/feature_engineering/validate_topic_modeling_corpus.py
 ```
 
 ### Step 5: Train Topic Model
 ```bash
 # Train LDA model on Item 1A corpus
-python scripts/04_feature_engineering/topic_modeling_demo.py
+python scripts/feature_engineering/topic_modeling_demo.py
 ```
 
 ## Troubleshooting
@@ -763,7 +763,7 @@ This script provides a complete solution for downloading SEC filings optimized f
 
 **Ready to use**:
 ```bash
-python scripts/01_data_collection/download_sec_filings.py --mode topic-modeling
+python scripts/data_collection/download_sec_filings.py --mode topic-modeling
 ```
 
 Then proceed to topic modeling pipeline! 🚀
