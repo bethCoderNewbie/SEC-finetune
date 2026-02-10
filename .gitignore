@@ -73,7 +73,7 @@ processed_data/
 sec_filings/
 downloads/
 cache/
-*.md
+#*.md
 
 # Logs
 *.log
