@@ -2,14 +2,18 @@
 Preprocessing Pipeline for SEC Filings
 
 Orchestrates the complete preprocessing flow:
-1. Sanitize - Clean raw HTML before parsing ("Sanitize HTML before parsing (Default: False, sec-parser prefers raw HTML)")
-2. Parse - Parse HTML filing into semantic structure
-3. Extract - Extract specific sections with metadata
-4. Clean - Clean and normalize text
-5. Segment - Split into individual risk segments
+1. Parse - Parse HTML filing into semantic structure
+2. Extract - Extract specific sections with metadata
+3. Clean - Clean and normalize text
+4. Segment - Split into individual risk segments
 
 All metadata (sic_code, sic_name, cik, ticker, company_name) is preserved
 throughout the pipeline.
+
+Efficiency optimizations:
+- Global worker objects reused across files (CLI pipeline pattern)
+- HTML sanitization removed (unnecessary preprocessing overhead)
+- Models loaded once per worker, not per file (~50x efficiency gain)
 """
 
 import logging
@@ -26,7 +30,6 @@ from .parser import SECFilingParser
 from .cleaning import TextCleaner
 from .extractor import SECSectionExtractor
 from .segmenter import RiskSegmenter
-from .sanitizer import HTMLSanitizer, SanitizerConfig as SanitizerConfigModel
 from .constants import SectionIdentifier
 # Import parallel processing utility
 from src.utils.parallel import ParallelProcessor
@@ -34,10 +37,137 @@ from src.utils.parallel import ParallelProcessor
 logger = logging.getLogger(__name__)
 
 
+# Global worker objects (initialized once per worker process)
+# Adopts CLI pipeline pattern for efficient model reuse
+_worker_parser: Optional[SECFilingParser] = None
+_worker_cleaner: Optional[TextCleaner] = None
+_worker_segmenter: Optional[RiskSegmenter] = None
+_worker_extractor: Optional[SECSectionExtractor] = None
+
+
+def _init_production_worker():
+    """
+    Initialize global worker objects once per worker process.
+
+    This initialization function is called by ProcessPoolExecutor when
+    each worker process starts. Objects are reused across up to 50 tasks
+    (max_tasks_per_child=50) before the worker is recycled.
+
+    Benefits:
+    - spaCy model (~200MB): Loaded once, not per-file
+    - SentenceTransformer (~80MB): Loaded once, not per-file
+    - Amortized overhead: ~6MB per file vs ~300MB per file
+    """
+    global _worker_parser, _worker_cleaner, _worker_segmenter, _worker_extractor
+
+    logger.info("Initializing production worker (models loaded once per worker)")
+    _worker_parser = SECFilingParser()
+    _worker_cleaner = TextCleaner()
+    _worker_segmenter = RiskSegmenter()
+    _worker_extractor = SECSectionExtractor()
+
+
+def _process_filing_with_global_workers(
+    file_path: Path,
+    form_type: str,
+    config: PipelineConfig,
+    save_output: Optional[Path],
+    overwrite: bool,
+) -> Optional[SegmentedRisks]:
+    """
+    Process a SEC filing using global worker objects (efficient model reuse).
+
+    This function implements the production pipeline flow using pre-initialized
+    global workers instead of creating new instances per file.
+
+    Flow (sanitization removed):
+    1. Parse HTML → ParsedFiling (with metadata)
+    2. Extract section → ExtractedSection (with metadata)
+    3. Clean text → cleaned text
+    4. Segment → SegmentedRisks (with metadata)
+
+    Args:
+        file_path: Path to the HTML filing file
+        form_type: Type of SEC form ("10-K" or "10-Q")
+        config: Pipeline configuration
+        save_output: Optional path to save the result as JSON
+        overwrite: Whether to overwrite existing output file
+
+    Returns:
+        SegmentedRisks with segments and preserved metadata, or None if extraction fails
+    """
+    global _worker_parser, _worker_cleaner, _worker_segmenter, _worker_extractor
+
+    logger.info("Processing filing: %s", file_path.name)
+
+    # Determine section based on form type
+    if form_type.upper() in ["10-K", "10K"]:
+        section = SectionIdentifier.ITEM_1A_RISK_FACTORS
+    else:
+        section = SectionIdentifier.ITEM_1A_RISK_FACTORS_10Q
+
+    # Step 1: Parse HTML filing (no sanitization)
+    logger.info("Step 1/4: Parsing HTML filing...")
+    parsed = _worker_parser.parse_filing(file_path, form_type)
+
+    logger.info(
+        "Parsed %d elements. Metadata: CIK=%s, SIC=%s (%s)",
+        len(parsed),
+        parsed.metadata.get('cik'),
+        parsed.metadata.get('sic_code'),
+        parsed.metadata.get('sic_name'),
+    )
+
+    # Step 2: Extract section (metadata flows through)
+    logger.info("Step 2/4: Extracting section '%s'...", section.value)
+    extracted = _worker_extractor.extract_section(parsed, section)
+
+    if extracted is None:
+        logger.warning("Section '%s' not found in filing", section.value)
+        return None
+
+    logger.info(
+        "Extracted section: %d chars, %d subsections",
+        len(extracted.text),
+        len(extracted.subsections),
+    )
+
+    # Step 3: Clean text
+    logger.info("Step 3/4: Cleaning text...")
+    if config.remove_html:
+        cleaned_text = _worker_cleaner.remove_html_tags(extracted.text)
+    else:
+        cleaned_text = extracted.text
+
+    cleaned_text = _worker_cleaner.clean_text(
+        cleaned_text,
+        deep_clean=config.deep_clean
+    )
+    logger.info("Cleaned text: %d chars", len(cleaned_text))
+
+    # Step 4: Segment (metadata preserved)
+    logger.info("Step 4/4: Segmenting risks...")
+    result = _worker_segmenter.segment_extracted_section(
+        extracted,
+        cleaned_text=cleaned_text
+    )
+    logger.info("Created %d segments", len(result))
+
+    # Save if requested
+    if save_output:
+        output_path = result.save_to_json(save_output, overwrite=overwrite)
+        logger.info("Saved result to: %s", output_path)
+
+    return result
+
+
 # Module-level worker function for parallel processing
 def _process_single_filing_worker(args: tuple) -> Dict[str, Any]:
     """
     Worker function for parallel batch processing with elapsed time tracking.
+
+    Uses global worker objects (_worker_parser, _worker_cleaner, etc.) initialized
+    once per worker process for efficient model reuse.
 
     Args:
         args: Tuple of (file_path, config_dict, form_type, output_dir, overwrite)
@@ -45,6 +175,8 @@ def _process_single_filing_worker(args: tuple) -> Dict[str, Any]:
     Returns:
         Dict with status, result, and elapsed time
     """
+    global _worker_parser, _worker_cleaner, _worker_segmenter, _worker_extractor
+
     file_path, config_dict, form_type, output_dir, overwrite = args
     file_path = Path(file_path)
 
@@ -58,9 +190,6 @@ def _process_single_filing_worker(args: tuple) -> Dict[str, Any]:
         # Reconstruct pipeline config from dict
         config = PipelineConfig(**config_dict) if config_dict else PipelineConfig()
 
-        # Create pipeline instance for this worker
-        pipeline = SECPreprocessingPipeline(config)
-
         # Generate output path if output_dir is provided
         save_output = None
         if output_dir:
@@ -68,10 +197,11 @@ def _process_single_filing_worker(args: tuple) -> Dict[str, Any]:
             output_dir.mkdir(parents=True, exist_ok=True)
             save_output = output_dir / f"{file_path.stem}_segmented.json"
 
-        # Process the file
-        result = pipeline.process_risk_factors(
-            file_path,
+        # Process the file using global workers (no per-file instantiation)
+        result = _process_filing_with_global_workers(
+            file_path=file_path,
             form_type=form_type,
+            config=config,
             save_output=save_output,
             overwrite=overwrite,
         )
@@ -117,8 +247,6 @@ class PipelineConfig(BaseModel):
     Configuration for the preprocessing pipeline (Pydantic V2)
 
     Attributes:
-        pre_sanitize: Whether to sanitize HTML before parsing (recommended)
-        sanitizer_config: Configuration for HTML sanitization
         remove_html: Whether to remove HTML tags from text
         deep_clean: Whether to apply NLP-based deep cleaning
         use_lemmatization: Whether to lemmatize words
@@ -129,20 +257,14 @@ class PipelineConfig(BaseModel):
         max_segment_length: Maximum segment length (None = use default from settings)
         semantic_model_name: SentenceTransformer model for semantic segmentation
         similarity_threshold: Cosine similarity threshold for semantic breaks
+
+    Note:
+        HTML sanitization has been removed (unnecessary preprocessing overhead).
+        The sec-parser library handles raw HTML directly and efficiently.
     """
     model_config = ConfigDict(
         validate_assignment=True,
         extra='forbid',  # Raise error on unknown fields
-    )
-
-    # Pre-parser sanitization options (NEW)
-    pre_sanitize: bool = Field(
-        default=False,
-        description="Sanitize HTML before parsing (Default: False, sec-parser prefers raw HTML)"
-    )
-    sanitizer_config: Optional[SanitizerConfigModel] = Field(
-        default=None,
-        description="Configuration for HTML sanitization (None = use defaults from settings)"
     )
 
     # Cleaning options
@@ -178,7 +300,7 @@ class SECPreprocessingPipeline:
     """
     Complete preprocessing pipeline for SEC filings
 
-    Flow: Sanitize → Parse → Extract → Clean → Segment
+    Flow: Parse → Extract → Clean → Segment
 
     All metadata is preserved through the pipeline:
     - sic_code: Standard Industrial Classification code
@@ -186,6 +308,10 @@ class SECPreprocessingPipeline:
     - cik: Central Index Key
     - ticker: Stock ticker symbol
     - company_name: Company name
+
+    Efficiency optimizations:
+    - Uses global worker objects in batch mode (models loaded once per worker)
+    - HTML sanitization removed (unnecessary overhead)
 
     Example:
         >>> pipeline = SECPreprocessingPipeline()
@@ -204,30 +330,14 @@ class SECPreprocessingPipeline:
 
         Args:
             config: Pipeline configuration. Uses defaults if not provided.
+
+        Note:
+            When used in batch mode, global worker objects are used instead
+            for efficiency (models loaded once per worker, not per file).
         """
         self.config = config or PipelineConfig()
 
-        # Initialize sanitizer (NEW - runs before parser)
-        if self.config.pre_sanitize:
-            sanitizer_config = self.config.sanitizer_config
-            if sanitizer_config is None:
-                # Load from settings if not provided
-                from src.config import settings
-                sanitizer_config = SanitizerConfigModel(
-                    remove_edgar_header=settings.preprocessing.sanitizer.remove_edgar_header,
-                    remove_edgar_tags=settings.preprocessing.sanitizer.remove_edgar_tags,
-                    decode_entities=settings.preprocessing.sanitizer.decode_entities,
-                    normalize_unicode=settings.preprocessing.sanitizer.normalize_unicode,
-                    remove_invisible_chars=settings.preprocessing.sanitizer.remove_invisible_chars,
-                    normalize_quotes=settings.preprocessing.sanitizer.normalize_quotes,
-                    fix_encoding=settings.preprocessing.sanitizer.fix_encoding,
-                    flatten_nesting=settings.preprocessing.sanitizer.flatten_nesting,
-                )
-            self.sanitizer = HTMLSanitizer(sanitizer_config)
-        else:
-            self.sanitizer = None
-
-        # Initialize other components
+        # Initialize components
         self.parser = SECFilingParser()
         self.cleaner = TextCleaner(
             use_lemmatization=self.config.use_lemmatization,
@@ -254,12 +364,11 @@ class SECPreprocessingPipeline:
         """
         Process a SEC filing through the complete pipeline
 
-        Flow:
-        1. Sanitize HTML → cleaned HTML (NEW)
-        2. Parse HTML → ParsedFiling (with metadata)
-        3. Extract section → ExtractedSection (with metadata)
-        4. Clean text → cleaned text
-        5. Segment → SegmentedRisks (with metadata)
+        Flow (sanitization removed for efficiency):
+        1. Parse HTML → ParsedFiling (with metadata)
+        2. Extract section → ExtractedSection (with metadata)
+        3. Clean text → cleaned text
+        4. Segment → SegmentedRisks (with metadata)
 
         Args:
             file_path: Path to the HTML filing file
@@ -280,32 +389,9 @@ class SECPreprocessingPipeline:
         file_path = Path(file_path)
         logger.info("Processing filing: %s", file_path.name)
 
-        # Step 1: Sanitize HTML (NEW)
-        if self.sanitizer:
-            logger.info("Step 1/5: Sanitizing HTML...")
-            # Read raw HTML
-            try:
-                html_content = file_path.read_text(encoding='utf-8')
-            except UnicodeDecodeError:
-                html_content = file_path.read_text(encoding='latin-1')
-
-            original_len = len(html_content)
-            html_content = self.sanitizer.sanitize(html_content)
-            sanitized_len = len(html_content)
-            reduction = (1 - sanitized_len / original_len) * 100 if original_len > 0 else 0
-            logger.info(
-                "Sanitized HTML: %d → %d chars (%.1f%% reduction)",
-                original_len, sanitized_len, reduction
-            )
-
-            # Parse from sanitized content
-            logger.info("Step 2/5: Parsing sanitized HTML...")
-            parsed = self.parser.parse_from_content(html_content, form_type)
-        else:
-            # No sanitization - parse directly from file
-            logger.info("Step 1/5: Skipping sanitization (disabled)")
-            logger.info("Step 2/5: Parsing HTML filing...")
-            parsed = self.parser.parse_filing(file_path, form_type)
+        # Step 1: Parse HTML filing (no sanitization)
+        logger.info("Step 1/4: Parsing HTML filing...")
+        parsed = self.parser.parse_filing(file_path, form_type)
 
         logger.info(
             "Parsed %d elements. Metadata: CIK=%s, SIC=%s (%s)",
@@ -315,8 +401,8 @@ class SECPreprocessingPipeline:
             parsed.metadata.get('sic_name'),
         )
 
-        # Step 3: Extract section (metadata flows through)
-        logger.info("Step 3/5: Extracting section '%s'...", section.value)
+        # Step 2: Extract section (metadata flows through)
+        logger.info("Step 2/4: Extracting section '%s'...", section.value)
         extracted = self.extractor.extract_section(parsed, section)
 
         if extracted is None:
@@ -329,8 +415,8 @@ class SECPreprocessingPipeline:
             len(extracted.subsections),
         )
 
-        # Step 4: Clean text
-        logger.info("Step 4/5: Cleaning text...")
+        # Step 3: Clean text
+        logger.info("Step 3/4: Cleaning text...")
         if self.config.remove_html:
             cleaned_text = self.cleaner.remove_html_tags(extracted.text)
         else:
@@ -342,8 +428,8 @@ class SECPreprocessingPipeline:
         )
         logger.info("Cleaned text: %d chars", len(cleaned_text))
 
-        # Step 5: Segment (metadata preserved)
-        logger.info("Step 5/5: Segmenting risks...")
+        # Step 4: Segment (metadata preserved)
+        logger.info("Step 4/4: Segmenting risks...")
         result = self.segmenter.segment_extracted_section(
             extracted,
             cleaned_text=cleaned_text
@@ -498,6 +584,7 @@ class SECPreprocessingPipeline:
         # Use ParallelProcessor for batch processing with timeout
         processor = ParallelProcessor(
             max_workers=max_workers,
+            initializer=_init_production_worker,  # Initialize global workers once per process
             max_tasks_per_child=50,  # Restart workers periodically for memory management
             task_timeout=1200  # 20 minutes timeout per task
         )
@@ -578,7 +665,10 @@ if __name__ == "__main__":
 
     print("SEC Preprocessing Pipeline")
     print("=" * 50)
-    print("\nFlow: Parse → Clean → Extract → Segment")
+    print("\nFlow: Parse → Extract → Clean → Segment")
+    print("\nOptimizations:")
+    print("  - Global worker objects (models loaded once per worker)")
+    print("  - HTML sanitization removed (unnecessary overhead)")
     print("\nMetadata preserved throughout:")
     print("  - sic_code, sic_name")
     print("  - cik, ticker, company_name")

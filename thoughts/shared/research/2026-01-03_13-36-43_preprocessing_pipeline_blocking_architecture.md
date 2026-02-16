@@ -22,15 +22,20 @@ purpose: Research code logic and flow to identify blocking nature, memory consum
 Both pipelines exhibit **fully blocking architecture** at process and worker levels:
 - Use `ProcessPoolExecutor` with **blocking `future.result(timeout=1200)`** waits via `ParallelProcessor`
 - Load **entire HTML files + DOM trees in memory** (up to 700MB-1GB per large file)
-- Process files **sequentially within workers** (Sanitize → Parse → Extract → Clean → Segment)
+- Process files **sequentially within workers** (Parse → Extract → Clean → Segment)
 - Have **no memory-based throttling** - worker allocation based solely on CPU count
 - Handle **102 files >40MB** (max 68.25MB) without file size-aware resource allocation
 
-**Critical Difference**:
-- **CLI pipeline**: Reuses global worker objects (spaCy, SentenceTransformer) - **more efficient**
-- **Production pipeline**: Creates NEW pipeline instance per file [pipeline.py:62] - **less efficient**
+**Critical Improvement**:
+- **Both pipelines now**: Reuse global worker objects (spaCy, SentenceTransformer) - **optimized efficiency**
+- **Production pipeline**: Adopts CLI's global worker initialization pattern - **~50x reduction in per-file overhead**
+- **HTML Sanitization**: Removed from production pipeline (unnecessary preprocessing overhead)
 
 **Critical Gap**: While user context mentions implementing "Semaphore based on estimated memory" and "Dead Letter Queue", only the DLQ exists. **No memory-based semaphore is implemented** in either pipeline.
+
+**Recent Improvements**:
+- ✅ Production pipeline now adopts CLI's global worker initialization pattern (~50x reduction in per-file overhead)
+- ✅ HTML sanitization removed from production pipeline (unnecessary preprocessing step)
 
 ---
 
@@ -38,24 +43,32 @@ Both pipelines exhibit **fully blocking architecture** at process and worker lev
 
 ### 0.1 Architecture Differences
 
-**Production Pipeline** (`src/preprocessing/pipeline.py`):
+**Production Pipeline (IMPROVED)** (`src/preprocessing/pipeline.py`):
 ```python
-# Worker function creates NEW pipeline per file
-def _process_single_filing_worker(args: tuple):
-    config = PipelineConfig(**config_dict)
-    pipeline = SECPreprocessingPipeline(config)  # ← NEW INSTANCE [L62]
+# Global worker objects initialized ONCE per process (adopted from CLI)
+_worker_parser: Optional[SECFilingParser] = None
+_worker_cleaner: Optional[TextCleaner] = None
+_worker_segmenter: Optional[RiskSegmenter] = None
+_worker_extractor: Optional[SECSectionExtractor] = None
 
-    # Pipeline.__init__ creates all components [L231-244]:
-    self.parser = SECFilingParser()              # ← NEW parser (loads sec-parser)
-    self.cleaner = TextCleaner()                 # ← NEW cleaner (loads spaCy)
-    self.segmenter = RiskSegmenter()             # ← NEW segmenter (loads SentenceTransformer)
-    self.extractor = SECSectionExtractor()
+def _init_production_worker():
+    """Initialize global worker objects once per process"""
+    global _worker_parser, _worker_cleaner, _worker_segmenter, _worker_extractor
+    _worker_parser = SECFilingParser()
+    _worker_cleaner = TextCleaner()
+    _worker_segmenter = RiskSegmenter()
+    _worker_extractor = SECSectionExtractor()
+
+def _process_single_filing_worker(args: tuple):
+    # Reuse global worker objects (no per-file instantiation)
+    config = PipelineConfig(**config_dict)
+    # Use global workers instead of creating new instances
 ```
 
-**Impact**: Each file loads models fresh:
-- spaCy model: ~200MB (loads tokenizer, vocab)
-- SentenceTransformer: ~80MB (all-MiniLM-L6-v2)
-- **Total overhead: ~300MB per file** for model loading
+**Impact**: Models loaded once, reused for up to 50 files:
+- First file: ~300MB model loading overhead
+- Files 2-50: **0MB overhead** (reuse)
+- **Amortized: ~6MB per file** (300MB / 50 files)
 
 **CLI Pipeline** (`scripts/data_preprocessing/run_preprocessing_pipeline.py`):
 ```python
@@ -132,22 +145,23 @@ return {
 
 ### 0.4 Resource Allocation Summary
 
-| Aspect | Production Pipeline | CLI Pipeline | Winner |
+| Aspect | Production Pipeline (IMPROVED) | CLI Pipeline | Winner |
 |--------|---------------------|--------------|--------|
-| **Model Reuse** | ❌ NEW per file (~300MB overhead) | ✅ Global workers (amortized ~6MB) | **CLI** |
+| **Model Reuse** | ✅ Global workers (amortized ~6MB) | ✅ Global workers (amortized ~6MB) | **Tie** |
 | **API Cleanliness** | ✅ ParallelProcessor wrapper | ⚠️ Direct ProcessPoolExecutor | **Production** |
 | **File Size Tracking** | ⚠️ Logged but unused | ❌ Not tracked | **Production** |
 | **Timeout Handling** | ✅ Via ParallelProcessor | ✅ Via ProcessPoolExecutor | **Tie** |
 | **Dead Letter Queue** | ✅ Via ParallelProcessor | ✅ Manual implementation | **Tie** |
 | **Memory Semaphore** | ❌ Not implemented | ❌ Not implemented | **Tie** |
+| **HTML Sanitization** | ✅ Removed (unnecessary overhead) | ✅ Never implemented | **Tie** |
 
-**Recommendation**: Merge CLI's global worker pattern into production pipeline for efficiency.
+**Status**: Production pipeline now incorporates CLI's global worker pattern for optimal efficiency.
 
 ---
 
 ## 1. Pipeline Flow Analysis
 
-### 1.1 Production Pipeline Flow (`pipeline.py`)
+### 1.1 Production Pipeline Flow (IMPROVED) (`pipeline.py`)
 
 **Entry Point**: `SECPreprocessingPipeline.process_batch()` [L458-532]
 
@@ -168,7 +182,7 @@ ParallelProcessor._process_parallel [parallel.py:137-223]
   ↓
 ProcessPoolExecutor [parallel.py:149-153]
   ├─ max_workers=auto
-  ├─ initializer=None  ← NO worker initialization
+  ├─ initializer=_init_production_worker  ← IMPROVED: Initialize global workers
   └─ max_tasks_per_child=50
   ↓
 executor.submit(worker_func=_process_single_filing_worker) [parallel.py:156]
@@ -178,23 +192,19 @@ as_completed(future_to_item) [parallel.py:163] ← **BLOCKS HERE**
 future.result(timeout=1200) [parallel.py:170] ← **BLOCKS HERE (20min)**
   ↓
 _process_single_filing_worker() [pipeline.py:38-112]
-  ├─ Create NEW PipelineConfig [L59]
-  ├─ Create NEW SECPreprocessingPipeline [L62]
-  │   ├─ NEW SECFilingParser() [L231]
-  │   ├─ NEW TextCleaner() [L232]
-  │   ├─ NEW SECSectionExtractor() [L238]
-  │   └─ NEW RiskSegmenter() [L239]
+  ├─ Create PipelineConfig [L59]
+  ├─ Reuse global _worker_parser, _worker_cleaner, _worker_segmenter, _worker_extractor
+  │   (Models loaded ONCE per worker, not per file)
   ↓
 pipeline.process_risk_factors() [L72-77]
   ↓
 pipeline.process_filing() [L246-358]
   ↓
 Sequential Steps (all blocking):
-  1. Sanitize [L284-299] → HTMLSanitizer.sanitize() (optional)
-  2. Parse    [L303/308] → SECFilingParser.parse_filing()
-  3. Extract  [L320]     → SECSectionExtractor.extract_section()
-  4. Clean    [L339-342] → TextCleaner.clean_text()
-  5. Segment  [L347-350] → RiskSegmenter.segment_extracted_section()
+  1. Parse    [L303/308] → SECFilingParser.parse_filing()
+  2. Extract  [L320]     → SECSectionExtractor.extract_section()
+  3. Clean    [L339-342] → TextCleaner.clean_text()
+  4. Segment  [L347-350] → RiskSegmenter.segment_extracted_section()
 ```
 
 ### 1.2 CLI Pipeline Flow (`run_preprocessing_pipeline.py`)
@@ -768,12 +778,13 @@ TOTAL                    1.0-1.8GB   100%
 
 ## Conclusion
 
-The preprocessing pipeline uses a **standard blocking ProcessPoolExecutor pattern** optimized for CPU-bound parallelism but **lacking memory-aware resource allocation**. The architecture is:
+The preprocessing pipeline uses a **standard blocking ProcessPoolExecutor pattern** optimized for CPU-bound parallelism. **Recent improvements** incorporate CLI pipeline best practices:
 
 1. ✅ **Correct** for CPU parallelism (ProcessPoolExecutor, worker initialization)
-2. ✅ **Optimized** for object reuse (global workers, max_tasks_per_child)
-3. ❌ **Incomplete** for memory management (no semaphore, no file size awareness)
-4. ❌ **Non-adaptive** for timeout/resource allocation (fixed 1200s timeout, CPU-based workers)
+2. ✅ **Optimized** for object reuse (global workers adopted from CLI, max_tasks_per_child)
+3. ✅ **Streamlined** processing (HTML sanitization removed - unnecessary overhead)
+4. ❌ **Incomplete** for memory management (no semaphore, no file size awareness)
+5. ❌ **Non-adaptive** for timeout/resource allocation (fixed 1200s timeout, CPU-based workers)
 
 **Blocking Nature**: Fully blocking at all levels - process orchestration (`as_completed`, `future.result`) and worker operations (sync I/O, DOM parsing, NLP processing). No async/await anywhere.
 
@@ -781,7 +792,11 @@ The preprocessing pipeline uses a **standard blocking ProcessPoolExecutor patter
 
 **Critical Gap**: User's proposed "Semaphore based on estimated memory" is **not implemented**. System allocates workers based solely on CPU count, risking OOM on large file batches.
 
-**Next Steps** (implied by user context):
+**Completed Improvements**:
+1. ✅ Incorporate CLI's global worker pattern into production pipeline (~50x efficiency gain)
+2. ✅ Remove HTML sanitization step (unnecessary overhead)
+
+**Next Steps** (remaining from user context):
 1. Implement memory-based semaphore before worker submission
 2. Add file size-aware worker allocation (isolate large files to single core)
 3. Implement adaptive timeout based on file size
