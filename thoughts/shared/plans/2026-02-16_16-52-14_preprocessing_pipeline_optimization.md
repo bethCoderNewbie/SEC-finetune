@@ -15,7 +15,14 @@ purpose: Implement memory-aware resource allocation, adaptive timeouts, and pipe
 
 ## Implementation Status
 
-**Last Updated:** 2026-02-16
+**Last Updated:** 2026-02-17
+
+✅ **COMPLETED:**
+- Phase 1: Memory-Aware Resource Allocation (2026-02-16, commit `ef06967`)
+  - Created `src/utils/memory_semaphore.py` with `MemorySemaphore`, `FileCategory`, `ResourceEstimate`
+  - Integrated adaptive timeout into `pipeline.py` `process_batch()` — replaces fixed 1200s
+  - Adaptive timeouts: SMALL=600s, MEDIUM=1200s, LARGE=2400s
+  - Logs file distribution (Small/Medium/Large) and estimated peak memory for large batches
 
 ✅ **COMPLETED:**
 - Phase 2.2: Production Pipeline Efficiency - Global Worker Pattern (2026-02-16)
@@ -27,15 +34,51 @@ purpose: Implement memory-aware resource allocation, adaptive timeouts, and pipe
   - **Removed HTML sanitization step** (unnecessary overhead)
   - **Result:** ~50x reduction in per-file model loading overhead (300MB → 6MB amortized)
 
+✅ **COMPLETED:**
+- Phase 3: Automated Retry Mechanism (2026-02-16)
+  - Created `scripts/utils/retry_failed_files.py` with full retry functionality
+  - Implemented adaptive timeout calculation (600s-2400s base, with multiplier support)
+  - Added memory-aware allocation with wait capability
+  - Implemented file filtering (size, attempts, failure type)
+  - Created DLQ update functionality (remove successful, increment attempts)
+  - Added dry-run mode for safe preview
+  - Created comprehensive documentation (`docs/RETRY_MECHANISM.md`)
+  - Created quick start guide (`scripts/utils/RETRY_QUICK_START.md`)
+  - Added logic validation tests (`scripts/utils/test_retry_logic.py`)
+  - **All core logic tests passing ✓**
+
+✅ **COMPLETED:**
+- Intermediate Output Saving — `pipeline.py` (2026-02-17)
+  - Step 1 (Parse): output saved to `data/interim/parsed/` via `parse_filing(save_output=True)`
+    - Auto-naming: `{stem}_{form_type}_{timestamp}_parsed.json`
+  - Step 2 (Extract): output saved to `data/interim/extracted/{stem}_extracted_risks.json`
+  - Controlled by `save_intermediates: bool = False` on `process_filing()`, `process_risk_factors()`,
+    `process_batch()`, and `_process_filing_with_global_workers()`
+  - Naming conventions match `run_preprocessing_pipeline.py` exactly
+  - Uses `settings.paths.parsed_data_dir` / `settings.paths.extracted_data_dir` from `src/config`
+
+✅ **COMPLETED:**
+- Resume Filter Utility + `pipeline.py` integration (2026-02-17)
+  - Created `src/utils/resume.py` — `ResumeFilter` class (output-existence-based skip logic)
+  - API: `is_processed(file)`, `get_processed_stems()` (bulk O(1) glob+set), `filter_unprocessed(files)`
+  - Exported from `src/utils/__init__.py`
+  - `process_batch(resume=True, output_dir=...)` pre-filters file list before worker dispatch
+  - `process_batch(progress_log=Path(...))` wires `ProgressLogger` via `progress_callback`
+    — per-file OK/WARNING/ERROR lines, summary section, clean close
+
 🚧 **IN PROGRESS:**
 - None
 
 📋 **PENDING:**
-- Phase 1: Memory-Aware Resource Allocation
-- Phase 2.1: Create Shared Worker Module (optional consolidation)
-- Phase 3: Automated Retry Mechanism
-- Phase 4: Enhanced Monitoring
+- Phase 2.1: Create Shared Worker Module — `src/utils/worker_pool.py` (optional consolidation)
+  - Consolidate duplicated `_init_worker()` across `pipeline.py` and `run_preprocessing_pipeline.py`
+- Phase 4: Enhanced Monitoring — `src/utils/resource_tracker.py`
+  - Per-module timing (parser/extractor/cleaner/segmenter) via context manager
+  - Bottleneck analysis in batch summary JSON
 - Phase 5: Code Consolidation
+  - 5.1 Shared worker init (depends on Phase 2.1)
+  - 5.2 `src/utils/dead_letter_queue.py` — unify DLQ implementations in `parallel.py` and
+    `run_preprocessing_pipeline.py` (both have private `_write_dead_letter_queue`)
 
 ---
 
@@ -592,9 +635,11 @@ processor = ParallelProcessor(
 
 ---
 
-### Phase 3: Automated Retry Mechanism (MEDIUM - Week 3)
+### Phase 3: Automated Retry Mechanism ✅ COMPLETED (2026-02-16)
 
 **Goal:** Automatically retry failed files with increased resources.
+
+**Status:** Implementation complete with full testing and documentation.
 
 #### 3.1 Create Retry Script
 

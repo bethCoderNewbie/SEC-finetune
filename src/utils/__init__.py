@@ -4,6 +4,7 @@ from src.utils.checkpoint import CheckpointManager
 from src.utils.parallel import ParallelProcessor
 from src.utils.metadata import RunMetadata
 from src.utils.reporting import ReportFormatter, MarkdownReportGenerator
+from src.utils.resume import ResumeFilter
 from src.utils.state_manager import StateManifest, compute_file_hash
 from src.utils.naming import parse_run_dir_metadata, format_output_filename
 from src.utils.progress_logger import (
@@ -18,6 +19,7 @@ __all__ = [
     'RunMetadata',
     'ReportFormatter',
     'MarkdownReportGenerator',
+    'ResumeFilter',
     'StateManifest',
     'compute_file_hash',
     'parse_run_dir_metadata',

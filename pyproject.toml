@@ -49,6 +49,9 @@ dependencies = [
     "numpy>=1.24.0",
     "dill>=0.3.7",  # Advanced serialization for complex objects (sec-parser elements)
 
+    # System utilities
+    "psutil>=5.9.0",  # For memory monitoring and resource tracking
+
     # Visualization and UI
     "streamlit>=1.28.0",
     "matplotlib>=3.7.0",

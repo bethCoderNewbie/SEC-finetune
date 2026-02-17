@@ -27,219 +27,17 @@ from pydantic import BaseModel, ConfigDict, Field
 from .parser import SECFilingParser
 from .cleaning import TextCleaner
 from .extractor import SECSectionExtractor
-from .segmenter import RiskSegmenter
+from .segmenter import RiskSegmenter, SegmentedRisks
 from .constants import SectionIdentifier
 # Import parallel processing utility
 from src.utils.parallel import ParallelProcessor
 # Import memory-aware resource allocation
 from src.utils.memory_semaphore import MemorySemaphore, FileCategory
+# Import resume and progress utilities
+from src.utils.resume import ResumeFilter
+from src.utils.progress_logger import ProgressLogger
 
 logger = logging.getLogger(__name__)
-
-
-# Global worker objects (initialized once per worker process)
-# Adopts CLI pipeline pattern for efficient model reuse
-_worker_parser: Optional[SECFilingParser] = None
-_worker_cleaner: Optional[TextCleaner] = None
-_worker_segmenter: Optional[RiskSegmenter] = None
-_worker_extractor: Optional[SECSectionExtractor] = None
-
-
-def _init_production_worker():
-    """
-    Initialize global worker objects once per worker process.
-
-    This initialization function is called by ProcessPoolExecutor when
-    each worker process starts. Objects are reused across up to 50 tasks
-    (max_tasks_per_child=50) before the worker is recycled.
-
-    Benefits:
-    - spaCy model (~200MB): Loaded once, not per-file
-    - SentenceTransformer (~80MB): Loaded once, not per-file
-    - Amortized overhead: ~6MB per file vs ~300MB per file
-    """
-    global _worker_parser, _worker_cleaner, _worker_segmenter, _worker_extractor
-
-    logger.info("Initializing production worker (models loaded once per worker)")
-    _worker_parser = SECFilingParser()
-    _worker_cleaner = TextCleaner()
-    _worker_segmenter = RiskSegmenter()
-    _worker_extractor = SECSectionExtractor()
-
-
-def _process_filing_with_global_workers(
-    file_path: Path,
-    form_type: str,
-    config: PipelineConfig,
-    save_output: Optional[Path],
-    overwrite: bool,
-) -> Optional[SegmentedRisks]:
-    """
-    Process a SEC filing using global worker objects (efficient model reuse).
-
-    This function implements the production pipeline flow using pre-initialized
-    global workers instead of creating new instances per file.
-
-    Flow (sanitization removed):
-    1. Parse HTML → ParsedFiling (with metadata)
-    2. Extract section → ExtractedSection (with metadata)
-    3. Clean text → cleaned text
-    4. Segment → SegmentedRisks (with metadata)
-
-    Args:
-        file_path: Path to the HTML filing file
-        form_type: Type of SEC form ("10-K" or "10-Q")
-        config: Pipeline configuration
-        save_output: Optional path to save the result as JSON
-        overwrite: Whether to overwrite existing output file
-
-    Returns:
-        SegmentedRisks with segments and preserved metadata, or None if extraction fails
-    """
-    global _worker_parser, _worker_cleaner, _worker_segmenter, _worker_extractor
-
-    logger.info("Processing filing: %s", file_path.name)
-
-    # Determine section based on form type
-    if form_type.upper() in ["10-K", "10K"]:
-        section = SectionIdentifier.ITEM_1A_RISK_FACTORS
-    else:
-        section = SectionIdentifier.ITEM_1A_RISK_FACTORS_10Q
-
-    # Step 1: Parse HTML filing (no sanitization)
-    logger.info("Step 1/4: Parsing HTML filing...")
-    parsed = _worker_parser.parse_filing(file_path, form_type)
-
-    logger.info(
-        "Parsed %d elements. Metadata: CIK=%s, SIC=%s (%s)",
-        len(parsed),
-        parsed.metadata.get('cik'),
-        parsed.metadata.get('sic_code'),
-        parsed.metadata.get('sic_name'),
-    )
-
-    # Step 2: Extract section (metadata flows through)
-    logger.info("Step 2/4: Extracting section '%s'...", section.value)
-    extracted = _worker_extractor.extract_section(parsed, section)
-
-    if extracted is None:
-        logger.warning("Section '%s' not found in filing", section.value)
-        return None
-
-    logger.info(
-        "Extracted section: %d chars, %d subsections",
-        len(extracted.text),
-        len(extracted.subsections),
-    )
-
-    # Step 3: Clean text
-    logger.info("Step 3/4: Cleaning text...")
-    if config.remove_html:
-        cleaned_text = _worker_cleaner.remove_html_tags(extracted.text)
-    else:
-        cleaned_text = extracted.text
-
-    cleaned_text = _worker_cleaner.clean_text(
-        cleaned_text,
-        deep_clean=config.deep_clean
-    )
-    logger.info("Cleaned text: %d chars", len(cleaned_text))
-
-    # Step 4: Segment (metadata preserved)
-    logger.info("Step 4/4: Segmenting risks...")
-    result = _worker_segmenter.segment_extracted_section(
-        extracted,
-        cleaned_text=cleaned_text
-    )
-    logger.info("Created %d segments", len(result))
-
-    # Save if requested
-    if save_output:
-        output_path = result.save_to_json(save_output, overwrite=overwrite)
-        logger.info("Saved result to: %s", output_path)
-
-    return result
-
-
-# Module-level worker function for parallel processing
-def _process_single_filing_worker(args: tuple) -> Dict[str, Any]:
-    """
-    Worker function for parallel batch processing with elapsed time tracking.
-
-    Uses global worker objects (_worker_parser, _worker_cleaner, etc.) initialized
-    once per worker process for efficient model reuse.
-
-    Args:
-        args: Tuple of (file_path, config_dict, form_type, output_dir, overwrite)
-
-    Returns:
-        Dict with status, result, and elapsed time
-    """
-    global _worker_parser, _worker_cleaner, _worker_segmenter, _worker_extractor
-
-    file_path, config_dict, form_type, output_dir, overwrite = args
-    file_path = Path(file_path)
-
-    # Start timing
-    start_time = time.time()
-
-    # Get file size for logging
-    file_size_mb = file_path.stat().st_size / (1024 * 1024) if file_path.exists() else 0
-
-    try:
-        # Reconstruct pipeline config from dict
-        config = PipelineConfig(**config_dict) if config_dict else PipelineConfig()
-
-        # Generate output path if output_dir is provided
-        save_output = None
-        if output_dir:
-            output_dir = Path(output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            save_output = output_dir / f"{file_path.stem}_segmented.json"
-
-        # Process the file using global workers (no per-file instantiation)
-        result = _process_filing_with_global_workers(
-            file_path=file_path,
-            form_type=form_type,
-            config=config,
-            save_output=save_output,
-            overwrite=overwrite,
-        )
-
-        elapsed_time = time.time() - start_time
-
-        if result:
-            return {
-                'status': 'success',
-                'file': file_path.name,
-                'result': result,  # Include actual SegmentedRisks object
-                'num_segments': len(result),
-                'sic_code': result.sic_code,
-                'company_name': result.company_name,
-                'elapsed_time': elapsed_time,
-                'file_size_mb': file_size_mb,
-            }
-        else:
-            return {
-                'status': 'warning',
-                'file': file_path.name,
-                'result': None,
-                'error': 'No result returned from processing',
-                'elapsed_time': elapsed_time,
-                'file_size_mb': file_size_mb,
-            }
-
-    except Exception as e:
-        elapsed_time = time.time() - start_time
-        logger.error("Failed to process %s (%.1fs): %s", file_path.name, elapsed_time, e)
-        return {
-            'status': 'error',
-            'file': file_path.name,
-            'result': None,
-            'error': str(e),
-            'elapsed_time': elapsed_time,
-            'file_size_mb': file_size_mb,
-        }
 
 
 class PipelineConfig(BaseModel):
@@ -294,6 +92,221 @@ class PipelineConfig(BaseModel):
         le=1.0,
         description="Cosine similarity threshold for semantic breaks"
     )
+
+
+# Global worker objects (initialized once per worker process)
+# Adopts CLI pipeline pattern for efficient model reuse
+_worker_parser: Optional[SECFilingParser] = None
+_worker_cleaner: Optional[TextCleaner] = None
+_worker_segmenter: Optional[RiskSegmenter] = None
+_worker_extractor: Optional[SECSectionExtractor] = None
+
+
+def _init_production_worker():
+    """
+    Initialize global worker objects once per worker process.
+
+    This initialization function is called by ProcessPoolExecutor when
+    each worker process starts. Objects are reused across up to 50 tasks
+    (max_tasks_per_child=50) before the worker is recycled.
+
+    Benefits:
+    - spaCy model (~200MB): Loaded once, not per-file
+    - SentenceTransformer (~80MB): Loaded once, not per-file
+    - Amortized overhead: ~6MB per file vs ~300MB per file
+    """
+    global _worker_parser, _worker_cleaner, _worker_segmenter, _worker_extractor
+
+    logger.info("Initializing production worker (models loaded once per worker)")
+    _worker_parser = SECFilingParser()
+    _worker_cleaner = TextCleaner()
+    _worker_segmenter = RiskSegmenter()
+    _worker_extractor = SECSectionExtractor()
+
+
+def _process_filing_with_global_workers(
+    file_path: Path,
+    form_type: str,
+    config: PipelineConfig,
+    save_output: Optional[Path],
+    overwrite: bool,
+    save_intermediates: bool = False,
+) -> Optional[SegmentedRisks]:
+    """
+    Process a SEC filing using global worker objects (efficient model reuse).
+
+    This function implements the production pipeline flow using pre-initialized
+    global workers instead of creating new instances per file.
+
+    Flow (sanitization removed):
+    1. Parse HTML → ParsedFiling (with metadata)
+    2. Extract section → ExtractedSection (with metadata)
+    3. Clean text → cleaned text
+    4. Segment → SegmentedRisks (with metadata)
+
+    Args:
+        file_path: Path to the HTML filing file
+        form_type: Type of SEC form ("10-K" or "10-Q")
+        config: Pipeline configuration
+        save_output: Optional path to save the result as JSON
+        overwrite: Whether to overwrite existing output file
+
+    Returns:
+        SegmentedRisks with segments and preserved metadata, or None if extraction fails
+    """
+    global _worker_parser, _worker_cleaner, _worker_segmenter, _worker_extractor
+
+    logger.info("Processing filing: %s", file_path.name)
+
+    # Determine section based on form type
+    if form_type.upper() in ["10-K", "10K"]:
+        section = SectionIdentifier.ITEM_1A_RISK_FACTORS
+    else:
+        section = SectionIdentifier.ITEM_1A_RISK_FACTORS_10Q
+
+    # Step 1: Parse HTML filing (no sanitization)
+    logger.info("Step 1/4: Parsing HTML filing...")
+    parsed = _worker_parser.parse_filing(file_path, form_type, save_output=save_intermediates)
+
+    logger.info(
+        "Parsed %d elements. Metadata: CIK=%s, SIC=%s (%s)",
+        len(parsed),
+        parsed.metadata.get('cik'),
+        parsed.metadata.get('sic_code'),
+        parsed.metadata.get('sic_name'),
+    )
+
+    # Step 2: Extract section (metadata flows through)
+    logger.info("Step 2/4: Extracting section '%s'...", section.value)
+    extracted = _worker_extractor.extract_section(parsed, section)
+
+    if extracted is None:
+        logger.warning("Section '%s' not found in filing", section.value)
+        return None
+
+    logger.info(
+        "Extracted section: %d chars, %d subsections",
+        len(extracted.text),
+        len(extracted.subsections),
+    )
+
+    if save_intermediates:
+        from src.config import settings as _cfg  # lazy import (avoids circular at module level)
+        extracted_dir = _cfg.paths.extracted_data_dir
+        extracted_dir.mkdir(parents=True, exist_ok=True)
+        extracted_path = extracted_dir / f"{file_path.stem}_extracted_risks.json"
+        extracted.save_to_json(extracted_path, overwrite=True)
+        logger.info("Saved extracted section to: %s", extracted_path)
+
+    # Step 3: Clean text
+    logger.info("Step 3/4: Cleaning text...")
+    if config.remove_html:
+        cleaned_text = _worker_cleaner.remove_html_tags(extracted.text)
+    else:
+        cleaned_text = extracted.text
+
+    cleaned_text = _worker_cleaner.clean_text(
+        cleaned_text,
+        deep_clean=config.deep_clean
+    )
+    logger.info("Cleaned text: %d chars", len(cleaned_text))
+
+    # Step 4: Segment (metadata preserved)
+    logger.info("Step 4/4: Segmenting risks...")
+    result = _worker_segmenter.segment_extracted_section(
+        extracted,
+        cleaned_text=cleaned_text
+    )
+    logger.info("Created %d segments", len(result))
+
+    # Save if requested
+    if save_output:
+        output_path = result.save_to_json(save_output, overwrite=overwrite)
+        logger.info("Saved result to: %s", output_path)
+
+    return result
+
+
+# Module-level worker function for parallel processing
+def _process_single_filing_worker(args: tuple) -> Dict[str, Any]:
+    """
+    Worker function for parallel batch processing with elapsed time tracking.
+
+    Uses global worker objects (_worker_parser, _worker_cleaner, etc.) initialized
+    once per worker process for efficient model reuse.
+
+    Args:
+        args: Tuple of (file_path, config_dict, form_type, output_dir, overwrite, save_intermediates)
+
+    Returns:
+        Dict with status, result, and elapsed time
+    """
+    global _worker_parser, _worker_cleaner, _worker_segmenter, _worker_extractor
+
+    file_path, config_dict, form_type, output_dir, overwrite, save_intermediates = args
+    file_path = Path(file_path)
+
+    # Start timing
+    start_time = time.time()
+
+    # Get file size for logging
+    file_size_mb = file_path.stat().st_size / (1024 * 1024) if file_path.exists() else 0
+
+    try:
+        # Reconstruct pipeline config from dict
+        config = PipelineConfig(**config_dict) if config_dict else PipelineConfig()
+
+        # Generate output path if output_dir is provided
+        save_output = None
+        if output_dir:
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            save_output = output_dir / f"{file_path.stem}_segmented.json"
+
+        # Process the file using global workers (no per-file instantiation)
+        result = _process_filing_with_global_workers(
+            file_path=file_path,
+            form_type=form_type,
+            config=config,
+            save_output=save_output,
+            overwrite=overwrite,
+            save_intermediates=save_intermediates,
+        )
+
+        elapsed_time = time.time() - start_time
+
+        if result:
+            return {
+                'status': 'success',
+                'file': file_path.name,
+                'result': result,  # Include actual SegmentedRisks object
+                'num_segments': len(result),
+                'sic_code': result.sic_code,
+                'company_name': result.company_name,
+                'elapsed_time': elapsed_time,
+                'file_size_mb': file_size_mb,
+            }
+        else:
+            return {
+                'status': 'warning',
+                'file': file_path.name,
+                'result': None,
+                'error': 'No result returned from processing',
+                'elapsed_time': elapsed_time,
+                'file_size_mb': file_size_mb,
+            }
+
+    except Exception as e:
+        elapsed_time = time.time() - start_time
+        logger.error("Failed to process %s (%.1fs): %s", file_path.name, elapsed_time, e)
+        return {
+            'status': 'error',
+            'file': file_path.name,
+            'result': None,
+            'error': str(e),
+            'elapsed_time': elapsed_time,
+            'file_size_mb': file_size_mb,
+        }
 
 
 class SECPreprocessingPipeline:
@@ -360,6 +373,7 @@ class SECPreprocessingPipeline:
         section: SectionIdentifier = SectionIdentifier.ITEM_1A_RISK_FACTORS,
         save_output: Optional[Union[str, Path]] = None,
         overwrite: bool = False,
+        save_intermediates: bool = False,
     ) -> Optional[SegmentedRisks]:
         """
         Process a SEC filing through the complete pipeline
@@ -391,7 +405,7 @@ class SECPreprocessingPipeline:
 
         # Step 1: Parse HTML filing (no sanitization)
         logger.info("Step 1/4: Parsing HTML filing...")
-        parsed = self.parser.parse_filing(file_path, form_type)
+        parsed = self.parser.parse_filing(file_path, form_type, save_output=save_intermediates)
 
         logger.info(
             "Parsed %d elements. Metadata: CIK=%s, SIC=%s (%s)",
@@ -414,6 +428,14 @@ class SECPreprocessingPipeline:
             len(extracted.text),
             len(extracted.subsections),
         )
+
+        if save_intermediates:
+            from src.config import settings as _cfg
+            extracted_dir = _cfg.paths.extracted_data_dir
+            extracted_dir.mkdir(parents=True, exist_ok=True)
+            extracted_path = extracted_dir / f"{file_path.stem}_extracted_risks.json"
+            extracted.save_to_json(extracted_path, overwrite=True)
+            logger.info("Saved extracted section to: %s", extracted_path)
 
         # Step 3: Clean text
         logger.info("Step 3/4: Cleaning text...")
@@ -515,6 +537,7 @@ class SECPreprocessingPipeline:
         form_type: str = "10-K",
         save_output: Optional[Union[str, Path]] = None,
         overwrite: bool = False,
+        save_intermediates: bool = False,
     ) -> Optional[SegmentedRisks]:
         """
         Convenience method to process Risk Factors section
@@ -539,6 +562,7 @@ class SECPreprocessingPipeline:
             section=section,
             save_output=save_output,
             overwrite=overwrite,
+            save_intermediates=save_intermediates,
         )
 
     def process_batch(
@@ -549,6 +573,9 @@ class SECPreprocessingPipeline:
         overwrite: bool = False,
         max_workers: Optional[int] = None,
         verbose: bool = True,
+        save_intermediates: bool = False,
+        resume: bool = False,
+        progress_log: Optional[Path] = None,
     ) -> List[SegmentedRisks]:
         """
         Process multiple filings with optional parallel processing
@@ -560,6 +587,9 @@ class SECPreprocessingPipeline:
             overwrite: Whether to overwrite existing files
             max_workers: Number of parallel workers (None=auto, 1=sequential)
             verbose: Print progress information
+            save_intermediates: Save parsed and extracted outputs to interim dirs
+            resume: Skip files whose output already exists in output_dir
+            progress_log: Optional path for a persistent progress log file
 
         Returns:
             List of SegmentedRisks objects (successful results only)
@@ -571,6 +601,20 @@ class SECPreprocessingPipeline:
         if not file_paths:
             logger.warning("No file paths provided for batch processing")
             return []
+
+        # Resume: filter out files already processed (output exists in output_dir)
+        if resume and output_dir:
+            resume_filter = ResumeFilter(
+                output_dir=Path(output_dir),
+                output_suffix="_segmented.json",
+            )
+            file_paths = resume_filter.filter_unprocessed(
+                [Path(p) for p in file_paths],
+                quiet=not verbose,
+            )
+            if not file_paths:
+                logger.info("Resume mode: all files already processed, nothing to do")
+                return []
 
         # Convert config to dict for serialization (needed for parallel processing)
         config_dict = self.config.model_dump() if self.config else {}
@@ -613,7 +657,7 @@ class SECPreprocessingPipeline:
 
         # Prepare arguments for worker function
         worker_args = [
-            (file_path, config_dict, form_type, output_dir, overwrite)
+            (file_path, config_dict, form_type, output_dir, overwrite, save_intermediates)
             for file_path in file_paths
         ]
 
@@ -625,11 +669,39 @@ class SECPreprocessingPipeline:
             task_timeout=max_timeout  # Adaptive timeout based on largest file
         )
 
+        # Optional persistent progress log
+        progress_logger: Optional[ProgressLogger] = None
+        if progress_log:
+            progress_logger = ProgressLogger(progress_log, console=verbose)
+            progress_logger.section(f"Batch Pipeline: {len(file_paths)} files")
+
+        def _on_progress(idx: int, result: dict) -> None:
+            """Forward per-file results to ProgressLogger when enabled."""
+            if progress_logger is None:
+                return
+            status = result.get('status', 'unknown')
+            file_name = result.get('file', 'unknown')
+            elapsed = result.get('elapsed_time', 0)
+            if status == 'success':
+                progress_logger.log(
+                    f"[{idx}/{len(file_paths)}] OK: {file_name} -> "
+                    f"{result.get('num_segments', 0)} segments, {elapsed:.1f}s"
+                )
+            elif status == 'warning':
+                progress_logger.warning(
+                    f"[{idx}/{len(file_paths)}] {file_name} - {result.get('error', '')}"
+                )
+            else:
+                progress_logger.error(
+                    f"[{idx}/{len(file_paths)}] FAILED: {file_name} - {result.get('error', '')}"
+                )
+
         # Process files (handles both sequential and parallel modes)
         processing_results = processor.process_batch(
             items=worker_args,
             worker_func=_process_single_filing_worker,
-            verbose=verbose
+            progress_callback=_on_progress if progress_logger else None,
+            verbose=verbose,
         )
 
         # Extract results by status
@@ -642,6 +714,16 @@ class SECPreprocessingPipeline:
             "Batch processing complete: %d successful, %d warnings, %d errors (total: %d)",
             len(successful), len(warnings), len(errors), len(file_paths)
         )
+
+        if progress_logger:
+            progress_logger.section("Batch Complete", char="=")
+            progress_logger.log(f"Total: {len(file_paths)}", timestamp=False)
+            progress_logger.log(f"Successful: {len(successful)}", timestamp=False)
+            if warnings:
+                progress_logger.log(f"Warnings: {len(warnings)}", timestamp=False)
+            if errors:
+                progress_logger.log(f"Errors: {len(errors)}", timestamp=False)
+            progress_logger.close()
 
         if verbose and (warnings or errors):
             if warnings:
