@@ -4,6 +4,24 @@ This directory contains comprehensive documentation for the SEC Filing Analyzer 
 
 ## 📚 Available Documentation
 
+### 🚀 Implementation Reports
+
+**[implementation/](implementation/)** - Pipeline optimization implementation reports
+- **[PHASE1_IMPLEMENTATION_REPORT.md](implementation/PHASE1_IMPLEMENTATION_REPORT.md)** - Memory-aware resource allocation
+- **[PHASE2_TEST_REPORT.md](implementation/PHASE2_TEST_REPORT.md)** - Global worker pattern testing
+- **[PHASE1_IMPLEMENTATION_SUMMARY.md](implementation/PHASE1_IMPLEMENTATION_SUMMARY.md)** - Phase 1 summary
+
+### 🔧 Setup & Operations
+
+**[setup/](setup/)** - Installation and operational documentation
+- **[SETUP_COMPLETE.md](setup/SETUP_COMPLETE.md)** - Setup completion checklist
+- **[RUN_SCRIPTS.md](setup/RUN_SCRIPTS.md)** - Script execution guide
+
+### 📝 Project Documentation
+
+- **[CHANGES.md](CHANGES.md)** - Project changelog
+- **[PREPROCESSING_TIMEOUT_SUMMARY.md](PREPROCESSING_TIMEOUT_SUMMARY.md)** - Preprocessing pipeline analysis
+
 ### Configuration & Best Practices
 
 1. **[PYDANTIC_V2_ENFORCEMENT.md](PYDANTIC_V2_ENFORCEMENT.md)** 🔒 **REQUIRED READING**
