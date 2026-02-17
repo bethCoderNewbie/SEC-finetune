@@ -23,9 +23,7 @@ from typing import Optional, Union, List, Dict, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-# Import data models from models package
-from .models import ParsedFiling, ExtractedSection, SegmentedRisks
-# Import processing classes
+# Import processing classes (models are defined within these modules)
 from .parser import SECFilingParser
 from .cleaning import TextCleaner
 from .extractor import SECSectionExtractor
@@ -33,6 +31,8 @@ from .segmenter import RiskSegmenter
 from .constants import SectionIdentifier
 # Import parallel processing utility
 from src.utils.parallel import ParallelProcessor
+# Import memory-aware resource allocation
+from src.utils.memory_semaphore import MemorySemaphore, FileCategory
 
 logger = logging.getLogger(__name__)
 
@@ -575,18 +575,54 @@ class SECPreprocessingPipeline:
         # Convert config to dict for serialization (needed for parallel processing)
         config_dict = self.config.model_dump() if self.config else {}
 
+        # Pre-classify files for adaptive timeout (Phase 1: Memory Semaphore)
+        semaphore = MemorySemaphore()
+        file_estimates = []
+        max_timeout = 1200  # Default for unclassified
+
+        try:
+            file_estimates = [
+                semaphore.get_resource_estimate(Path(fp))
+                for fp in file_paths
+            ]
+            max_timeout = max(est.recommended_timeout_sec for est in file_estimates)
+
+            # Log file classification statistics
+            small_count = sum(1 for e in file_estimates if e.category == FileCategory.SMALL)
+            medium_count = sum(1 for e in file_estimates if e.category == FileCategory.MEDIUM)
+            large_count = sum(1 for e in file_estimates if e.category == FileCategory.LARGE)
+
+            logger.info(
+                f"Adaptive timeout: {max_timeout}s for {len(file_paths)} files "
+                f"(Small: {small_count}, Medium: {medium_count}, Large: {large_count})"
+            )
+
+            if large_count > 0:
+                total_large_mb = sum(
+                    e.estimated_memory_mb for e in file_estimates
+                    if e.category == FileCategory.LARGE
+                )
+                logger.info(
+                    f"Large files detected: {large_count} files, "
+                    f"estimated peak memory: {total_large_mb:.0f}MB total"
+                )
+
+        except Exception as e:
+            logger.warning(f"File classification failed, using default timeout: {e}")
+            max_timeout = 1200
+
         # Prepare arguments for worker function
         worker_args = [
             (file_path, config_dict, form_type, output_dir, overwrite)
             for file_path in file_paths
         ]
 
-        # Use ParallelProcessor for batch processing with timeout
+        # Use ParallelProcessor for batch processing with adaptive timeout
         processor = ParallelProcessor(
             max_workers=max_workers,
             initializer=_init_production_worker,  # Initialize global workers once per process
             max_tasks_per_child=50,  # Restart workers periodically for memory management
-            task_timeout=1200  # 20 minutes timeout per task
+            task_timeout=max_timeout  # Adaptive timeout based on largest file
         )
 
         # Process files (handles both sequential and parallel modes)

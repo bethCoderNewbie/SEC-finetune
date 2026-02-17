@@ -17,11 +17,11 @@ Quick Start:
     >>> print(f"Segments: {len(result)}")
 """
 
-# Data models (canonical location)
-from .models import ParsedFiling, FormType, ExtractedSection, RiskSegment, SegmentedRisks
+# Data models (canonical location) - TEMPORARILY COMMENTED OUT
+# from .models import ParsedFiling, FormType, ExtractedSection, RiskSegment, SegmentedRisks
 
 from .sanitizer import HTMLSanitizer, SanitizerConfig, sanitize_html
-from .parser import SECFilingParser, ParsedFiling, parse_filing_from_path
+from .parser import SECFilingParser, parse_filing_from_path
 from .cleaning import TextCleaner, clean_filing_text
 from .extractor import (
     SECSectionExtractor,
@@ -48,8 +48,8 @@ __all__ = [
     'sanitize_html',
     # Parser
     'SECFilingParser',
-    'ParsedFiling',
-    'FormType',
+    # 'ParsedFiling',  # Commented - import from parser directly
+    # 'FormType',  # Commented - import from parser directly
     'parse_filing_from_path',
     # Cleaner
     'TextCleaner',
