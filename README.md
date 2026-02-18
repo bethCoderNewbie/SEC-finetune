@@ -62,6 +62,13 @@ SEC-finetune/
 │   │   ├── parsed/              # ParsedFiling JSON outputs
 │   │   └── extracted/           # ExtractedSection + cleaned JSON outputs
 │   ├── processed/
+│   │   ├── .manifest.json       # StateManifest: cross-run hash tracking
+│   │   ├── {YYYYMMDD_HHMMSS}_preprocessing_{git_sha}/  # Per-run output dir
+│   │   │   ├── _checkpoint.json         # CheckpointManager (deleted on success)
+│   │   │   ├── _progress.log            # ProgressLogger output
+│   │   │   ├── RUN_REPORT.md            # MarkdownReportGenerator report
+│   │   │   ├── batch_summary_*.json     # Run summary (naming.py convention)
+│   │   │   └── {stem}_segmented_risks.json
 │   │   ├── features/            # Feature matrices (sentiment, readability)
 │   │   └── labeled/             # Labeled datasets for training
 │   └── dictionary/              # Loughran-McDonald sentiment dictionaries
@@ -71,6 +78,7 @@ SEC-finetune/
 │   │   ├── paths.py             # PathsConfig (all data dirs)
 │   │   └── legacy.py            # Backward-compatible path constants
 │   ├── preprocessing/
+│   │   ├── __main__.py          # python -m src.preprocessing entry point
 │   │   ├── pipeline.py          # SECPreprocessingPipeline orchestrator
 │   │   ├── sanitizer.py         # HTMLSanitizer (pre-parse cleanup)
 │   │   ├── parser.py            # SECFilingParser → ParsedFiling
@@ -312,11 +320,28 @@ python scripts/utils/retry_failed_files.py
 
 ## Output Format
 
-Processed files are written to `data/processed/` as `{stem}_segmented_risks.json`:
+### Batch mode
+
+Each batch run creates a stamped directory under `data/processed/`:
+
+```
+data/processed/
+├── .manifest.json                                  # hash-based cross-run tracking
+└── 20260218_141702_preprocessing_0b83409/          # one dir per run
+    ├── _progress.log                               # real-time per-file log
+    ├── _checkpoint.json                            # deleted on clean completion
+    ├── RUN_REPORT.md                               # human-readable summary
+    ├── batch_summary_20260218_141702_preprocessing_0b83409.json
+    ├── AAPL_10K_2021_segmented_risks.json
+    └── MSFT_10K_2024_segmented_risks.json
+```
+
+Each `{stem}_segmented_risks.json` (version 3.0):
 
 ```json
 {
-  "version": "2.0",
+  "version": "3.0",
+  "filing_name": "AAPL_10K_2021.html",
   "sic_code": "3571",
   "sic_name": "ELECTRONIC COMPUTERS",
   "cik": "0000320193",
@@ -340,7 +365,12 @@ Processed files are written to `data/processed/` as `{stem}_segmented_risks.json
 }
 ```
 
-Intermediate outputs:
+### Single-file mode
+
+Output written directly to `data/processed/{stem}_segmented_risks.json`.
+
+### Intermediate outputs
+
 - `data/interim/parsed/{stem}_{form_type}_{timestamp}_parsed.json` — `ParsedFiling`
 - `data/interim/extracted/{stem}_extracted_risks.json` — `ExtractedSection`
 - `data/interim/extracted/{stem}_cleaned_risks.json` — cleaned `ExtractedSection`
@@ -381,29 +411,33 @@ The batch pipeline is designed for long-running jobs on large datasets:
 
 | Feature | Implementation | Description |
 |---------|---------------|-------------|
-| Resume | `ResumeFilter` | Skip files whose output already exists |
-| Incremental | `StateManifest` | Hash-based tracking; re-runs only changed files |
-| Checkpoint | `CheckpointManager` | Save progress; resume after crash |
+| Within-run resume | `ResumeFilter` | Skip files already written to the current run directory |
+| Cross-run incremental | `StateManifest` | Hash-based tracking via `data/processed/.manifest.json`; re-runs only changed files |
+| Crash recovery | `CheckpointManager` | Saves `_checkpoint.json` every `--chunk-size` files; deleted on clean completion |
+| Adaptive timeout | `MemorySemaphore` | Classifies files as SMALL/MEDIUM/LARGE and raises per-file timeout accordingly |
 | Dead Letter Queue | `DeadLetterQueue` | Quarantine timeout/error files to `logs/failed_files.json` |
-| Worker isolation | `ProcessPoolExecutor` + `worker_pool` | Each worker gets its own model copies; `max_tasks_per_child=50` prevents memory leaks |
-| Resource tracking | `ResourceTracker` | Per-module wall-clock and RSS memory profiling |
-| Progress logging | `ProgressLogger` | Real-time per-file logging to `data/processed/_progress.log` |
+| Worker isolation | `ParallelProcessor` + `worker_pool` | Single long-lived pool; each worker owns model copies; `max_tasks_per_child=50` prevents memory leaks |
+| Resource tracking | `ResourceTracker` | Per-step (parse/extract/clean/segment/sentiment) wall-clock and RSS memory |
+| Progress logging | `ProgressLogger` | Real-time per-file logging to `run_dir/_progress.log` |
+| Run report | `MarkdownReportGenerator` | `RUN_REPORT.md` written to run dir on completion |
+| Stamped output dirs | `RunMetadata` + `naming.py` | Every batch run in its own `{YYYYMMDD_HHMMSS}_preprocessing_{git_sha}/` directory |
 
 ## src/utils Reference
 
 | Module | Class / Function | Purpose |
 |--------|-----------------|---------|
-| `parallel.py` | `ParallelProcessor` | `ProcessPoolExecutor` wrapper with timeout, DLQ, and progress |
+| `parallel.py` | `ParallelProcessor` | Single long-lived `ProcessPoolExecutor` with `initargs`, timeout, DLQ, and progress callback |
 | `worker_pool.py` | `init_preprocessing_worker`, `get_worker_*` | Shared worker initialization for multiprocessing |
 | `checkpoint.py` | `CheckpointManager` | Crash-safe batch state save/restore |
-| `state_manager.py` | `StateManifest`, `compute_file_hash` | Hash-based incremental run tracking |
-| `resume.py` | `ResumeFilter` | Output-existence-based file skip |
+| `state_manager.py` | `StateManifest`, `compute_file_hash` | Hash-based incremental run tracking via `.manifest.json` |
+| `resume.py` | `ResumeFilter` | Output-existence-based within-run file skip |
+| `memory_semaphore.py` | `MemorySemaphore`, `FileCategory` | File-size classification (SMALL/MEDIUM/LARGE) and adaptive timeout |
 | `dead_letter_queue.py` | `DeadLetterQueue` | JSON-backed failed-file store |
 | `progress_logger.py` | `ProgressLogger`, `BatchProgressLogger` | Real-time console + file logging |
-| `resource_tracker.py` | `ResourceTracker`, `ResourceUsage` | Per-module timing and memory usage |
-| `reporting.py` | `ReportFormatter`, `MarkdownReportGenerator` | Human-readable batch reports |
+| `resource_tracker.py` | `ResourceTracker`, `ResourceUsage` | Per-step timing and peak RSS memory |
+| `reporting.py` | `ReportFormatter`, `MarkdownReportGenerator` | Human-readable `RUN_REPORT.md` batch reports |
 | `metadata.py` | `RunMetadata` | Capture git SHA, branch, timestamp for reproducibility |
-| `naming.py` | `parse_run_dir_metadata`, `format_output_filename` | Consistent output file naming |
+| `naming.py` | `parse_run_dir_metadata`, `format_output_filename` | Consistent stamped run-dir and output file naming |
 
 ## Dependencies
 
