@@ -94,8 +94,13 @@ class SegmentedRisks(BaseModel):
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Derive filing_name from output path (strip _segmented suffix added by pipeline)
+        filing_name = output_path.stem.removesuffix('_segmented')
+
         data = {
             'version': '1.0',
+            'filing_name': filing_name,
+            'num_segments': self.total_segments,
             **self.model_dump(),
         }
 

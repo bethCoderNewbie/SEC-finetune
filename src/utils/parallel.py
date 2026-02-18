@@ -1,12 +1,12 @@
 """Parallel processing utilities for batch validation."""
 
-import json
 import logging
 import os
 from concurrent.futures import ProcessPoolExecutor, TimeoutError, as_completed
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TypeVar
+
+from src.utils.dead_letter_queue import DeadLetterQueue
 
 logger = logging.getLogger(__name__)
 
@@ -218,54 +218,7 @@ class ParallelProcessor:
 
         # Write failed items to dead letter queue
         if failed_items:
-            self._write_dead_letter_queue(failed_items)
+            dlq = DeadLetterQueue()
+            dlq.add_failures(failed_items, script_name="ParallelProcessor")
 
         return results
-
-    def _write_dead_letter_queue(self, failed_items: List[Any]) -> None:
-        """
-        Write failed items to logs/failed_files.json for retry.
-
-        Args:
-            failed_items: List of items that failed processing
-        """
-        log_dir = Path('logs')
-        log_dir.mkdir(exist_ok=True)
-
-        dlq_file = log_dir / 'failed_files.json'
-
-        # Load existing failures
-        if dlq_file.exists():
-            try:
-                with open(dlq_file, 'r', encoding='utf-8') as f:
-                    failures = json.load(f)
-            except (json.JSONDecodeError, IOError):
-                logger.warning(f"Could not read {dlq_file}, starting fresh")
-                failures = []
-        else:
-            failures = []
-
-        # Add new failures with timestamp
-        timestamp = datetime.now().isoformat()
-        for item in failed_items:
-            # Extract file path from item (could be Path, str, or tuple)
-            if isinstance(item, (str, Path)):
-                file_path = str(item)
-            elif isinstance(item, tuple) and len(item) > 0:
-                file_path = str(item[0])
-            else:
-                file_path = str(item)
-
-            failures.append({
-                'file': file_path,
-                'timestamp': timestamp,
-                'reason': 'timeout_or_exception'
-            })
-
-        # Save updated failures
-        try:
-            with open(dlq_file, 'w', encoding='utf-8') as f:
-                json.dump(failures, f, indent=2)
-            logger.info(f"Wrote {len(failed_items)} failed items to {dlq_file}")
-        except IOError as e:
-            logger.error(f"Failed to write dead letter queue: {e}")

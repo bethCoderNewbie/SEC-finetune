@@ -48,13 +48,11 @@ import time
 import os
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, TimeoutError, as_completed
-from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 
-from src.preprocessing.parser import SECFilingParser, ParsedFiling
-from src.preprocessing.extractor import SECSectionExtractor, ExtractedSection
-from src.preprocessing.cleaning import TextCleaner
-from src.preprocessing.segmenter import RiskSegmenter, SegmentedRisks, RiskSegment
+from src.preprocessing.parser import ParsedFiling
+from src.preprocessing.extractor import ExtractedSection
+from src.preprocessing.segmenter import SegmentedRisks, RiskSegment
 from src.features.sentiment import SentimentAnalyzer
 from src.config import (
     RAW_DATA_DIR,
@@ -64,7 +62,15 @@ from src.config import (
     settings,
     ensure_directories
 )
+from src.utils.dead_letter_queue import DeadLetterQueue
 from src.utils.progress_logger import ProgressLogger
+from src.utils.worker_pool import (
+    init_preprocessing_worker,
+    get_worker_parser,
+    get_worker_cleaner,
+    get_worker_extractor,
+    get_worker_segmenter,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -73,28 +79,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global worker objects - initialized once per process for efficiency
-_worker_parser: Optional[SECFilingParser] = None
-_worker_extractor: Optional[SECSectionExtractor] = None
-_worker_cleaner: Optional[TextCleaner] = None
-_worker_segmenter: Optional[RiskSegmenter] = None
+# Sentiment worker — kept local (not in shared worker_pool)
 _worker_analyzer: Optional[SentimentAnalyzer] = None
 
 
 def _init_worker(extract_sentiment: bool = True) -> None:
     """
     Initialize worker process with reusable objects.
-    Called once per worker process to avoid repeated initialization overhead.
-    """
-    global _worker_parser, _worker_extractor, _worker_cleaner, _worker_segmenter, _worker_analyzer
 
-    _worker_parser = SECFilingParser()
-    _worker_extractor = SECSectionExtractor()
-    _worker_cleaner = TextCleaner()
-    _worker_segmenter = RiskSegmenter(
-        min_length=settings.preprocessing.min_segment_length,
-        max_length=settings.preprocessing.max_segment_length
-    )
+    Core preprocessing workers (parser, extractor, cleaner, segmenter) are
+    delegated to :func:`src.utils.worker_pool.init_preprocessing_worker` to
+    avoid duplication with the pipeline module. The sentiment analyzer is kept
+    local because it is specific to this combined script.
+    """
+    global _worker_analyzer
+
+    init_preprocessing_worker()  # parser, cleaner, extractor, segmenter
     if extract_sentiment:
         _worker_analyzer = SentimentAnalyzer()
     else:
@@ -470,22 +470,20 @@ def process_single_file_fast(args: Tuple[Path, bool]) -> Dict[str, Any]:
     Returns:
         Dictionary with processing result
     """
-    global _worker_parser, _worker_extractor, _worker_cleaner, _worker_segmenter, _worker_analyzer
-
     input_file, save_intermediates = args
 
     try:
         start_time = time.time()
 
         # Step 1: Parse
-        filing = _worker_parser.parse_filing(
+        filing = get_worker_parser().parse_filing(
             input_file,
             form_type="10-K",
             save_output=save_intermediates
         )
 
         # Step 2: Extract
-        risk_section = _worker_extractor.extract_risk_factors(filing)
+        risk_section = get_worker_extractor().extract_risk_factors(filing)
 
         if not risk_section:
             return {
@@ -506,7 +504,7 @@ def process_single_file_fast(args: Tuple[Path, bool]) -> Dict[str, Any]:
             risk_section.save_to_json(output_path, overwrite=True)
 
         # Step 3: Clean
-        cleaned_text = _worker_cleaner.clean_text(risk_section.text, deep_clean=False)
+        cleaned_text = get_worker_cleaner().clean_text(risk_section.text, deep_clean=False)
 
         # Create cleaned section with metadata preserved (Pydantic V2 compliant)
         cleaned_section = ExtractedSection(
@@ -540,7 +538,7 @@ def process_single_file_fast(args: Tuple[Path, bool]) -> Dict[str, Any]:
             cleaned_section.save_to_json(output_path, overwrite=True)
 
         # Step 4: Segment (using new method that preserves metadata)
-        segmented_risks = _worker_segmenter.segment_extracted_section(
+        segmented_risks = get_worker_segmenter().segment_extracted_section(
             cleaned_section,
             cleaned_text=cleaned_text
         )
@@ -860,51 +858,9 @@ def _process_chunk(
 
     # Write failed files to dead letter queue
     if failed_files:
-        _write_dead_letter_queue(failed_files)
+        DeadLetterQueue().add_failures(failed_files, script_name='run_preprocessing_pipeline.py')
 
     return results
-
-
-def _write_dead_letter_queue(failed_files: List[Path]) -> None:
-    """
-    Write failed files to logs/failed_files.json for retry.
-
-    Args:
-        failed_files: List of file paths that failed processing
-    """
-    log_dir = Path('logs')
-    log_dir.mkdir(exist_ok=True)
-
-    dlq_file = log_dir / 'failed_files.json'
-
-    # Load existing failures
-    if dlq_file.exists():
-        try:
-            with open(dlq_file, 'r', encoding='utf-8') as f:
-                failures = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            logger.warning(f"Could not read {dlq_file}, starting fresh")
-            failures = []
-    else:
-        failures = []
-
-    # Add new failures with timestamp
-    timestamp = datetime.now().isoformat()
-    for file_path in failed_files:
-        failures.append({
-            'file': str(file_path),
-            'timestamp': timestamp,
-            'reason': 'timeout_or_exception',
-            'script': 'run_preprocessing_pipeline.py'
-        })
-
-    # Save updated failures
-    try:
-        with open(dlq_file, 'w', encoding='utf-8') as f:
-            json.dump(failures, f, indent=2)
-        logger.info(f"Wrote {len(failed_files)} failed items to {dlq_file}")
-    except IOError as e:
-        logger.error(f"Failed to write dead letter queue: {e}")
 
 
 def main():

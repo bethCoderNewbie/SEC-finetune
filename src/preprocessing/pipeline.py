@@ -36,6 +36,15 @@ from src.utils.memory_semaphore import MemorySemaphore, FileCategory
 # Import resume and progress utilities
 from src.utils.resume import ResumeFilter
 from src.utils.progress_logger import ProgressLogger
+# Import shared worker pool and resource tracker
+from src.utils.worker_pool import (
+    init_preprocessing_worker,
+    get_worker_parser,
+    get_worker_cleaner,
+    get_worker_extractor,
+    get_worker_segmenter,
+)
+from src.utils.resource_tracker import ResourceTracker
 
 logger = logging.getLogger(__name__)
 
@@ -94,36 +103,6 @@ class PipelineConfig(BaseModel):
     )
 
 
-# Global worker objects (initialized once per worker process)
-# Adopts CLI pipeline pattern for efficient model reuse
-_worker_parser: Optional[SECFilingParser] = None
-_worker_cleaner: Optional[TextCleaner] = None
-_worker_segmenter: Optional[RiskSegmenter] = None
-_worker_extractor: Optional[SECSectionExtractor] = None
-
-
-def _init_production_worker():
-    """
-    Initialize global worker objects once per worker process.
-
-    This initialization function is called by ProcessPoolExecutor when
-    each worker process starts. Objects are reused across up to 50 tasks
-    (max_tasks_per_child=50) before the worker is recycled.
-
-    Benefits:
-    - spaCy model (~200MB): Loaded once, not per-file
-    - SentenceTransformer (~80MB): Loaded once, not per-file
-    - Amortized overhead: ~6MB per file vs ~300MB per file
-    """
-    global _worker_parser, _worker_cleaner, _worker_segmenter, _worker_extractor
-
-    logger.info("Initializing production worker (models loaded once per worker)")
-    _worker_parser = SECFilingParser()
-    _worker_cleaner = TextCleaner()
-    _worker_segmenter = RiskSegmenter()
-    _worker_extractor = SECSectionExtractor()
-
-
 def _process_filing_with_global_workers(
     file_path: Path,
     form_type: str,
@@ -131,12 +110,13 @@ def _process_filing_with_global_workers(
     save_output: Optional[Path],
     overwrite: bool,
     save_intermediates: bool = False,
+    tracker: Optional[ResourceTracker] = None,
 ) -> Optional[SegmentedRisks]:
     """
     Process a SEC filing using global worker objects (efficient model reuse).
 
-    This function implements the production pipeline flow using pre-initialized
-    global workers instead of creating new instances per file.
+    Workers are provided by :mod:`src.utils.worker_pool` (initialised once
+    per worker process via ``init_preprocessing_worker``).
 
     Flow (sanitization removed):
     1. Parse HTML → ParsedFiling (with metadata)
@@ -150,11 +130,13 @@ def _process_filing_with_global_workers(
         config: Pipeline configuration
         save_output: Optional path to save the result as JSON
         overwrite: Whether to overwrite existing output file
+        save_intermediates: Save parsed/extracted outputs to interim dirs
+        tracker: Optional ResourceTracker for per-step timing/memory
 
     Returns:
         SegmentedRisks with segments and preserved metadata, or None if extraction fails
     """
-    global _worker_parser, _worker_cleaner, _worker_segmenter, _worker_extractor
+    from contextlib import nullcontext
 
     logger.info("Processing filing: %s", file_path.name)
 
@@ -166,7 +148,10 @@ def _process_filing_with_global_workers(
 
     # Step 1: Parse HTML filing (no sanitization)
     logger.info("Step 1/4: Parsing HTML filing...")
-    parsed = _worker_parser.parse_filing(file_path, form_type, save_output=save_intermediates)
+    with tracker.track_module("parser") if tracker else nullcontext():
+        parsed = get_worker_parser().parse_filing(
+            file_path, form_type, save_output=save_intermediates
+        )
 
     logger.info(
         "Parsed %d elements. Metadata: CIK=%s, SIC=%s (%s)",
@@ -178,7 +163,8 @@ def _process_filing_with_global_workers(
 
     # Step 2: Extract section (metadata flows through)
     logger.info("Step 2/4: Extracting section '%s'...", section.value)
-    extracted = _worker_extractor.extract_section(parsed, section)
+    with tracker.track_module("extractor") if tracker else nullcontext():
+        extracted = get_worker_extractor().extract_section(parsed, section)
 
     if extracted is None:
         logger.warning("Section '%s' not found in filing", section.value)
@@ -200,23 +186,25 @@ def _process_filing_with_global_workers(
 
     # Step 3: Clean text
     logger.info("Step 3/4: Cleaning text...")
-    if config.remove_html:
-        cleaned_text = _worker_cleaner.remove_html_tags(extracted.text)
-    else:
-        cleaned_text = extracted.text
+    with tracker.track_module("cleaner") if tracker else nullcontext():
+        if config.remove_html:
+            cleaned_text = get_worker_cleaner().remove_html_tags(extracted.text)
+        else:
+            cleaned_text = extracted.text
 
-    cleaned_text = _worker_cleaner.clean_text(
-        cleaned_text,
-        deep_clean=config.deep_clean
-    )
+        cleaned_text = get_worker_cleaner().clean_text(
+            cleaned_text,
+            deep_clean=config.deep_clean
+        )
     logger.info("Cleaned text: %d chars", len(cleaned_text))
 
     # Step 4: Segment (metadata preserved)
     logger.info("Step 4/4: Segmenting risks...")
-    result = _worker_segmenter.segment_extracted_section(
-        extracted,
-        cleaned_text=cleaned_text
-    )
+    with tracker.track_module("segmenter") if tracker else nullcontext():
+        result = get_worker_segmenter().segment_extracted_section(
+            extracted,
+            cleaned_text=cleaned_text
+        )
     logger.info("Created %d segments", len(result))
 
     # Save if requested
@@ -232,25 +220,22 @@ def _process_single_filing_worker(args: tuple) -> Dict[str, Any]:
     """
     Worker function for parallel batch processing with elapsed time tracking.
 
-    Uses global worker objects (_worker_parser, _worker_cleaner, etc.) initialized
-    once per worker process for efficient model reuse.
+    Uses global worker objects provided by :mod:`src.utils.worker_pool`,
+    initialised once per worker process via ``init_preprocessing_worker``.
 
     Args:
         args: Tuple of (file_path, config_dict, form_type, output_dir, overwrite, save_intermediates)
 
     Returns:
-        Dict with status, result, and elapsed time
+        Dict with status, result, elapsed_time, and resource_usage
     """
-    global _worker_parser, _worker_cleaner, _worker_segmenter, _worker_extractor
-
     file_path, config_dict, form_type, output_dir, overwrite, save_intermediates = args
     file_path = Path(file_path)
 
-    # Start timing
-    start_time = time.time()
-
     # Get file size for logging
     file_size_mb = file_path.stat().st_size / (1024 * 1024) if file_path.exists() else 0
+
+    tracker = ResourceTracker()
 
     try:
         # Reconstruct pipeline config from dict
@@ -271,9 +256,10 @@ def _process_single_filing_worker(args: tuple) -> Dict[str, Any]:
             save_output=save_output,
             overwrite=overwrite,
             save_intermediates=save_intermediates,
+            tracker=tracker,
         )
 
-        elapsed_time = time.time() - start_time
+        usage = tracker.finalize()
 
         if result:
             return {
@@ -283,8 +269,9 @@ def _process_single_filing_worker(args: tuple) -> Dict[str, Any]:
                 'num_segments': len(result),
                 'sic_code': result.sic_code,
                 'company_name': result.company_name,
-                'elapsed_time': elapsed_time,
+                'elapsed_time': usage.elapsed_time(),
                 'file_size_mb': file_size_mb,
+                'resource_usage': usage.to_dict(),
             }
         else:
             return {
@@ -292,20 +279,24 @@ def _process_single_filing_worker(args: tuple) -> Dict[str, Any]:
                 'file': file_path.name,
                 'result': None,
                 'error': 'No result returned from processing',
-                'elapsed_time': elapsed_time,
+                'elapsed_time': usage.elapsed_time(),
                 'file_size_mb': file_size_mb,
+                'resource_usage': usage.to_dict(),
             }
 
     except Exception as e:
-        elapsed_time = time.time() - start_time
-        logger.error("Failed to process %s (%.1fs): %s", file_path.name, elapsed_time, e)
+        usage = tracker.finalize()
+        logger.error(
+            "Failed to process %s (%.1fs): %s", file_path.name, usage.elapsed_time(), e
+        )
         return {
             'status': 'error',
             'file': file_path.name,
             'result': None,
             'error': str(e),
-            'elapsed_time': elapsed_time,
+            'elapsed_time': usage.elapsed_time(),
             'file_size_mb': file_size_mb,
+            'resource_usage': usage.to_dict(),
         }
 
 
@@ -664,7 +655,7 @@ class SECPreprocessingPipeline:
         # Use ParallelProcessor for batch processing with adaptive timeout
         processor = ParallelProcessor(
             max_workers=max_workers,
-            initializer=_init_production_worker,  # Initialize global workers once per process
+            initializer=init_preprocessing_worker,  # Shared worker pool (Phase 5.1)
             max_tasks_per_child=50,  # Restart workers periodically for memory management
             task_timeout=max_timeout  # Adaptive timeout based on largest file
         )

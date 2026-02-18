@@ -124,7 +124,7 @@ class TestProcessFilingWithGlobalWorkers:
             )
             mock_cleaner.remove_html_tags.return_value = "Risk text"
             mock_cleaner.clean_text.return_value = "Cleaned risk text"
-            mock_segmenter.segment_extracted_section.return_value = Mock()
+            mock_segmenter.segment_extracted_section.return_value = MagicMock()
 
             _process_filing_with_global_workers(
                 file_path=sample_file,
@@ -154,7 +154,7 @@ class TestProcessFilingWithGlobalWorkers:
             )
             mock_cleaner.clean_text.side_effect = lambda *a, **kw: call_order.append('clean') or "cleaned"
             mock_cleaner.remove_html_tags.return_value = "text"
-            mock_segmenter.segment_extracted_section.side_effect = lambda *a, **kw: call_order.append('segment') or Mock()
+            mock_segmenter.segment_extracted_section.side_effect = lambda *a, **kw: call_order.append('segment') or MagicMock()
 
             _process_filing_with_global_workers(
                 file_path=sample_file,

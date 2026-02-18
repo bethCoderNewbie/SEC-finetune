@@ -330,25 +330,22 @@ class StateManifest:
 
         return len(files_to_remove)
 
-    def get_failed_files(self) -> List[Dict[str, Any]]:
-        """Get list of failed/quarantined files.
+    def get_failed_files(self) -> Dict[str, Dict[str, Any]]:
+        """Get dict of failed/quarantined files keyed by file path.
 
         Returns:
-            List of file records with status='failed'
+            Dict mapping file path (str) to record data for status='failed' files
 
         Example:
             >>> failed = manifest.get_failed_files()
-            >>> for record in failed:
-            ...     print(f"{record['path']}: {record['failure_reason']}")
+            >>> for file_path, record in failed.items():
+            ...     print(f"{file_path}: {record['failure_reason']}")
         """
-        failed = []
-        for file_key, record in self.data["files"].items():
-            if record.get("status") == "failed":
-                failed.append({
-                    "path": file_key,
-                    **record
-                })
-        return failed
+        return {
+            file_key: record
+            for file_key, record in self.data["files"].items()
+            if record.get("status") == "failed"
+        }
 
     def update_run_config(self, config_snapshot: Dict[str, Any]) -> None:
         """Update run configuration with snapshot.
