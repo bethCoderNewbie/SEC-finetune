@@ -72,9 +72,8 @@ Every significant engineering decision and operational concern must be captured 
 
 ```
 Strategic   →  docs/requirements/     PRD-*.md           Why? What value?           Audience: Stakeholders
-Strategic   →  docs/requirements/     TRD-*.md           Detailed constraints        Audience: Engineers
 Conceptual  →  docs/architecture/rfc/ RFC-*.md           How should we build this?  Audience: Contributors
-Conceptual  →  docs/architecture/adr/ ADR-*.md           How is it designed?        Audience: Architects/Leads
+Conceptual  →  docs/architecture/adr/ ADR-*.md           How is it decided?         Audience: Architects/Leads
 Tactical    →  docs/ops/runbook.md    Symptom → Fix      How do I run/debug it?     Audience: On-call Engineers
 Tactical    →  docs/architecture/     data_dictionary.md What does each field mean? Audience: Data Scientists
 ```
@@ -83,14 +82,15 @@ Tactical    →  docs/architecture/     data_dictionary.md What does each field 
 
 All formal documents use the pattern `{Type}-{ID}_{ShortName}.md`:
 
-| Type | Full Name | Question Answered |
-|------|-----------|-------------------|
-| `PRD` | Product Requirements Document | What are we building? |
-| `TRD` | Technical Requirements Document | Detailed system constraints |
-| `RFC` | Request for Comments | How should we build this? |
-| `ADR` | Architecture Decision Record | Why did we decide X? |
+| Type | Location | Naming Pattern | Question Answered |
+|------|----------|----------------|-------------------|
+| `PRD` | `docs/requirements/` | `PRD-{NNN}_{ShortName}.md` | What are we building? |
+| `RFC` | `docs/architecture/rfc/` | `RFC-{NNN}_{ShortName}.md` | How should we build this? |
+| `ADR` | `docs/architecture/adr/` | `ADR-{NNN}_{ShortName}.md` | Why did we decide X? |
 
-Examples: `PRD-001_mvp_baseline.md`, `ADR-007_stamped_run_dirs.md`, `RFC-001_worker_pool_design.md`
+Each type has its own independent numeric counter. Examples: `PRD-003_quality_remediation.md`, `RFC-001_finetuning_pipeline.md`, `ADR-007_stamped_run_dirs.md`.
+
+> **TRD (deprecated):** Technical constraints live in PRD §9 ("Technical Requirements"). A separate TRD adds sync overhead without benefit for a single-contributor project.
 
 ### PRDs (Product Requirements Documents)
 
@@ -98,7 +98,7 @@ Examples: `PRD-001_mvp_baseline.md`, `ADR-007_stamped_run_dirs.md`, `RFC-001_wor
 * **When to write:** Before starting any significant new capability or when the current implementation diverges from the existing PRD.
 * **Required sections:** Context & Problem, Goals/Non-Goals, Dataset Definition (§2.1), Feature Schema (§2.2), Model Specifications with baseline + KPIs (§3), Engineering & MLOps (§4), Phase-Gate plan (§5), User Stories, Architecture, Data & Metrics, Technical Requirements, Open Questions.
 * **Status field:** `DRAFT` → `APPROVED`. Never delete; write a superseding PRD instead.
-* **Current PRDs:** PRD-001 (MVP baseline), PRD-002 (pipeline v2, current state).
+* **Current PRDs:** PRD-001 (MVP baseline), PRD-002 (pipeline v2, current state), PRD-003 (training data quality remediation).
 
 ### ADRs (Architecture Decision Records)
 
