@@ -63,3 +63,53 @@ You are an expert Senior Software Engineer specializing in **Context Engineering
 * **Don't Outsource Thinking:** If the user corrects you, **DO NOT** blindly accept it. Spawn new research tasks to verify the correction yourself first.
 * **Read-Edit-Write:** Follow the plan strictly. Read the file, apply the specific edit defined in the plan, and write the result.
 * **Human in the Loop:** Always pause for human review after generating `research.md` and `plan.md`.
+
+---
+
+## Documentation Requirements
+
+Every significant engineering decision and operational concern must be captured in the correct layer of the documentation hierarchy. Do not mix layers.
+
+```
+Strategic   →  docs/requirements/     PRD-*.md          Why? What value?        Audience: Stakeholders
+Conceptual  →  docs/architecture/adr/ ADR-*.md          How is it designed?     Audience: Architects/Leads
+Tactical    →  docs/ops/runbook.md    Symptom → Fix     How do I run/debug it?  Audience: On-call Engineers
+Tactical    →  docs/architecture/     data_dictionary.md What does each field mean? Audience: Data Scientists
+```
+
+### PRDs (Product Requirements Documents)
+
+* **Location:** `docs/requirements/PRD-NNN_title.md`
+* **When to write:** Before starting any significant new capability or when the current implementation diverges from the existing PRD.
+* **Required sections:** Context & Problem, Goals/Non-Goals, Dataset Definition (§2.1), Feature Schema (§2.2), Model Specifications with baseline + KPIs (§3), Engineering & MLOps (§4), Phase-Gate plan (§5), User Stories, Architecture, Data & Metrics, Technical Requirements, Open Questions.
+* **Status field:** `DRAFT` → `APPROVED`. Never delete; write a superseding PRD instead.
+* **Current PRDs:** PRD-001 (MVP baseline), PRD-002 (pipeline v2, current state).
+
+### ADRs (Architecture Decision Records)
+
+* **Location:** `docs/architecture/adr/ADR-NNN_slug.md`
+* **When to write:** After any decision about technology choice, architectural pattern, or deliberate trade-off. Write *after* agreement, not during debate (that is an RFC).
+* **Required sections:** Status, Date, Author, Context (what problem forced this decision), Decision (what exactly was chosen and any governing rules), Consequences (positive and negative), Supersedes, References.
+* **Immutable:** Never edit an existing ADR. Write a new one with `Status: Supersedes ADR-NNN`.
+* **Current ADRs:** ADR-001 (Pydantic V2), ADR-002 (sec-parser), ADR-003 (global worker pool), ADR-004 (sanitization removed), ADR-005 (custom DLQ/checkpoint), ADR-006 (modular config), ADR-007 (stamped run dirs).
+
+### Runbook
+
+* **Location:** `docs/ops/runbook.md`
+* **When to update:** After every production incident or newly observed failure mode. After any change to `src/utils/` that affects operational behavior.
+* **Structure:** Organize by **observable symptom**, not by component. Each entry must include: Severity, Trigger, Diagnosis steps (with exact shell commands), Resolution steps (with exact commands), and any known limitations.
+* **Do not:** Write "check the logs" without specifying which log file and what to grep for.
+
+### Data Dictionary
+
+* **Location:** `docs/architecture/data_dictionary.md`
+* **When to update:** After any change to `SegmentedRisks`, `RiskSegment`, `ExtractedSection`, or any QA validation threshold in `configs/qa_validation/`.
+* **Required columns:** Field, Type, Description, Source/Logic (which class/method produces it), Nullable, Constraints.
+* **Must include:** A lineage diagram showing which pipeline stage produces each field, all blocking vs. non-blocking QA validation rules, and a "Fields NOT Yet Present" table for planned-but-unimplemented schema fields.
+* **Note:** Do not place this file under `docs/data/` — the `.gitignore` `data/` rule will exclude it. Use `docs/architecture/data_dictionary.md`.
+
+### General Rules
+
+* **`.gitignore` trap:** Any path containing `data/` is excluded by `.gitignore:70`. Never create documentation files inside a `*/data/*` directory. Use `docs/architecture/`, `docs/ops/`, or `docs/requirements/` instead.
+* **No placeholder values:** All documentation must be grounded in the actual codebase. Never write `[TODO]` or `[TBD]` in a field where the answer is knowable from the code.
+* **Link to code:** Every ADR and runbook entry must cite at least one specific file path (and line number where relevant).
