@@ -208,6 +208,45 @@ results = pipeline.process_batch(
 python scripts/data_collection/download_sec_filings.py
 ```
 
+### Module Entry Point (Single Filing)
+
+Run the pipeline directly as a Python module for quick single-file processing:
+
+```bash
+# Process a 10-K filing (default form type)
+python -m src.preprocessing data/raw/AAPL_10K_2025.html
+
+# Process a 10-Q filing
+python -m src.preprocessing data/raw/AFL_10Q_2024.html 10-Q
+```
+
+Prints company metadata and a preview of the first 3 risk segments:
+
+```
+SEC Preprocessing Pipeline
+==================================================
+
+Flow: Parse → Extract → Clean → Segment
+
+Metadata preserved throughout:
+  - sic_code, sic_name
+  - cik, ticker, company_name
+  - form_type
+
+==================================================
+Company: APPLE INC
+CIK: 0000320193
+SIC Code: 3571
+SIC Name: ELECTRONIC COMPUTERS
+Form Type: 10-K
+Total Segments: 45
+
+First 3 segments:
+  [1] The following risk factors ...
+```
+
+> **Note:** Always invoke via `python -m src.preprocessing`, not `python src/preprocessing/pipeline.py` — running the module file directly triggers an import conflict with the package `__init__.py`.
+
 ### Preprocessing Pipeline (Parse → Extract → Clean → Segment + optional Sentiment)
 
 ```bash
@@ -221,10 +260,10 @@ python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch
 # Batch with options
 python scripts/data_preprocessing/run_preprocessing_pipeline.py \
     --batch \
-    --workers 8 \       # parallel workers
-    --resume \          # skip already-processed files
-    --chunk-size 100 \  # process in memory-safe chunks
-    --quiet             # minimal console output
+    --workers 8 \
+    --resume \
+    --chunk-size 100 \
+    --quiet
 
 # Skip sentiment analysis (faster structural-only run)
 python scripts/data_preprocessing/run_preprocessing_pipeline.py \

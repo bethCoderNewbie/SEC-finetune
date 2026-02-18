@@ -48,6 +48,7 @@ class ParallelProcessor:
         self,
         max_workers: Optional[int] = None,
         initializer: Optional[Callable] = None,
+        initargs: Optional[tuple] = None,
         max_tasks_per_child: int = 50,
         task_timeout: int = 1200
     ):
@@ -57,11 +58,13 @@ class ParallelProcessor:
         Args:
             max_workers: Number of parallel workers (default: auto-determine)
             initializer: Optional initialization function for workers
+            initargs: Arguments tuple passed to initializer (default: empty)
             max_tasks_per_child: Restart workers after N tasks (default: 50)
             task_timeout: Timeout per task in seconds (default: 1200 = 20 minutes)
         """
         self.max_workers = max_workers
         self.initializer = initializer
+        self.initargs = initargs or ()
         self.max_tasks_per_child = max_tasks_per_child
         self.task_timeout = task_timeout
 
@@ -119,8 +122,11 @@ class ParallelProcessor:
         progress_callback: Optional[Callable],
         verbose: bool
     ) -> List[Dict[str, Any]]:
-        """Process items sequentially."""
+        """Process items sequentially, calling initializer once in the main process."""
         results = []
+
+        if self.initializer:
+            self.initializer(*self.initargs)
 
         for idx, item in enumerate(items, 1):
             if verbose:
@@ -149,6 +155,7 @@ class ParallelProcessor:
         with ProcessPoolExecutor(
             max_workers=max_workers,
             initializer=self.initializer,
+            initargs=self.initargs,
             max_tasks_per_child=self.max_tasks_per_child
         ) as executor:
             # Submit all tasks

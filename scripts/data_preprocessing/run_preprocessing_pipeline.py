@@ -1,5 +1,5 @@
 """
-Run complete preprocessing pipeline: Parse -> Clean -> Extract -> Segment -> Sentiment Analysis
+Run complete preprocessing pipeline: Parse -> Extract -> Clean -> Segment -> Sentiment Analysis
 
 ARCHITECTURAL NOTE:
     This script currently mixes two concerns for convenience:
@@ -15,10 +15,20 @@ ARCHITECTURAL NOTE:
 
 Pipeline Flow (with metadata preservation):
     1. Parse   -> ParsedFiling (sic_code, sic_name, cik, company_name)
-    2. Clean   -> cleaned text
-    3. Extract -> ExtractedSection (metadata preserved)
+    2. Extract -> ExtractedSection (metadata preserved)
+    3. Clean   -> cleaned text
     4. Segment -> SegmentedRisks (metadata preserved)
     5. Sentiment -> sentiment features (optional, feature engineering step)
+
+Output layout (batch mode):
+    data/processed/
+    ├── .manifest.json                         # StateManifest: cross-run hash tracking
+    └── {YYYYMMDD_HHMMSS}_preprocessing_{git_sha}/
+        ├── _progress.log                      # ProgressLogger output
+        ├── _checkpoint.json                   # CheckpointManager (deleted on success)
+        ├── RUN_REPORT.md                      # MarkdownReportGenerator report
+        ├── batch_summary_{run_id}_...json     # JSON summary (naming.py convention)
+        └── {stem}_segmented_risks.json        # Per-filing output
 
 Usage:
     # Single file mode
@@ -30,9 +40,9 @@ Usage:
     python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch
     python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch --workers 4
     python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch --no-sentiment
-    python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch --resume  # Skip already processed files
-    python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch --quiet  # Minimal output
-    python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch --chunk-size 50  # Process in chunks
+    python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch --resume
+    python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch --quiet
+    python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch --chunk-size 100
 
 Migration Path:
     For separated pipeline (recommended for production):
@@ -45,25 +55,36 @@ import argparse
 import json
 import logging
 import time
-import os
+from datetime import datetime
 from pathlib import Path
-from concurrent.futures import ProcessPoolExecutor, TimeoutError, as_completed
 from typing import Optional, List, Dict, Any, Tuple
 
-from src.preprocessing.parser import ParsedFiling
-from src.preprocessing.extractor import ExtractedSection
-from src.preprocessing.segmenter import SegmentedRisks, RiskSegment
+# Preprocessing classes
+from src.preprocessing.parser import SECFilingParser, ParsedFiling
+from src.preprocessing.extractor import SECSectionExtractor, ExtractedSection
+from src.preprocessing.cleaning import TextCleaner
+from src.preprocessing.segmenter import RiskSegmenter, SegmentedRisks, RiskSegment
 from src.features.sentiment import SentimentAnalyzer
-from src.config import (
-    RAW_DATA_DIR,
-    PARSED_DATA_DIR,
-    EXTRACTED_DATA_DIR,
-    PROCESSED_DATA_DIR,
-    settings,
-    ensure_directories
-)
+from src.config import settings, ensure_directories
+
+# Path aliases — replaces deprecated legacy constants
+RAW_DATA_DIR       = settings.paths.raw_data_dir
+PARSED_DATA_DIR    = settings.paths.parsed_data_dir
+EXTRACTED_DATA_DIR = settings.paths.extracted_data_dir
+PROCESSED_DATA_DIR = settings.paths.processed_data_dir
+
+# src/utils — full integration
+from src.utils.checkpoint import CheckpointManager
 from src.utils.dead_letter_queue import DeadLetterQueue
+from src.utils.memory_semaphore import MemorySemaphore, FileCategory
+from src.utils.metadata import RunMetadata
+from src.utils.naming import parse_run_dir_metadata, format_output_filename
+from src.utils.parallel import ParallelProcessor
 from src.utils.progress_logger import ProgressLogger
+from src.utils.reporting import MarkdownReportGenerator
+from src.utils.resource_tracker import ResourceTracker
+from src.utils.resume import ResumeFilter
+from src.utils.state_manager import StateManifest
 from src.utils.worker_pool import (
     init_preprocessing_worker,
     get_worker_parser,
@@ -93,66 +114,13 @@ def _init_worker(extract_sentiment: bool = True) -> None:
     local because it is specific to this combined script.
     """
     global _worker_analyzer
-
     init_preprocessing_worker()  # parser, cleaner, extractor, segmenter
-    if extract_sentiment:
-        _worker_analyzer = SentimentAnalyzer()
-    else:
-        _worker_analyzer = None
+    _worker_analyzer = SentimentAnalyzer() if extract_sentiment else None
 
 
-def is_file_processed(input_file: Path) -> bool:
-    """
-    Check if a file has already been preprocessed by checking for output in PROCESSED_DATA_DIR.
-
-    Args:
-        input_file: Path to input HTML file
-
-    Returns:
-        True if the processed output file exists, False otherwise
-    """
-    output_filename = input_file.stem + "_segmented_risks.json"
-    output_path = PROCESSED_DATA_DIR / output_filename
-    return output_path.exists()
-
-
-def get_processed_files_set() -> set:
-    """
-    Get set of all already processed file stems for fast lookup.
-    More efficient than checking each file individually.
-
-    Returns:
-        Set of file stems that have been processed
-    """
-    processed = set()
-    if PROCESSED_DATA_DIR.exists():
-        for f in PROCESSED_DATA_DIR.glob("*_segmented_risks.json"):
-            # Extract original stem by removing "_segmented_risks" suffix
-            stem = f.stem.replace("_segmented_risks", "")
-            processed.add(stem)
-    return processed
-
-
-def filter_unprocessed_files(html_files: List[Path], quiet: bool = False) -> List[Path]:
-    """
-    Filter out already processed files efficiently using batch lookup.
-
-    Args:
-        html_files: List of input HTML file paths
-        quiet: If True, suppress output
-
-    Returns:
-        List of unprocessed files
-    """
-    processed_stems = get_processed_files_set()
-    unprocessed = [f for f in html_files if f.stem not in processed_stems]
-
-    skipped = len(html_files) - len(unprocessed)
-    if skipped > 0 and not quiet:
-        print(f"Resume mode: Skipping {skipped} already processed files")
-
-    return unprocessed
-
+# ---------------------------------------------------------------------------
+# Single-file pipeline (used by --input and default modes)
+# ---------------------------------------------------------------------------
 
 def run_pipeline(
     input_file: Path,
@@ -160,12 +128,12 @@ def run_pipeline(
     extract_sentiment: bool = True
 ) -> Tuple[Optional[ParsedFiling], Optional[ExtractedSection], Optional[SegmentedRisks], Optional[List]]:
     """
-    Run the full preprocessing pipeline on a single filing
+    Run the full preprocessing pipeline on a single filing.
 
     Pipeline Flow:
         1. Parse   -> ParsedFiling (with metadata: sic_code, sic_name, cik, company_name)
-        2. Clean   -> cleaned text
-        3. Extract -> ExtractedSection (metadata preserved)
+        2. Extract -> ExtractedSection (metadata preserved)
+        3. Clean   -> cleaned text
         4. Segment -> SegmentedRisks (metadata preserved)
         5. Sentiment -> sentiment features (optional)
 
@@ -224,7 +192,6 @@ def run_pipeline(
     cleaned_text = cleaner.clean_text(risk_section.text, deep_clean=False)
     print(f"  [OK] Cleaned text from {len(risk_section.text):,} to {len(cleaned_text):,} characters")
 
-    # Update the extracted section with cleaned text (Pydantic V2 compliant)
     cleaned_section = ExtractedSection(
         text=cleaned_text,
         identifier=risk_section.identifier,
@@ -240,7 +207,6 @@ def run_pipeline(
                 'remove_page_numbers': settings.preprocessing.remove_page_numbers,
             }
         },
-        # Preserve filing-level metadata
         sic_code=risk_section.sic_code,
         sic_name=risk_section.sic_name,
         cik=risk_section.cik,
@@ -249,7 +215,6 @@ def run_pipeline(
         form_type=risk_section.form_type,
     )
 
-    # Save cleaned section if requested
     if save_intermediates:
         output_filename = input_file.stem + "_cleaned_risks.json"
         output_path = EXTRACTED_DATA_DIR / output_filename
@@ -262,8 +227,6 @@ def run_pipeline(
         min_length=settings.preprocessing.min_segment_length,
         max_length=settings.preprocessing.max_segment_length
     )
-
-    # Use the new segment_extracted_section method that preserves metadata
     segmented_risks = segmenter.segment_extracted_section(
         cleaned_section,
         cleaned_text=cleaned_text
@@ -284,19 +247,14 @@ def run_pipeline(
     if extract_sentiment and len(segmented_risks) > 0:
         print("\n[5/5] Extracting sentiment features...")
         analyzer = SentimentAnalyzer()
-
-        # Get segment texts for sentiment analysis
         segment_texts = segmented_risks.get_texts()
         sentiment_features_list = analyzer.extract_features_batch(segment_texts)
 
         print(f"  [OK] Extracted sentiment features for {len(sentiment_features_list)} segments")
-
-        # Compute aggregate sentiment statistics
         n = len(sentiment_features_list)
-        avg_negative = sum(f.negative_ratio for f in sentiment_features_list) / n
+        avg_negative    = sum(f.negative_ratio    for f in sentiment_features_list) / n
         avg_uncertainty = sum(f.uncertainty_ratio for f in sentiment_features_list) / n
-        avg_positive = sum(f.positive_ratio for f in sentiment_features_list) / n
-
+        avg_positive    = sum(f.positive_ratio    for f in sentiment_features_list) / n
         print(f"  [OK] Average sentiment ratios across all segments:")
         print(f"       Negative:    {avg_negative:.4f}")
         print(f"       Uncertainty: {avg_uncertainty:.4f}")
@@ -313,17 +271,14 @@ def run_pipeline(
         output_path = PROCESSED_DATA_DIR / output_filename
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Build comprehensive output with all metadata
         output_data = _build_output_data(
             input_file=input_file,
             segmented_risks=segmented_risks,
             sentiment_features_list=sentiment_features_list,
             extract_sentiment=extract_sentiment
         )
-
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(output_data, f, indent=2, ensure_ascii=False)
-
         print(f"  [OK] Saved segments to: {output_path}")
 
     print("\n" + "=" * 80)
@@ -331,6 +286,10 @@ def run_pipeline(
 
     return filing, cleaned_section, segmented_risks, sentiment_features_list
 
+
+# ---------------------------------------------------------------------------
+# Output builder (shared by single-file and batch modes)
+# ---------------------------------------------------------------------------
 
 def _build_output_data(
     input_file: Path,
@@ -351,19 +310,18 @@ def _build_output_data(
         Dictionary ready for JSON serialization
     """
     output_data = {
-        'version': '2.0',  # New format version
+        'version': '2.0',
         'filing_name': input_file.name,
-        # Filing metadata (from SegmentedRisks)
         'sic_code': segmented_risks.sic_code,
         'sic_name': segmented_risks.sic_name,
         'cik': segmented_risks.cik,
-        'ticker': segmented_risks.ticker or (input_file.stem.split('_')[0] if '_' in input_file.stem else None),
+        'ticker': segmented_risks.ticker or (
+            input_file.stem.split('_')[0] if '_' in input_file.stem else None
+        ),
         'company_name': segmented_risks.company_name,
         'form_type': segmented_risks.form_type,
-        # Section info
         'section_title': segmented_risks.section_title,
         'num_segments': segmented_risks.total_segments,
-        # Settings
         'segmentation_settings': {
             'min_segment_length': settings.preprocessing.min_segment_length,
             'max_segment_length': settings.preprocessing.max_segment_length,
@@ -371,142 +329,108 @@ def _build_output_data(
         'sentiment_analysis_enabled': extract_sentiment,
     }
 
-    # Add aggregate sentiment if available
     if sentiment_features_list and len(sentiment_features_list) > 0:
         n = len(sentiment_features_list)
         output_data['aggregate_sentiment'] = {
-            'avg_negative_ratio': sum(f.negative_ratio for f in sentiment_features_list) / n,
-            'avg_uncertainty_ratio': sum(f.uncertainty_ratio for f in sentiment_features_list) / n,
-            'avg_positive_ratio': sum(f.positive_ratio for f in sentiment_features_list) / n,
+            'avg_negative_ratio':     sum(f.negative_ratio    for f in sentiment_features_list) / n,
+            'avg_uncertainty_ratio':  sum(f.uncertainty_ratio for f in sentiment_features_list) / n,
+            'avg_positive_ratio':     sum(f.positive_ratio    for f in sentiment_features_list) / n,
             'avg_sentiment_word_ratio': sum(f.sentiment_word_ratio for f in sentiment_features_list) / n,
         }
 
-    # Build segments with metadata
     output_data['segments'] = []
     for seg in segmented_risks.segments:
         segment_dict = {
-            'id': seg.index + 1,  # 1-based for readability
+            'id': seg.index + 1,
             'text': seg.text,
             'length': seg.char_count,
             'word_count': seg.word_count,
         }
-
-        # Add sentiment features if available
         if sentiment_features_list and seg.index < len(sentiment_features_list):
             sentiment = sentiment_features_list[seg.index]
             segment_dict['sentiment'] = {
-                'negative_count': sentiment.negative_count,
-                'positive_count': sentiment.positive_count,
-                'uncertainty_count': sentiment.uncertainty_count,
-                'litigious_count': sentiment.litigious_count,
+                'negative_count':     sentiment.negative_count,
+                'positive_count':     sentiment.positive_count,
+                'uncertainty_count':  sentiment.uncertainty_count,
+                'litigious_count':    sentiment.litigious_count,
                 'constraining_count': sentiment.constraining_count,
-                'negative_ratio': sentiment.negative_ratio,
-                'positive_ratio': sentiment.positive_ratio,
-                'uncertainty_ratio': sentiment.uncertainty_ratio,
-                'litigious_ratio': sentiment.litigious_ratio,
+                'negative_ratio':     sentiment.negative_ratio,
+                'positive_ratio':     sentiment.positive_ratio,
+                'uncertainty_ratio':  sentiment.uncertainty_ratio,
+                'litigious_ratio':    sentiment.litigious_ratio,
                 'constraining_ratio': sentiment.constraining_ratio,
                 'total_sentiment_words': sentiment.total_sentiment_words,
-                'sentiment_word_ratio': sentiment.sentiment_word_ratio,
+                'sentiment_word_ratio':  sentiment.sentiment_word_ratio,
             }
-
         output_data['segments'].append(segment_dict)
 
     return output_data
 
 
-def process_single_file(args: Tuple[Path, bool, bool]) -> Dict[str, Any]:
-    """
-    Worker function for concurrent processing.
+# ---------------------------------------------------------------------------
+# Batch worker (module-level so it can be pickled for ProcessPoolExecutor)
+# ---------------------------------------------------------------------------
 
-    Args:
-        args: Tuple of (input_file, save_intermediates, extract_sentiment)
-
-    Returns:
-        Dictionary with processing result
-    """
-    input_file, save_intermediates, extract_sentiment = args
-
-    try:
-        start_time = time.time()
-        filing, cleaned_section, segmented_risks, sentiment_features = run_pipeline(
-            input_file,
-            save_intermediates=save_intermediates,
-            extract_sentiment=extract_sentiment
-        )
-        elapsed = time.time() - start_time
-
-        return {
-            'file': input_file.name,
-            'status': 'success',
-            'num_segments': len(segmented_risks) if segmented_risks else 0,
-            'sic_code': segmented_risks.sic_code if segmented_risks else None,
-            'sic_name': segmented_risks.sic_name if segmented_risks else None,
-            'cik': segmented_risks.cik if segmented_risks else None,
-            'elapsed_time': elapsed,
-            'error': None
-        }
-    except Exception as e:
-        logger.exception("Error processing %s", input_file.name)
-        return {
-            'file': input_file.name,
-            'status': 'error',
-            'num_segments': 0,
-            'sic_code': None,
-            'sic_name': None,
-            'cik': None,
-            'elapsed_time': 0,
-            'error': str(e)
-        }
-
-
-def process_single_file_fast(args: Tuple[Path, bool]) -> Dict[str, Any]:
+def process_single_file_fast(args: Tuple[Path, bool, Path]) -> Dict[str, Any]:
     """
     Optimized worker function using pre-initialized global objects.
-    Reduces latency by avoiding repeated object creation.
+
+    Wraps each pipeline step in ResourceTracker.track_module() so per-step
+    wall-clock time and peak RSS memory are captured in the result dict.
 
     Args:
-        args: Tuple of (input_file, save_intermediates)
+        args: Tuple of (input_file, save_intermediates, output_dir)
+            - output_dir: stamped run directory (e.g. data/processed/20260218_..._preprocessing_0b83409/)
 
     Returns:
-        Dictionary with processing result
+        Dict with keys: file, input_path, output_path, status, num_segments,
+        sic_code, sic_name, cik, elapsed_time, file_size_mb, resource_usage, error
     """
-    input_file, save_intermediates = args
+    input_file, save_intermediates, output_dir = args
+    input_file = Path(input_file)
+    output_dir = Path(output_dir)
+    file_size_mb = input_file.stat().st_size / (1024 * 1024) if input_file.exists() else 0
+
+    tracker = ResourceTracker()
 
     try:
-        start_time = time.time()
-
         # Step 1: Parse
-        filing = get_worker_parser().parse_filing(
-            input_file,
-            form_type="10-K",
-            save_output=save_intermediates
-        )
+        with tracker.track_module("parse"):
+            filing = get_worker_parser().parse_filing(
+                input_file,
+                form_type="10-K",
+                save_output=save_intermediates
+            )
 
         # Step 2: Extract
-        risk_section = get_worker_extractor().extract_risk_factors(filing)
+        with tracker.track_module("extract"):
+            risk_section = get_worker_extractor().extract_risk_factors(filing)
 
         if not risk_section:
+            usage = tracker.finalize()
             return {
                 'file': input_file.name,
+                'input_path': str(input_file),
+                'output_path': None,
                 'status': 'warning',
                 'num_segments': 0,
                 'sic_code': filing.metadata.get('sic_code'),
                 'sic_name': filing.metadata.get('sic_name'),
                 'cik': filing.metadata.get('cik'),
-                'elapsed_time': time.time() - start_time,
-                'error': 'Risk Factors section not found'
+                'elapsed_time': usage.elapsed_time(),
+                'file_size_mb': file_size_mb,
+                'resource_usage': usage.to_dict(),
+                'error': 'Risk Factors section not found',
             }
 
-        # Save extracted section
         if save_intermediates:
-            output_filename = input_file.stem + "_extracted_risks.json"
-            output_path = EXTRACTED_DATA_DIR / output_filename
-            risk_section.save_to_json(output_path, overwrite=True)
+            ext_path = EXTRACTED_DATA_DIR / f"{input_file.stem}_extracted_risks.json"
+            risk_section.save_to_json(ext_path, overwrite=True)
 
         # Step 3: Clean
-        cleaned_text = get_worker_cleaner().clean_text(risk_section.text, deep_clean=False)
+        with tracker.track_module("clean"):
+            cleaned_text = get_worker_cleaner().clean_text(risk_section.text, deep_clean=False)
 
-        # Create cleaned section with metadata preserved (Pydantic V2 compliant)
         cleaned_section = ExtractedSection(
             text=cleaned_text,
             identifier=risk_section.identifier,
@@ -522,7 +446,6 @@ def process_single_file_fast(args: Tuple[Path, bool]) -> Dict[str, Any]:
                     'remove_page_numbers': settings.preprocessing.remove_page_numbers,
                 }
             },
-            # Preserve filing-level metadata
             sic_code=risk_section.sic_code,
             sic_name=risk_section.sic_name,
             cik=risk_section.cik,
@@ -531,454 +454,508 @@ def process_single_file_fast(args: Tuple[Path, bool]) -> Dict[str, Any]:
             form_type=risk_section.form_type,
         )
 
-        # Save cleaned section
         if save_intermediates:
-            output_filename = input_file.stem + "_cleaned_risks.json"
-            output_path = EXTRACTED_DATA_DIR / output_filename
-            cleaned_section.save_to_json(output_path, overwrite=True)
+            clean_path = EXTRACTED_DATA_DIR / f"{input_file.stem}_cleaned_risks.json"
+            cleaned_section.save_to_json(clean_path, overwrite=True)
 
-        # Step 4: Segment (using new method that preserves metadata)
-        segmented_risks = get_worker_segmenter().segment_extracted_section(
-            cleaned_section,
-            cleaned_text=cleaned_text
-        )
+        # Step 4: Segment
+        with tracker.track_module("segment"):
+            segmented_risks = get_worker_segmenter().segment_extracted_section(
+                cleaned_section,
+                cleaned_text=cleaned_text
+            )
 
         if len(segmented_risks) == 0:
+            usage = tracker.finalize()
             return {
                 'file': input_file.name,
+                'input_path': str(input_file),
+                'output_path': None,
                 'status': 'warning',
                 'num_segments': 0,
                 'sic_code': segmented_risks.sic_code,
                 'sic_name': segmented_risks.sic_name,
                 'cik': segmented_risks.cik,
-                'elapsed_time': time.time() - start_time,
-                'error': 'No segments extracted'
+                'elapsed_time': usage.elapsed_time(),
+                'file_size_mb': file_size_mb,
+                'resource_usage': usage.to_dict(),
+                'error': 'No segments extracted',
             }
 
-        # Step 5: Sentiment Analysis (if enabled)
+        # Step 5: Sentiment (if worker is enabled)
         sentiment_features_list = None
         if _worker_analyzer:
-            segment_texts = segmented_risks.get_texts()
-            sentiment_features_list = _worker_analyzer.extract_features_batch(segment_texts)
+            with tracker.track_module("sentiment"):
+                sentiment_features_list = _worker_analyzer.extract_features_batch(
+                    segmented_risks.get_texts()
+                )
 
-        # Save final output
+        usage = tracker.finalize()
+
+        # Save final output into stamped run directory
+        output_path = None
         if save_intermediates:
-            output_filename = input_file.stem + "_segmented_risks.json"
-            output_path = PROCESSED_DATA_DIR / output_filename
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / f"{input_file.stem}_segmented_risks.json"
             output_data = _build_output_data(
                 input_file=input_file,
                 segmented_risks=segmented_risks,
                 sentiment_features_list=sentiment_features_list,
-                extract_sentiment=(_worker_analyzer is not None)
+                extract_sentiment=(_worker_analyzer is not None),
             )
-
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(output_data, f, indent=2, ensure_ascii=False)
 
-        elapsed = time.time() - start_time
-
         return {
             'file': input_file.name,
+            'input_path': str(input_file),
+            'output_path': str(output_path) if output_path else None,
             'status': 'success',
             'num_segments': len(segmented_risks),
             'sic_code': segmented_risks.sic_code,
             'sic_name': segmented_risks.sic_name,
             'cik': segmented_risks.cik,
-            'elapsed_time': elapsed,
-            'error': None
+            'elapsed_time': usage.elapsed_time(),
+            'file_size_mb': file_size_mb,
+            'resource_usage': usage.to_dict(),
+            'error': None,
         }
 
     except Exception as e:
         logger.exception("Error processing %s", input_file.name)
+        usage = tracker.finalize()
         return {
             'file': input_file.name,
+            'input_path': str(input_file),
+            'output_path': None,
             'status': 'error',
             'num_segments': 0,
             'sic_code': None,
             'sic_name': None,
             'cik': None,
-            'elapsed_time': 0,
-            'error': str(e)
+            'elapsed_time': usage.elapsed_time(),
+            'file_size_mb': file_size_mb,
+            'resource_usage': usage.to_dict(),
+            'error': str(e),
         }
 
 
+# ---------------------------------------------------------------------------
+# Batch pipeline orchestrator
+# ---------------------------------------------------------------------------
+
 def run_batch_pipeline(
     input_files: List[Path],
+    run_dir: Path,
+    manifest: StateManifest,
+    run_id: str,
     save_intermediates: bool = True,
     extract_sentiment: bool = True,
     max_workers: Optional[int] = None,
     quiet: bool = False,
     chunk_size: Optional[int] = None,
-    task_timeout: int = 1200
+    task_timeout: int = 1200,
 ) -> List[Dict[str, Any]]:
     """
-    Run the preprocessing pipeline on multiple files concurrently with optimizations.
+    Run the preprocessing pipeline on multiple files via ParallelProcessor.
+
+    src/utils integration:
+        CheckpointManager  — crash recovery; saves every chunk_size files
+        ResumeFilter       — within-run output-existence check
+        MemorySemaphore    — adaptive per-batch timeout from file-size estimates
+        ResourceTracker    — per-file timing/memory (inside process_single_file_fast)
+        StateManifest      — records success/failure after each file (caller-owned)
+        ProgressLogger     — real-time console + file logging to run_dir/_progress.log
+        ParallelProcessor  — single long-lived pool (no per-chunk model reload)
+        DeadLetterQueue    — timeout/exception quarantine (inside ParallelProcessor)
 
     Args:
-        input_files: List of paths to input HTML files
-        save_intermediates: Whether to save intermediate results
-        extract_sentiment: Whether to extract sentiment features
-        max_workers: Maximum number of concurrent workers (default: number of CPUs)
-        quiet: If True, minimize output for better performance
-        chunk_size: If set, process files in chunks to manage memory
-        task_timeout: Timeout per task in seconds (default: 1200 = 20 minutes)
+        input_files: HTML files to process (pre-filtered by manifest.should_process)
+        run_dir: Stamped output directory for this run
+        manifest: StateManifest instance (caller saves at end of main())
+        run_id: Run identifier string (YYYYMMDD_HHMMSS)
+        save_intermediates: Save intermediate + final outputs
+        extract_sentiment: Run Loughran-McDonald sentiment analysis
+        max_workers: Worker count (None = CPU count)
+        quiet: Suppress console output
+        chunk_size: Save checkpoint + manifest every N completed files
+        task_timeout: Per-file timeout floor in seconds (MemorySemaphore may raise it)
 
     Returns:
-        List of processing results for each file
+        List of per-file result dicts (includes any prior checkpoint data)
     """
     if not input_files:
         if not quiet:
             print("No files to process")
         return []
 
-    total_files = len(input_files)
+    total_requested = len(input_files)
 
-    # Initialize progress logger
-    progress_log_path = PROCESSED_DATA_DIR / "_progress.log"
+    # ProgressLogger writes to run_dir so all run artefacts are co-located
+    progress_log_path = run_dir / "_progress.log"
     progress_logger = ProgressLogger(
         log_path=progress_log_path,
         console=not quiet,
-        quiet=quiet
+        quiet=quiet,
     )
 
     if not quiet:
-        print(f"\nBatch Processing: {total_files} files")
+        print(f"\nBatch Processing: {total_requested} files")
         print(f"Max workers: {max_workers if max_workers else 'auto (CPU count)'}")
-        print(f"Mode: Optimized (fast) with metadata preservation")
-        if chunk_size:
-            print(f"Chunk size: {chunk_size}")
-        print(f"Progress log: {progress_log_path}")
+        print(f"Run directory: {run_dir}")
+        print(f"Progress log:  {progress_log_path}")
         print("=" * 80)
 
-    progress_logger.section(f"Batch Pipeline Processing: {total_files} files")
+    progress_logger.section(f"Batch Pipeline: {total_requested} files")
 
-    # Determine optimal worker count
-    if max_workers is None:
-        max_workers = min(os.cpu_count() or 4, len(input_files))
+    # --- CheckpointManager: resume mid-run after a crash ---
+    checkpoint = CheckpointManager(run_dir / "_checkpoint.json")
+    prior_results: List[Dict] = []
+    already_done: set = set()
 
-    # Prepare arguments for each file (fast mode uses 2-tuple)
-    task_args = [(f, save_intermediates) for f in input_files]
+    if checkpoint.exists():
+        already_done, prior_results, _ = checkpoint.load()
+        if already_done and not quiet:
+            print(f"Checkpoint resume: skipping {len(already_done)} already-completed files")
 
-    results = []
-    successful = 0
-    failed = 0
-    warnings = 0
+    # --- ResumeFilter: skip files already written to run_dir ---
+    resume_filter = ResumeFilter(output_dir=run_dir, output_suffix="_segmented_risks.json")
+    within_run_stems = resume_filter.get_processed_stems()
+
+    before = len(input_files)
+    input_files = [
+        f for f in input_files
+        if f.name not in already_done and f.stem not in within_run_stems
+    ]
+    skipped = before - len(input_files)
+    if skipped > 0 and not quiet:
+        print(f"Within-run resume: skipping {skipped} files already written")
+
+    if not input_files:
+        if not quiet:
+            print("All files already processed. Nothing to do.")
+        progress_logger.close()
+        return prior_results
+
+    # --- MemorySemaphore: derive adaptive timeout from file-size estimates ---
+    adaptive_timeout = task_timeout
+    try:
+        semaphore = MemorySemaphore()
+        estimates = [semaphore.get_resource_estimate(Path(fp)) for fp in input_files]
+        adaptive_timeout = max(est.recommended_timeout_sec for est in estimates)
+        small_c  = sum(1 for e in estimates if e.category == FileCategory.SMALL)
+        medium_c = sum(1 for e in estimates if e.category == FileCategory.MEDIUM)
+        large_c  = sum(1 for e in estimates if e.category == FileCategory.LARGE)
+        logger.info(
+            "Adaptive timeout: %ds for %d files (S:%d M:%d L:%d)",
+            adaptive_timeout, len(input_files), small_c, medium_c, large_c,
+        )
+        if large_c > 0:
+            peak_mb = sum(e.estimated_memory_mb for e in estimates if e.category == FileCategory.LARGE)
+            logger.info("Large files: %d, estimated peak memory: %.0f MB", large_c, peak_mb)
+    except Exception as e:
+        logger.warning("File classification failed, using floor timeout %ds: %s", task_timeout, e)
+
+    # --- Build task args: (file, save_intermediates, output_dir) ---
+    task_args = [(f, save_intermediates, run_dir) for f in input_files]
+
+    # --- Tracking state (mutated inside _on_progress closure) ---
+    all_results: List[Dict] = list(prior_results)
+    successful    = sum(1 for r in prior_results if r.get('status') == 'success')
+    failed        = sum(1 for r in prior_results if r.get('status') == 'error')
+    warning_count = sum(1 for r in prior_results if r.get('status') == 'warning')
+    global_offset = len(already_done) + skipped
 
     start_time = time.time()
 
-    # Process in chunks if specified
-    if chunk_size and len(input_files) > chunk_size:
-        chunks = [task_args[i:i + chunk_size] for i in range(0, len(task_args), chunk_size)]
-        total_chunks = len(chunks)
+    def _on_progress(idx: int, result: dict) -> None:
+        nonlocal successful, failed, warning_count
+        all_results.append(result)
 
-        for chunk_idx, chunk in enumerate(chunks, 1):
-            if not quiet:
-                print(f"\nProcessing chunk {chunk_idx}/{total_chunks} ({len(chunk)} files)")
+        status    = result.get('status', 'unknown')
+        file_name = result.get('file', 'unknown')
+        elapsed   = result.get('elapsed_time', 0)
+        display_idx = global_offset + idx
+        display_total = global_offset + len(task_args)
 
-            chunk_results = _process_chunk(
-                chunk, extract_sentiment, max_workers, quiet,
-                len(results), total_files, progress_logger, task_timeout
+        # Update counters and progress logger
+        if status == 'success':
+            successful += 1
+            sic_tag = f", SIC={result['sic_code']}" if result.get('sic_code') else ""
+            progress_logger.log(
+                f"[{display_idx}/{display_total}] OK: {file_name}"
+                f" -> {result.get('num_segments', 0)} segs, {elapsed:.1f}s{sic_tag}"
             )
-            results.extend(chunk_results)
+        elif status == 'warning':
+            warning_count += 1
+            progress_logger.warning(
+                f"[{display_idx}/{display_total}] WARN: {file_name}"
+                f" - {result.get('error', '')}"
+            )
+        else:
+            failed += 1
+            progress_logger.error(
+                f"[{display_idx}/{display_total}] FAIL: {file_name}"
+                f" - {result.get('error', '')}"
+            )
 
-            # Update counters
-            for r in chunk_results:
-                if r['status'] == 'success':
-                    successful += 1
-                elif r['status'] == 'warning':
-                    warnings += 1
-                else:
-                    failed += 1
-    else:
-        # Process all at once
-        chunk_results = _process_chunk(
-            task_args, extract_sentiment, max_workers, quiet, 0, total_files, progress_logger, task_timeout
-        )
-        results.extend(chunk_results)
+        # StateManifest: record outcome for cross-run tracking
+        if status == 'success' and result.get('output_path') and result.get('input_path'):
+            manifest.record_success(
+                input_path=Path(result['input_path']),
+                output_path=Path(result['output_path']),
+                run_id=run_id,
+            )
+        elif result.get('input_path'):
+            manifest.record_failure(
+                input_path=Path(result['input_path']),
+                run_id=run_id,
+                reason=result.get('error', 'unknown'),
+            )
 
-        for r in chunk_results:
-            if r['status'] == 'success':
-                successful += 1
-            elif r['status'] == 'warning':
-                warnings += 1
-            else:
-                failed += 1
+        # Periodic checkpoint + manifest save every chunk_size completions
+        if chunk_size and idx % chunk_size == 0:
+            manifest.save()
+            checkpoint.save(
+                processed_files=[r['file'] for r in all_results],
+                results=all_results,
+                metrics={'successful': successful, 'failed': failed, 'warnings': warning_count},
+            )
+            if not quiet:
+                print(f"\n  [Checkpoint saved at {idx}/{len(task_args)} files]", flush=True)
 
-    total_time = time.time() - start_time
-
-    # Log summary
-    progress_logger.section("Batch Processing Complete", char="=")
-    progress_logger.log(f"Total files: {total_files}", timestamp=False)
-    progress_logger.log(f"Successful: {successful}", timestamp=False)
-    if warnings > 0:
-        progress_logger.log(f"Warnings: {warnings}", timestamp=False)
-    progress_logger.log(f"Failed: {failed}", timestamp=False)
-    progress_logger.log(f"Total time: {total_time:.1f}s", timestamp=False)
-    if total_files > 0:
-        progress_logger.log(f"Avg time per file: {total_time / total_files:.1f}s", timestamp=False)
-        progress_logger.log(f"Throughput: {total_files / total_time:.2f} files/sec", timestamp=False)
-
-    # Summary to console
-    if not quiet:
-        print("\n" + "=" * 80)
-        print("Batch Processing Complete!")
-        print(f"  Total files: {total_files}")
-        print(f"  Successful: {successful}")
-        if warnings > 0:
-            print(f"  Warnings: {warnings}")
-        print(f"  Failed: {failed}")
-        print(f"  Total time: {total_time:.1f}s")
-        if total_files > 0:
-            print(f"  Avg time per file: {total_time / total_files:.1f}s")
-            print(f"  Throughput: {total_files / total_time:.2f} files/sec")
-        print(f"\nProgress log: {progress_log_path}")
-
-    # Close progress logger
-    progress_logger.close()
-
-    return results
-
-
-def _process_chunk(
-    task_args: List[Tuple[Path, bool]],
-    extract_sentiment: bool,
-    max_workers: int,
-    quiet: bool,
-    offset: int,
-    total_files: int,
-    progress_logger: ProgressLogger,
-    task_timeout: int = 1200
-) -> List[Dict[str, Any]]:
-    """
-    Process a chunk of files using ProcessPoolExecutor with worker initialization and timeout.
-
-    Args:
-        task_args: List of (input_file, save_intermediates) tuples
-        extract_sentiment: Whether to extract sentiment features
-        max_workers: Number of workers
-        quiet: If True, minimize output
-        offset: Number of files already processed
-        total_files: Total number of files being processed
-        progress_logger: ProgressLogger instance for real-time logging
-        task_timeout: Timeout per task in seconds (default: 1200 = 20 minutes)
-
-    Returns:
-        List of processing results
-    """
-    results = []
-    failed_files = []  # Track timeouts for dead letter queue
-
-    # Use initializer to set up worker processes once
-    with ProcessPoolExecutor(
+    # --- ParallelProcessor: single long-lived pool for the full batch ---
+    processor = ParallelProcessor(
         max_workers=max_workers,
         initializer=_init_worker,
         initargs=(extract_sentiment,),
-        max_tasks_per_child=50  # Restart workers periodically to prevent memory leaks
-    ) as executor:
-        # Submit all tasks
-        future_to_file = {
-            executor.submit(process_single_file_fast, args): args[0]
-            for args in task_args
-        }
+        max_tasks_per_child=50,
+        task_timeout=adaptive_timeout,
+    )
 
-        # Process completed tasks as they finish with timeout
-        for i, future in enumerate(as_completed(future_to_file), 1):
-            input_file = future_to_file[future]
-            current = offset + i
+    processor.process_batch(
+        items=task_args,
+        worker_func=process_single_file_fast,
+        progress_callback=_on_progress,
+        verbose=False,   # progress handled entirely by _on_progress + ProgressLogger
+    )
 
-            try:
-                # Get result with timeout
-                result = future.result(timeout=task_timeout)
+    total_time = time.time() - start_time
 
-                # Warn about slow tasks (> 5 minutes)
-                if result.get('elapsed_time', 0) > 300:
-                    progress_logger.warning(
-                        f"Slow task ({result['elapsed_time']:.1f}s): {result['file']}"
-                    )
+    # --- Final manifest save + checkpoint cleanup on success ---
+    manifest.save()
+    checkpoint.cleanup()
 
-            except TimeoutError:
-                # Task exceeded timeout limit
-                logger.error(f"Task timeout ({task_timeout}s): {input_file.name}")
-                progress_logger.error(
-                    f"[{current}/{total_files}] TIMEOUT: {input_file.name} "
-                    f"exceeded {task_timeout}s limit"
-                )
-                result = {
-                    'file': input_file.name,
-                    'status': 'error',
-                    'num_segments': 0,
-                    'sic_code': None,
-                    'sic_name': None,
-                    'cik': None,
-                    'elapsed_time': task_timeout,
-                    'error': f'Processing timeout ({task_timeout}s)',
-                    'error_type': 'timeout'
-                }
-                failed_files.append(input_file)
-                # Cancel the future to free resources
-                future.cancel()
+    # --- Summary ---
+    progress_logger.section("Batch Complete", char="=")
+    progress_logger.log(f"Total: {global_offset + len(task_args)}", timestamp=False)
+    progress_logger.log(f"Successful: {successful}", timestamp=False)
+    if warning_count:
+        progress_logger.log(f"Warnings: {warning_count}", timestamp=False)
+    progress_logger.log(f"Failed: {failed}", timestamp=False)
+    progress_logger.log(f"Total time: {total_time:.1f}s", timestamp=False)
+    if len(task_args) > 0:
+        progress_logger.log(f"Avg time/file: {total_time / len(task_args):.1f}s", timestamp=False)
+    progress_logger.close()
 
-            except Exception as e:
-                # Task raised an exception
-                logger.error(f"Task failed with exception: {input_file.name} - {e}")
-                progress_logger.error(f"[{current}/{total_files}] ERROR: {input_file.name} - {e}")
-                result = {
-                    'file': input_file.name,
-                    'status': 'error',
-                    'num_segments': 0,
-                    'sic_code': None,
-                    'sic_name': None,
-                    'cik': None,
-                    'elapsed_time': 0,
-                    'error': str(e),
-                    'error_type': 'exception'
-                }
-                failed_files.append(input_file)
+    if not quiet:
+        print("\n" + "=" * 80)
+        print("Batch Processing Complete!")
+        print(f"  Successful: {successful}")
+        if warning_count:
+            print(f"  Warnings:   {warning_count}")
+        print(f"  Failed:     {failed}")
+        print(f"  Total time: {total_time:.1f}s")
 
-            results.append(result)
+    return all_results
 
-            # Log to progress logger for successful results
-            if result['status'] == 'success':
-                sic_info = f", SIC={result.get('sic_code', 'N/A')}" if result.get('sic_code') else ""
-                progress_logger.log(
-                    f"[{current}/{total_files}] OK: {result['file']} -> "
-                    f"{result['num_segments']} segments, {result['elapsed_time']:.1f}s{sic_info}"
-                )
-            elif result['status'] == 'warning':
-                progress_logger.warning(f"[{current}/{total_files}] {result['file']} - {result['error']}")
 
-            # Update progress indicator
-            if quiet and (current % 10 == 0 or current == total_files):
-                progress_logger.progress(f"Progress: {current}/{total_files}")
-
-    if quiet and (offset + len(task_args)) == total_files:
-        print()  # New line after progress
-
-    # Write failed files to dead letter queue
-    if failed_files:
-        DeadLetterQueue().add_failures(failed_files, script_name='run_preprocessing_pipeline.py')
-
-    return results
-
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run complete preprocessing pipeline: Parse -> Clean -> Extract -> Segment"
+        description="Run complete preprocessing pipeline: Parse -> Extract -> Clean -> Segment"
     )
     parser.add_argument(
-        '--input',
-        type=str,
+        '--input', type=str,
         help='Input HTML file path (single file mode)'
     )
     parser.add_argument(
-        '--batch',
-        action='store_true',
+        '--batch', action='store_true',
         help='Process all HTML files in RAW_DATA_DIR concurrently'
     )
     parser.add_argument(
-        '--workers',
-        type=int,
-        default=None,
+        '--workers', type=int, default=None,
         help='Number of concurrent workers for batch mode (default: CPU count)'
     )
     parser.add_argument(
-        '--no-save',
-        action='store_true',
-        help='Do not save intermediate results'
+        '--no-save', action='store_true',
+        help='Do not save intermediate or final results'
     )
     parser.add_argument(
-        '--no-sentiment',
-        action='store_true',
+        '--no-sentiment', action='store_true',
         help='Skip sentiment analysis step'
     )
     parser.add_argument(
-        '--resume',
-        action='store_true',
-        help='Skip files that have already been processed (check output directory)'
+        '--resume', action='store_true',
+        help=(
+            'Hash-based resume: skip files whose content is unchanged since the last '
+            'successful run (tracked via StateManifest at data/processed/.manifest.json). '
+            'Also resumes mid-run from checkpoint if the run directory already exists.'
+        )
     )
     parser.add_argument(
-        '--quiet',
-        action='store_true',
-        help='Minimize output for better performance in batch mode'
+        '--quiet', action='store_true',
+        help='Minimize console output'
     )
     parser.add_argument(
-        '--chunk-size',
-        type=int,
-        default=None,
-        help='Process files in chunks of this size to manage memory'
+        '--chunk-size', type=int, default=None,
+        help=(
+            'Save manifest + checkpoint every N completed files. '
+            'The worker pool is NOT restarted between chunks. '
+            'Recommended: 100-200 for large batches.'
+        )
     )
     parser.add_argument(
-        '--timeout',
-        type=int,
-        default=1200,
-        help='Timeout per file in seconds (default: 1200 = 20 minutes)'
+        '--timeout', type=int, default=1200,
+        help=(
+            'Per-file timeout floor in seconds (default: 1200). '
+            'MemorySemaphore will raise this for batches containing large files.'
+        )
     )
 
     args = parser.parse_args()
-
     ensure_directories()
 
+    # --- RunMetadata + stamped run directory (naming.py convention) ---
+    run_meta = RunMetadata.gather()
+    run_id   = datetime.fromisoformat(run_meta["timestamp"]).strftime("%Y%m%d_%H%M%S")
+    git_sha  = run_meta["git_commit"]
+    run_dir  = PROCESSED_DATA_DIR / f"{run_id}_preprocessing_{git_sha}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- StateManifest: cross-run hash tracking ---
+    manifest = StateManifest(PROCESSED_DATA_DIR / ".manifest.json")
+    manifest.load()
+    manifest.update_run_config(run_meta)
+
     if args.batch:
-        # Batch mode: process all HTML files concurrently
         html_files = sorted(RAW_DATA_DIR.glob("*.html"))
         if not html_files:
             print(f"No HTML files found in {RAW_DATA_DIR}")
             return
 
-        # Filter out already processed files efficiently
+        # Hash-based cross-run resume: skip files unchanged since last success
         if args.resume:
-            html_files = filter_unprocessed_files(html_files, quiet=args.quiet)
+            html_files = [f for f in html_files if manifest.should_process(f)]
             if not html_files:
-                print("All files have already been processed. Nothing to do.")
+                print("All files unchanged since last successful run. Nothing to do.")
                 return
 
+        start_iso = datetime.now().isoformat()
+
         results = run_batch_pipeline(
-            html_files,
+            input_files=html_files,
+            run_dir=run_dir,
+            manifest=manifest,
+            run_id=run_id,
             save_intermediates=not args.no_save,
             extract_sentiment=not args.no_sentiment,
             max_workers=args.workers,
             quiet=args.quiet,
             chunk_size=args.chunk_size,
-            task_timeout=args.timeout
+            task_timeout=args.timeout,
         )
 
-        # Save batch results summary with metadata
-        if results:
-            summary_path = PROCESSED_DATA_DIR / "batch_processing_summary.json"
-            summary_data = {
-                'version': '2.0',
-                'total_files': len(results),
-                'successful': sum(1 for r in results if r['status'] == 'success'),
-                'warnings': sum(1 for r in results if r['status'] == 'warning'),
-                'failed': sum(1 for r in results if r['status'] == 'error'),
-                'results': results
-            }
-            with open(summary_path, 'w', encoding='utf-8') as f:
-                json.dump(summary_data, f, indent=2)
-            if not args.quiet:
-                print(f"\nBatch summary saved to: {summary_path}")
+        end_iso = datetime.now().isoformat()
+
+        # Prune deleted source files from manifest, then final atomic save
+        manifest.prune_deleted_files(RAW_DATA_DIR)
+        manifest.save()
+
+        # Metrics
+        total_files  = len(html_files)
+        successful   = sum(1 for r in results if r.get('status') == 'success')
+        warnings_cnt = sum(1 for r in results if r.get('status') == 'warning')
+        failed_cnt   = sum(1 for r in results if r.get('status') == 'error')
+
+        # --- MarkdownReportGenerator ---
+        generator = MarkdownReportGenerator()
+        report_md = generator.generate_run_report(
+            run_id=run_id,
+            run_name="preprocessing",
+            metrics={
+                'total_files':       total_files,
+                'successful':        successful,
+                'failed_or_skipped': failed_cnt + warnings_cnt,
+                'quarantined':       failed_cnt,
+                'form_type':         '10-K/10-Q',
+                'run_id':            run_id,
+            },
+            output_dir=run_dir,
+            manifest_stats=manifest.get_statistics(),
+            failed_files=manifest.get_failed_files(),
+            git_sha=git_sha,
+            config_snapshot=run_meta,
+            start_time=start_iso,
+            end_time=end_iso,
+        )
+        (run_dir / "RUN_REPORT.md").write_text(report_md)
+
+        # --- batch_summary JSON: name follows naming.py convention ---
+        # parse_run_dir_metadata reads the stamped dir name we created
+        run_dir_meta = parse_run_dir_metadata(run_dir)
+        summary_name = format_output_filename("batch_summary", run_dir_meta)
+        summary_path = run_dir / summary_name
+        summary_data = {
+            'version':     '3.0',
+            'run_id':      run_id,
+            'git_sha':     git_sha,
+            'total_files': total_files,
+            'successful':  successful,
+            'warnings':    warnings_cnt,
+            'failed':      failed_cnt,
+            'run_dir':     str(run_dir),
+            'manifest':    str(PROCESSED_DATA_DIR / ".manifest.json"),
+            'results':     results,
+        }
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump(summary_data, f, indent=2)
+
+        if not args.quiet:
+            print(f"\nRun directory: {run_dir}")
+            print(f"Run report:    {run_dir / 'RUN_REPORT.md'}")
+            print(f"Summary JSON:  {summary_path}")
+            print(f"Manifest:      {PROCESSED_DATA_DIR / '.manifest.json'}")
 
     elif args.input:
-        # Single file mode with specified input
         input_file = Path(args.input)
-        if args.resume and is_file_processed(input_file):
-            print(f"Resume mode: {input_file.name} already processed. Skipping.")
+        if args.resume and not manifest.should_process(input_file):
+            print(f"Resume mode: {input_file.name} is unchanged since last run. Skipping.")
             return
-        run_pipeline(input_file, save_intermediates=not args.no_save, extract_sentiment=not args.no_sentiment)
+        run_pipeline(
+            input_file,
+            save_intermediates=not args.no_save,
+            extract_sentiment=not args.no_sentiment,
+        )
+
     else:
-        # Single file mode: use first file in RAW_DATA_DIR
         html_files = list(RAW_DATA_DIR.glob("*.html"))
         if not html_files:
             print(f"No HTML files found in {RAW_DATA_DIR}")
             return
         input_file = html_files[0]
-        if args.resume and is_file_processed(input_file):
-            print(f"Resume mode: {input_file.name} already processed. Skipping.")
+        if args.resume and not manifest.should_process(input_file):
+            print(f"Resume mode: {input_file.name} is unchanged since last run. Skipping.")
             return
         print(f"Using first file found: {input_file.name}\n")
-        run_pipeline(input_file, save_intermediates=not args.no_save, extract_sentiment=not args.no_sentiment)
+        run_pipeline(
+            input_file,
+            save_intermediates=not args.no_save,
+            extract_sentiment=not args.no_sentiment,
+        )
 
 
 if __name__ == "__main__":
