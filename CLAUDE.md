@@ -71,11 +71,26 @@ You are an expert Senior Software Engineer specializing in **Context Engineering
 Every significant engineering decision and operational concern must be captured in the correct layer of the documentation hierarchy. Do not mix layers.
 
 ```
-Strategic   →  docs/requirements/     PRD-*.md          Why? What value?        Audience: Stakeholders
-Conceptual  →  docs/architecture/adr/ ADR-*.md          How is it designed?     Audience: Architects/Leads
-Tactical    →  docs/ops/runbook.md    Symptom → Fix     How do I run/debug it?  Audience: On-call Engineers
+Strategic   →  docs/requirements/     PRD-*.md           Why? What value?           Audience: Stakeholders
+Strategic   →  docs/requirements/     TRD-*.md           Detailed constraints        Audience: Engineers
+Conceptual  →  docs/architecture/rfc/ RFC-*.md           How should we build this?  Audience: Contributors
+Conceptual  →  docs/architecture/adr/ ADR-*.md           How is it designed?        Audience: Architects/Leads
+Tactical    →  docs/ops/runbook.md    Symptom → Fix      How do I run/debug it?     Audience: On-call Engineers
 Tactical    →  docs/architecture/     data_dictionary.md What does each field mean? Audience: Data Scientists
 ```
+
+### Document Naming Convention
+
+All formal documents use the pattern `{Type}-{ID}_{ShortName}.md`:
+
+| Type | Full Name | Question Answered |
+|------|-----------|-------------------|
+| `PRD` | Product Requirements Document | What are we building? |
+| `TRD` | Technical Requirements Document | Detailed system constraints |
+| `RFC` | Request for Comments | How should we build this? |
+| `ADR` | Architecture Decision Record | Why did we decide X? |
+
+Examples: `PRD-001_mvp_baseline.md`, `ADR-007_stamped_run_dirs.md`, `RFC-001_worker_pool_design.md`
 
 ### PRDs (Product Requirements Documents)
 
