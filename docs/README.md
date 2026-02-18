@@ -11,7 +11,7 @@ Don't look in the wrong pillar — you won't find what you need.
 
 | Pillar | Audience | Core Question | Key Files |
 |--------|----------|---------------|-----------|
-| **[Context](#1-context)** | Stakeholders, PMs | *Why are we building this? What is the scope?* | PRD.md, Roadmap.md |
+| **[Context](#1-context)** | Stakeholders, PMs | *Why are we building this? What is the scope?* | PRD-001, CHANGELOG |
 | **[Architecture](#2-architecture)** | Engineers, Contributors | *How does the system work? Why were these decisions made?* | ADRs, System_Design.md |
 | **[Operations](#3-operations)** | DevOps, On-Call | *The pipeline crashed. How do I fix the Dead Letter Queue?* | Runbook.md, Config guides |
 | **[Data](#4-data)** | Data Scientists, Analysts | *What does `readability_fog` mean? Is `filing_date` UTC?* | Data_Dictionary.md |
@@ -24,8 +24,10 @@ Don't look in the wrong pillar — you won't find what you need.
 
 | File | Purpose |
 |------|---------|
-| [architecture/PROJECT_SUMMARY.md](architecture/PROJECT_SUMMARY.md) | Goals, pipeline overview, and success criteria |
-| [architecture/CHANGES.md](architecture/CHANGES.md) | Chronological changelog |
+| [requirements/PRD-001_SEC_Finetune_MVP.md](requirements/PRD-001_SEC_Finetune_MVP.md) | Product charter — problem, goals, user stories, KPIs |
+| [requirements/README.md](requirements/README.md) | Index of all PRDs, RFCs, and ADRs with status |
+| [general/CHANGELOG.md](general/CHANGELOG.md) | Version history — all significant changes, newest first |
+| [architecture/PROJECT_SUMMARY.md](architecture/PROJECT_SUMMARY.md) | Technical goals, pipeline overview, and success criteria |
 
 ---
 
@@ -82,6 +84,8 @@ Don't look in the wrong pillar — you won't find what you need.
 
 | Directory | Pillar(s) | Purpose |
 |-----------|-----------|---------|
+| [requirements/](requirements/README.md) | Context | PRDs, RFCs, ADRs — versioned specs with lifecycle status |
+| [general/](general/) | Context | Version history (CHANGELOG) |
 | [architecture/](architecture/README.md) | Context, Architecture | Project goals, layout, changelog |
 | [setup/](setup/README.md) | Operations | Installation, quickstart, run scripts |
 | [preprocessing/](preprocessing/README.md) | Architecture | Parser, extractor, cleaner, segmenter |
@@ -98,6 +102,7 @@ Don't look in the wrong pillar — you won't find what you need.
 
 ## Naming Conventions
 
+- `{Type}-{ID}_{ShortName}.md` — versioned specs (`PRD-001_SEC_Finetune_MVP.md`, `RFC-004_Finetune_Pipeline.md`)
 - `UPPER_CASE.md` — normative docs (guides, specs, references)
-- `YYYY-MM-DD_snake_case` — temporal records (incidents, logs, research dumps)
+- `YYYY-MM-DD_snake_case.md` — temporal records (incidents, logs, research dumps)
 - Every directory has a `README.md` acting as its table of contents
