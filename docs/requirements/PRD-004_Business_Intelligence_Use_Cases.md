@@ -46,7 +46,7 @@ no export format an analyst can open in Excel. The gap between *corpus exists* a
 
 | ID | Priority | Since | Goal | Status | Stories |
 |:---|:---------|:------|:-----|:-------|:--------|
-| G-01 | P0 | PRD-004 | Risk segments carry category labels — every `RiskSegment` has a `risk_category` from the 8-class taxonomy (§3.2) and a `confidence` float ≥ 0.0; verified by classifying the 309-filing corpus and confirming 0 unlabelled segments | ❌ Zero-shot classifier exists (`src/analysis/inference.py`) but uses the PRD-002 13-class SASB taxonomy (`src/analysis/taxonomies/risk_taxonomy.yaml`); PRD-004 8-class taxonomy and fine-tuned model not started | US-021, US-022, US-023, US-024, US-025 |
+| G-01 | P0 | PRD-004 | Risk segments carry category labels — every `RiskSegment` has a `risk_category` from the 9-class taxonomy (§3.2) and a `confidence` float ≥ 0.0; verified by classifying the 309-filing corpus and confirming 0 unlabelled segments | ❌ Zero-shot classifier exists (`src/analysis/inference.py`) but uses the PRD-002 13-class SASB taxonomy (`src/analysis/taxonomies/risk_taxonomy.yaml`); PRD-004 9-class taxonomy and fine-tuned model not started | US-021, US-022, US-023, US-024, US-025 |
 | G-02 | P0 | PRD-004 | Cross-company CLI query interface — `python -m sec_intel query --ciks A,B --category cybersecurity` returns a ranked `RiskQueryResult` JSON in ≤ 5s on the 309-filing corpus | ❌ No query CLI exists | US-021, US-022, US-024, US-025 |
 | G-03 | P0 | PRD-004 | Source citation on every segment — every returned segment has a `citation_url` pointing to the SEC EDGAR viewer for the source filing; ≥ 90% coverage at Phase 3 gate, 100% at v0.4.0 release | ❌ Not implemented; accession number not stored in current `SegmentedRisks` schema | US-021, US-022, US-023 |
 | G-04 | P1 | PRD-004 | Analyst-ready CSV export — `--output csv` produces an Excel-openable file with columns: `company`, `cik`, `filing_date`, `category`, `confidence`, `text`, `citation_url`, sorted by `(cik ASC, confidence DESC)` | ❌ Not implemented | US-023, US-025 |
@@ -98,6 +98,7 @@ The fine-tuned model must classify each segment into **exactly one** primary cat
 | `market` | Market & Competition | Pricing pressure, market share, new entrants |
 | `esg` | Environmental & ESG | Climate, sustainability mandates, reputational exposure |
 | `macro` | Macroeconomic | Interest rates, inflation, FX, geopolitical risk |
+| `human_capital` | Human Capital | Labor strikes, loss of key executives, talent shortages, workforce disruption |
 | `other` | Other / Uncategorised | Catch-all for low-confidence or novel risk types |
 
 Multi-label classification is out of scope for v0.4.0. A segment receives its
@@ -176,7 +177,7 @@ All new fields are additive. Existing v0.3.0 files remain valid but will lack la
 | Component | Location | Status | Purpose |
 |:----------|:---------|:-------|:--------|
 | Zero-shot seed classifier | `src/analysis/inference.py` | **Exists** | `RiskClassifier` using 13-class SASB taxonomy; provides seed predictions for Phase 1 annotation only; replaced by the fine-tuned classifier in Phase 2 |
-| Fine-tuned risk classifier | `src/inference/classifier.py` | New (Phase 2) | Wrap fine-tuned FinBERT on 8-class PRD-004 taxonomy; return `risk_category` + `confidence` per segment |
+| Fine-tuned risk classifier | `src/inference/classifier.py` | New (Phase 2) | Wrap fine-tuned FinBERT on 9-class PRD-004 taxonomy; return `risk_category` + `confidence` per segment |
 | Citation builder | `src/inference/citation.py` | New (Phase 3) | Construct EDGAR viewer URL from CIK + accession number |
 | Query CLI | `src/cli/query.py` | New (Phase 3) | `sec_intel query` entrypoint |
 | CSV exporter | `src/cli/export.py` | New (Phase 3) | Convert `RiskQueryResult` to CSV |
@@ -191,9 +192,9 @@ All new fields are additive. Existing v0.3.0 files remain valid but will lack la
 
 | Metric | Minimum Acceptable | Target |
 |:-------|:-------------------|:-------|
-| Macro F1 (7 labelled categories) | 0.72 | ≥ 0.80 |
-| Per-category Precision (all 7 categories) | ≥ 0.70 | ≥ 0.80 |
-| Per-category Recall (all 7 categories) | ≥ 0.65 | ≥ 0.75 |
+| Macro F1 (8 labelled categories) | 0.72 | ≥ 0.80 |
+| Per-category Precision (all 8 categories) | ≥ 0.70 | ≥ 0.80 |
+| Per-category Recall (all 8 categories) | ≥ 0.65 | ≥ 0.75 |
 | Inference time per segment (CPU) | ≤ 1,000ms | ≤ 500ms |
 | Inference time per segment (GPU) | — | ≤ 100ms |
 | Coverage (`other` rate) | ≤ 30% of corpus | ≤ 15% |
@@ -201,6 +202,16 @@ All new fields are additive. Existing v0.3.0 files remain valid but will lack la
 > **Note:** Precision answers "are the model's positive predictions correct?" (low false-positive rate).
 > Recall answers "does the model find all instances of that risk type?" (low false-negative rate).
 > Macro F1 is their harmonic mean and is the primary pass/fail gate for Phase 2.
+
+#### Annotation Quality Requirements
+
+| ID | Requirement | Threshold | Gate |
+|:---|:------------|:---------|:-----|
+| QR-01 | **Inter-Annotator Agreement** — Cohen's Kappa on a 200-segment spot-check between two domain experts; if κ < 0.80, ambiguous category definitions must be revised before fine-tuning begins | κ ≥ 0.80 | Phase 1 |
+| QR-03 | **Confidence Thresholding** — any segment classified with softmax confidence < 0.70 is automatically routed to `other`; never displayed under a primary category | < 0.70 → `other` | Phase 2 |
+| QR-04 | **Boilerplate Robustness** — the model must classify highly repetitive, legally mandated SEC boilerplate (e.g., "Our stock price may be volatile") into `other`; evaluated on a 50-segment boilerplate held-out set during Phase 2 evaluation | ≥ 90% of boilerplate set → `other` | Phase 2 |
+
+> **Rationale for QR-03:** In competitive intelligence and risk management, displaying a wrong category (false positive) is worse than displaying no category. Routing low-confidence predictions to `other` is a deliberate precision-over-recall trade-off.
 
 #### Year-over-Year Comparator
 
@@ -264,6 +275,17 @@ python -m sec_intel query \
   --output csv > /tmp/risk_export.csv
 ```
 
+### 4.6 Roles & Responsibilities
+
+Successful classification requires clear separation of duties across the annotation, training, and product alignment steps.
+
+| Role | Owner | Responsibilities |
+|:-----|:------|:----------------|
+| **Domain Expert / SME** (Financial Analyst or Legal Counsel) | TBD | Owns ground truth: defines final taxonomy labels, manually annotates the initial training/validation dataset via the Phase 1 labeler UI, audits low-confidence predictions (QR-03 `other` bucket) during Phase 2 QA |
+| **ML Engineer** | beth | Owns model architecture: tokenises Item 1A segments, fine-tunes FinBERT weights, manages tensor operations, builds and runs the batch inference pipeline, writes `reports/classifier_eval.json` |
+| **Data Annotator** *(optional / scale)* | TBD | Scales the labelling process under SME guidance to reach the ≥ 500 segments per category gate; all annotations subject to SME spot-check for QR-01 Kappa threshold |
+| **Product Manager** | beth | Owns business alignment: ensures the 9-class taxonomy matches the query filters the analyst stakeholders need; signs off on taxonomy before Phase 1 annotation begins |
+
 ---
 
 ## 5. Phase-Gate Plan
@@ -275,7 +297,7 @@ labels; build the Streamlit HITL labeler for domain-expert correction; produce a
 
 | Step | File | Change |
 |:-----|:-----|:-------|
-| 1.1 | `configs/risk_taxonomy.yaml` (new) | YAML definition of 8 categories with keywords, descriptions, and `severity_weight` placeholders |
+| 1.1 | `configs/risk_taxonomy.yaml` (new) | YAML definition of 9 categories with keywords, descriptions, and `severity_weight` placeholders |
 | 1.2 | `scripts/annotation/label_segments.py` (new) | Keyword-bootstrap labeller to generate seed predictions over the existing 309-filing corpus |
 | 1.3 | `src/preprocessing/pipeline.py` | Add `risk_category: null` placeholder to output schema |
 | 1.4 | `src/visualization/labeler_app.py` (new) | Stateless Streamlit HITL labeler — CIK input → live `edgar_client.py` fetch → full pipeline in memory → segment display with zero-shot prediction → dropdown correction → "Next" / "Save" buttons → append to `data/processed/synthesized_risk_categories.jsonl` |
@@ -298,7 +320,7 @@ labels; build the Streamlit HITL labeler for domain-expert correction; produce a
 `label_source` is `"human_accepted"` when `corrected_category == zero_shot_prediction`,
 `"human_corrected"` otherwise.
 
-**Gate:** ≥ 500 human-reviewed segments per non-`other` category in `synthesized_risk_categories.jsonl`; 0 null `corrected_category` fields; Data Dictionary updated with annotation schema; `llm_finetuning/train.py` is unblocked.
+**Gate:** ≥ 500 human-reviewed segments per non-`other` category in `synthesized_risk_categories.jsonl`; 0 null `corrected_category` fields; inter-annotator Cohen's Kappa ≥ 0.80 on a 200-segment spot-check before fine-tuning begins (QR-01); Data Dictionary updated with annotation schema; Phase 2 unblocked.
 
 ### Phase 2 — Fine-Tuned Classifier
 **Scope:** Fine-tune FinBERT on labelled corpus; evaluate against held-out test set.
@@ -433,7 +455,7 @@ These prove the underlying model is performing correctly before it reaches analy
 
 | Technical Metric | Definition | Minimum Acceptable | Target |
 |:-----------------|:-----------|:-------------------|:-------|
-| **Macro F1** | Harmonic mean of per-category Precision and Recall, averaged across all 7 labelled categories | 0.72 | ≥ 0.80 |
+| **Macro F1** | Harmonic mean of per-category Precision and Recall, averaged across all 8 labelled categories | 0.72 | ≥ 0.80 |
 | **Per-category Precision** | Of all segments labelled `cybersecurity` (for example), what % are actually cybersecurity? | ≥ 0.70 | ≥ 0.80 |
 | **Per-category Recall** | Of all true cybersecurity segments, what % does the model find? | ≥ 0.65 | ≥ 0.75 |
 | **`other` rate** | Fraction of corpus segments assigned the catch-all `other` category | ≤ 30% | ≤ 15% |
