@@ -46,20 +46,20 @@ no export format an analyst can open in Excel. The gap between *corpus exists* a
 
 | ID | Priority | Since | Goal | Status | Stories |
 |:---|:---------|:------|:-----|:-------|:--------|
-| G-01 | P0 | PRD-004 | Risk segments carry category labels — every `RiskSegment` has a `risk_category` from the 8-class taxonomy (§3.2) and a `confidence` float ≥ 0.0; verified by classifying the 309-filing corpus and confirming 0 unlabelled segments | ❌ Zero-shot classifier exists (`src/analysis/inference.py`) but uses the PRD-002 12-class taxonomy; PRD-004 8-class taxonomy and fine-tuned model not started | US-021, US-022, US-023, US-024, US-025 |
+| G-01 | P0 | PRD-004 | Risk segments carry category labels — every `RiskSegment` has a `risk_category` from the 8-class taxonomy (§3.2) and a `confidence` float ≥ 0.0; verified by classifying the 309-filing corpus and confirming 0 unlabelled segments | ❌ Zero-shot classifier exists (`src/analysis/inference.py`) but uses the PRD-002 13-class SASB taxonomy (`src/analysis/taxonomies/risk_taxonomy.yaml`); PRD-004 8-class taxonomy and fine-tuned model not started | US-021, US-022, US-023, US-024, US-025 |
 | G-02 | P0 | PRD-004 | Cross-company CLI query interface — `python -m sec_intel query --ciks A,B --category cybersecurity` returns a ranked `RiskQueryResult` JSON in ≤ 5s on the 309-filing corpus | ❌ No query CLI exists | US-021, US-022, US-024, US-025 |
 | G-03 | P0 | PRD-004 | Source citation on every segment — every returned segment has a `citation_url` pointing to the SEC EDGAR viewer for the source filing; ≥ 90% coverage at Phase 3 gate, 100% at v0.4.0 release | ❌ Not implemented; accession number not stored in current `SegmentedRisks` schema | US-021, US-022, US-023 |
 | G-04 | P1 | PRD-004 | Analyst-ready CSV export — `--output csv` produces an Excel-openable file with columns: `company`, `cik`, `filing_date`, `category`, `confidence`, `text`, `citation_url`, sorted by `(cik ASC, confidence DESC)` | ❌ Not implemented | US-023, US-025 |
-| G-05 | P1 | PRD-004 | Peer-group benchmarking with percentile ranking — `--peer-group SIC:6022` returns a cohort frequency table and percentile rank per category (e.g., "Company X cybersecurity: 90th percentile for SIC 6022") | ❌ Not implemented; SIC code not yet stored in `SegmentedRisks.metadata` | US-022, US-024 |
+| G-05 | P1 | PRD-004 | Peer-group benchmarking with percentile ranking — `--peer-group SIC:6022` returns a cohort frequency table and percentile rank per category (e.g., "Company X cybersecurity: 90th percentile for SIC 6022") | ❌ Not implemented; `sic_code` and `sic_name` are already typed fields in `SegmentedRisks` (`src/preprocessing/models/segmentation.py:46`); Phase 4 work is wiring the existing field to the `--peer-group` CLI filter, not schema addition | US-022, US-024 |
 | G-06 | P1 | PRD-004 | Risk Change Velocity score — `--compare-years` returns a cosine-similarity change score (0.0–1.0) per CIK pair; 1.0 = identical text, < 0.70 = material structural shift warranting review | ❌ Not implemented | US-026 |
 | G-07 | P1 | PRD-004 | Emerging Risk Detection — `analytics.emerging_topics` lists topic labels present in year_N but absent from year_{N−1} (cosine distance > 0.30 from all prior-year topics for the same CIK) | ❌ Not implemented; requires topic model (Phase 5) | US-026 |
 | G-08 | P1 | PRD-004 | Risk Prioritization Score — every filing result includes a composite `prioritization_score` (1–100) from severity weights × segment count × mean confidence; scores ≥ 70 flagged as `[ELEVATED]` in CLI text output | ❌ Not implemented; blocked on G-01 (labels and confidence required) | US-027 |
-| G-09 | P0 | PRD-004 | Human-in-the-loop annotation labeler — domain experts review zero-shot predictions one segment at a time via a stateless Streamlit UI and append corrected labels to `data/processed/synthesized_risk_categories.jsonl`; output must contain ≥ 500 human-reviewed segments per non-`other` category with 0 null `corrected_category` fields before Phase 2 begins | ❌ `llm_finetuning/synthesize_dataset.py` exists as a concept script but has no interactive UI; `llm_finetuning/train.py` is currently blocked on this output | US-028 |
+| G-09 | P0 | PRD-004 | Human-in-the-loop annotation labeler — domain experts review zero-shot predictions one segment at a time via a stateless Streamlit UI and append corrected labels to `data/processed/synthesized_risk_categories.jsonl`; output must contain ≥ 500 human-reviewed segments per non-`other` category with 0 null `corrected_category` fields before Phase 2 begins | ❌ Neither `llm_finetuning/synthesize_dataset.py` nor `llm_finetuning/train.py` exist; the `llm_finetuning/` directory has not been created; `src/visualization/labeler_app.py` is unbuilt | US-028 |
 
 ### 2.2 Non-Goals
 
 - Training the fine-tuned model itself — this PRD defines its *output contract*, not its training procedure
-- Building a production-deployed or externally-accessible web application — the query interface is a CLI; the annotation labeler (`src/visualization/labeler_app.py`) is an internal local tool run via `streamlit run`, not a hosted service
+- Building a production-deployed or externally-accessible web application — the query interface is a CLI; the annotation labeler (to be built at `src/visualization/labeler_app.py`, distinct from the existing `src/visualization/app.py`) is an internal local tool run via `streamlit run`, not a hosted service
 - Real-time or streaming 10-K processing — batch ingestion (PRD-002) is the only ingest path
 - Handling 8-K, DEF 14A, or other SEC filing types — Item 1A of 10-K only
 - Private company analysis — EDGAR public filings only
@@ -105,6 +105,12 @@ highest-confidence category.
 
 ### 3.3 Query Output Schema
 
+> **Schema note:** `segment_index` is the integer `RiskSegment.index` from the current schema
+> (`src/preprocessing/models/segmentation.py:18`). A formatted `segment_id` string
+> (`"seg_NNNN"`) does not exist in v0.3.0; the CLI must derive it from `index` at query time.
+> `filing_date` is not a top-level `SegmentedRisks` field in v0.3.0; it must be added
+> (see §4.1 new fields).
+
 ```json
 {
   "query": {
@@ -120,7 +126,7 @@ highest-confidence category.
       "filing_date": "2021-10-29",
       "risk_segments": [
         {
-          "segment_id": "seg_0014",
+          "segment_index": 14,
           "text": "We are subject to complex and evolving U.S. and foreign laws...",
           "risk_category": "cybersecurity",
           "confidence": 0.94,
@@ -157,22 +163,27 @@ This PRD targets pipeline version `0.4.0`. New fields:
 - `SegmentedRisks.segments[].risk_category` (str)
 - `SegmentedRisks.segments[].confidence` (float)
 - `SegmentedRisks.segments[].citation_url` (str | null)
+- `SegmentedRisks.filing_date` (str, ISO 8601) — not present in v0.3.0; required by G-04 CSV export and §3.3 query output
 - `SegmentedRisks.metadata.model_version` (str)
+
+> **Note:** `sic_code` and `sic_name` already exist as typed fields in `SegmentedRisks`
+> (`src/preprocessing/models/segmentation.py:46`). No schema addition is needed for Phase 4.
 
 All new fields are additive. Existing v0.3.0 files remain valid but will lack labels.
 
 ### 4.2 New Components
 
-| Component | Location | Purpose |
-|:----------|:---------|:--------|
-| Risk classifier | `src/inference/classifier.py` | Wrap fine-tuned FinBERT; return category + confidence per segment |
-| Citation builder | `src/inference/citation.py` | Construct EDGAR viewer URL from CIK + accession number |
-| Query CLI | `src/cli/query.py` | `sec_intel query` entrypoint |
-| CSV exporter | `src/cli/export.py` | Convert `RiskQueryResult` to CSV |
-| Year-over-year comparator | `src/inference/comparator.py` | Compute cosine similarity between two filing-year segment embeddings |
-| Topic modeler | `src/inference/topic_model.py` | BERTopic or LDA wrapper; produce topic labels + C_v coherence score per filing |
-| Prioritization scorer | `src/inference/scorer.py` | Compute composite 1–100 risk prioritization score from severity, frequency, confidence |
-| Annotation labeler UI | `src/visualization/labeler_app.py` | Stateless Streamlit HITL app; fetches one filing live via `edgar_client.py`, runs full pipeline (Acquisition → Preprocessing → Zero-Shot Analysis) in memory, displays each segment with its predicted category, allows correction via dropdown, appends human-reviewed records to `data/processed/synthesized_risk_categories.jsonl` |
+| Component | Location | Status | Purpose |
+|:----------|:---------|:-------|:--------|
+| Zero-shot seed classifier | `src/analysis/inference.py` | **Exists** | `RiskClassifier` using 13-class SASB taxonomy; provides seed predictions for Phase 1 annotation only; replaced by the fine-tuned classifier in Phase 2 |
+| Fine-tuned risk classifier | `src/inference/classifier.py` | New (Phase 2) | Wrap fine-tuned FinBERT on 8-class PRD-004 taxonomy; return `risk_category` + `confidence` per segment |
+| Citation builder | `src/inference/citation.py` | New (Phase 3) | Construct EDGAR viewer URL from CIK + accession number |
+| Query CLI | `src/cli/query.py` | New (Phase 3) | `sec_intel query` entrypoint |
+| CSV exporter | `src/cli/export.py` | New (Phase 3) | Convert `RiskQueryResult` to CSV |
+| Year-over-year comparator | `src/inference/comparator.py` | New (Phase 5) | Compute cosine similarity between two filing-year segment embeddings |
+| Topic modeler integration | `src/inference/topic_model.py` | New wrapper (Phase 5) | Thin adapter over existing `src/features/topic_modeling/TopicModelingAnalyzer` (LDA, already implemented); wires per-filing topic labels + C_v coherence into the query result |
+| Prioritization scorer | `src/inference/scorer.py` | New (Phase 6) | Compute composite 1–100 risk prioritization score from severity, frequency, confidence |
+| Annotation labeler UI | `src/visualization/labeler_app.py` | New (Phase 1) | Stateless Streamlit HITL app; distinct from existing `src/visualization/app.py`; fetches one filing live via `edgar_client.py`, runs full pipeline (Acquisition → Preprocessing → Zero-Shot Analysis) in memory, displays each segment with its predicted category, allows correction via dropdown, appends human-reviewed records to `data/processed/synthesized_risk_categories.jsonl` |
 
 ### 4.3 Model KPIs
 
@@ -220,14 +231,23 @@ All new fields are additive. Existing v0.3.0 files remain valid but will lack la
 # Full test suite
 python -m pytest tests/ -x -q
 
-# Classifier smoke test
+# Fine-tuned classifier smoke test (Phase 2+; src/inference/classifier.py)
 python -c "
 from src.inference.classifier import RiskClassifier
 clf = RiskClassifier()
-result = clf.classify('We are exposed to significant cybersecurity threats...')
-assert result.category == 'cybersecurity'
-assert result.confidence >= 0.70
-print(f'OK: {result.category} ({result.confidence:.2f})')
+result = clf.classify_segment('We are exposed to significant cybersecurity threats...')
+assert result['label'] == 'cybersecurity', f'Got {result[\"label\"]}'
+assert result['score'] >= 0.70, f'Got {result[\"score\"]}'
+print(f'OK: {result[\"label\"]} ({result[\"score\"]:.2f})')
+"
+
+# Zero-shot seed classifier smoke test (Phase 1; src/analysis/inference.py)
+python -c "
+from src.analysis.inference import RiskClassifier
+clf = RiskClassifier()
+result = clf.classify_segment('We are exposed to significant cybersecurity threats...')
+assert result['label'] != 'Error'
+print(f'Zero-shot OK: {result[\"label\"]} ({result[\"score\"]:.2f})')
 "
 
 # Query CLI integration test
@@ -266,7 +286,7 @@ labels; build the Streamlit HITL labeler for domain-expert correction; produce a
   "cik": "0001318605",
   "company_name": "TESLA INC",
   "filing_date": "2023-10-23",
-  "segment_id": "seg_0014",
+  "segment_index": 14,
   "text": "Supply chain disruptions could adversely affect our operations...",
   "zero_shot_prediction": "supply_chain",
   "zero_shot_confidence": 0.78,
@@ -309,7 +329,7 @@ labels; build the Streamlit HITL labeler for domain-expert correction; produce a
 |:-----|:-----|:-------|
 | 4.1 | `src/cli/query.py` | `--peer-group SIC:<code>` filter |
 | 4.2 | `src/cli/query.py` | Cohort frequency table + per-category percentile rank in output |
-| 4.3 | `src/preprocessing/pipeline.py` | Add SIC code to `SegmentedRisks.metadata` (required for Phase 4 filter) |
+| 4.3 | `src/cli/query.py` | Wire `SegmentedRisks.sic_code` (already a typed field at `segmentation.py:46`) to the `--peer-group SIC:<code>` filter; no schema change required |
 
 **Gate:** G-05 acceptance criterion passes; US-022 and US-024 scenarios green.
 
@@ -319,7 +339,7 @@ labels; build the Streamlit HITL labeler for domain-expert correction; produce a
 | Step | File | Change |
 |:-----|:-----|:-------|
 | 5.1 | `src/inference/comparator.py` (new) | TF-IDF or sentence-embedding cosine similarity between consecutive filing years for same CIK |
-| 5.2 | `src/inference/topic_model.py` (new) | BERTopic or LDA wrapper; per-filing topic labels + C_v coherence |
+| 5.2 | `src/inference/topic_model.py` (new adapter) | Thin wrapper over existing `src/features/topic_modeling/TopicModelingAnalyzer` (LDA already implemented); exposes per-filing topic labels + C_v coherence in `RiskQueryResult` format |
 | 5.3 | `src/cli/query.py` | `--compare-years` flag; populate `analytics.change_velocity` and `analytics.emerging_topics` |
 
 **Gate:** C_v coherence ≥ 0.45; change velocity < 0.70 correctly flags known high-change filings in spot-check; US-026 scenarios green; G-06 and G-07 acceptance criteria pass.
