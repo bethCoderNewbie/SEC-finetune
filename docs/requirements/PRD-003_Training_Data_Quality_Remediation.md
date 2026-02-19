@@ -45,26 +45,28 @@ meaningful. These defects are pre-conditions, not nice-to-haves.
 
 ### 2.1 Goals
 
-| ID | Goal | Acceptance Criterion |
-|:---|:-----|:---------------------|
-| G-01 | Zero ToC lines in any segment's training text | `_check_toc_contamination` returns 0 violations on a 309-filing corpus |
-| G-02 | Zero `TableElement` text in any segment | All segments contain only `TextElement` / `TitleElement` derived text |
-| G-03 | Sentence boundaries do not split on financial abbreviations | Gunning Fog index ≥ 10.0 on all processed segments; zero `U.S.` / `Inc.` mid-sentence splits in spot-check of 20 files |
-| G-04 | Zero-segment filings produce a hard FAIL in QA | `total_segments == 0` triggers a blocking `ValidationResult(status=FAIL)` |
-| G-05 | Near-duplicate segments are flagged and excluded from training splits | Segment-level SHA-256 + MinHash dedup runs at batch validation time |
-| G-06 | Parse time ≤ 3s per filing (median) via anchor-based pre-seek | Measured on COST_10K_2023.html (6.35 MB): ≤ 3s vs 34.52s baseline |
-| G-07 | 100% Key Item Recall maintained after all changes | `check_extractor_batch.py` reports 309/309 on existing corpus |
-| G-08 | Risk keyword validator anchored to domain-specific terms | `RISK_KEYWORDS` set includes ≥ 5 domain anchors; modal-verb-only text does not pass |
-| G-09 | `extraction_yield_ppm` uses stripped-text denominator | Yield for AAPL_10K_2021 in acceptable range (1,000–500,000 PPM) after fix |
+| ID | Priority | Since | Goal | Status | Stories |
+|:---|:---------|:------|:-----|:-------|:--------|
+| G-01 | P0 | PRD-003 | Zero ToC lines in any segment's training text — `_check_toc_contamination` returns 0 violations on the 309-filing corpus after Fixes 2A and 2B | ❌ Not implemented; ToC present in 175/309 files (56.6%) — `extractor.py:459`, `cleaning.py:168` | US-009 |
+| G-02 | P0 | PRD-003 | Zero `TableElement` text in any segment — all segments contain only `TextElement` / `TitleElement` derived text; verified by re-running `check_extractor_batch.py` after Fix 2A | ❌ Not implemented; `extractor.py:459-468` does not filter `TableElement` nodes | US-009 |
+| G-03 | P1 | PRD-003 | Sentence boundaries do not split on financial abbreviations — Gunning Fog ≥ 10.0 on all processed segments; zero `U.S.` / `Inc.` mid-sentence splits in spot-check of 20 files after Fix 3 | ❌ Not implemented; regex splitter in `segmenter.py:307,349` misfires on abbreviations | US-012 |
+| G-04 | P0 | PRD-003 | Zero-segment filings produce a hard FAIL in QA — `total_segments == 0` triggers a blocking `ValidationResult(status=FAIL)` in both `_check_cleanliness` and `_check_substance` | ❌ Not implemented; `qa_validation.py:787` early-return allows empty filings to silently PASS | US-010 |
+| G-05 | P1 | PRD-003 | Near-duplicate segments flagged and excluded from training splits — segment-level SHA-256 exact dedup and MinHash near-dedup (Jaccard ≥ 0.85) run at batch validation time | ❌ Not implemented; dedup operates at filing level only — `qa_validation.py:890-908` | US-014 |
+| G-06 | P0 | PRD-003 | Parse time ≤ 3s per filing (median) via anchor-based pre-seek — measured on COST_10K_2023.html (6.35 MB): ≤ 3s vs 34.52s baseline, with `extraction_method` field in output metadata | ❌ Not implemented; full-document parse takes 34s median — `extractor.py` (Fix 5) | US-011 |
+| G-07 | P0 | PRD-003 | 100% Key Item Recall maintained across all phases — `check_extractor_batch.py` reports 309/309 on the existing corpus after every phase gate | ✅ Currently 309/309 — invariant must be preserved; full-parse fallback in Fix 5 is the safety net | US-009, US-011 |
+| G-08 | P1 | PRD-003 | Risk keyword validator anchored to domain-specific terms — `RISK_KEYWORDS` includes ≥ 5 financial-domain anchors (`adverse`, `litigation`, `regulatory`, `impair`, `covenant`); modal-verb-only text does not pass the check | ❌ Not implemented; current keywords are generic modal verbs — `qa_validation.py:619-622` | — |
+| G-09 | P1 | PRD-003 | `extraction_yield_ppm` uses stripped-text denominator — yield for AAPL_10K_2021 falls in the acceptable range (1,000–500,000 PPM) after replacing `file_size_bytes` with `stripped_text_bytes` | ❌ Not implemented; current denominator inflates HTML tag overhead — `qa_validation.py:873` | — |
 
 ### 2.2 Non-Goals
 
 - FinBERT fine-tuning itself — this PRD delivers a clean corpus, not a trained model
 - Replacing sec-parser entirely — the hybrid architecture retains sec-parser's `TextElementMerger` and element classification
 - Real-time or streaming processing
-- Changing the output schema (`SegmentedRisks`) — only the content quality changes
+- Changing the output schema (`SegmentedRisks`) — only the content quality changes; schema is additive only (`extraction_method` field added)
 - Fixing the batch validator race condition (`check_preprocessing_batch.py:110`) — low severity, separate ticket
 - Dead code removal in `parser.py:260` — trivial, out of scope
+
+> **Design constraint:** The `SegmentedRisks` output schema is additive only. No existing top-level keys may be renamed or removed. All quality fixes operate on the content within existing fields (segment text, validation logic), not on the schema structure. Run directories from v0.2.0 remain valid; they will fail the new zero-segment gate if re-validated, which is expected behaviour.
 
 ---
 

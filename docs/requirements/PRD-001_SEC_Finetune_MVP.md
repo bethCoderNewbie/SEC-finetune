@@ -5,6 +5,7 @@ status: APPROVED
 author: beth88.career@gmail.com
 created: 2025-11-17
 last_updated: 2026-02-18
+last_revised: 2026-02-18
 version: 0.1.0
 ---
 
@@ -12,7 +13,7 @@ version: 0.1.0
 
 ## 1. Context & Problem Statement
 
-- **What:** An end-to-end NLP pipeline that ingests SEC 10-K/10-Q HTML filings from EDGAR, extracts Item 1A (Risk Factors), segments the text into discrete risk statements, classifies each into a standard taxonomy, and generates quantitative NLP features for downstream modeling.
+- **What:** An end-to-end NLP pipeline that ingests SEC 10-K/10-Q HTML filings from EDGAR, extracts key sections — **Item 1A (Risk Factors)**, **Item 7 (MD&A)**, and **Item 1 (Business)** — segments the text into discrete risk statements, classifies each into a standard taxonomy, and generates quantitative NLP features for downstream modeling. MVP implementation focused on Item 1A; Items 7 and 1 are deferred.
 - **Why:** SEC risk disclosures are dense, legally verbose, and unstructured. No open dataset provides granular, section-specific risk text suitable for fine-tuning financial LLMs. Analysts must manually read hundreds of pages to compare risk exposure across companies.
 - **Success looks like:** A reproducible batch pipeline that produces labeled JSONL output compatible with HuggingFace `datasets`, enabling fine-tuning of a specialized financial risk classifier.
 
@@ -136,7 +137,92 @@ Configured in `configs/features/risk_analysis.yaml`. Industry-specific variants 
 
 ---
 
-## 6. Open Questions
+## 6. Preprocessing Design & Feature Engineering
+
+This section captures the original design intent driving the MVP pipeline and feature set.
+
+### 6.1 Target Sections
+
+The pipeline was designed to extract three sections from each 10-K, in priority order:
+
+| Section | Why |
+|:--------|:----|
+| **Item 1A — Risk Factors** | Primary target. The most concentrated, structured risk disclosure. |
+| **Item 7 — MD&A** | Forward-looking statements; management's narrative on performance and emerging risks. |
+| **Item 1 — Business** | Operational context; competition and product/market exposure. |
+
+> **MVP scope:** The implemented pipeline (`SECSectionExtractor`) extracts Item 1A only. Items 7 and 1 are deferred to a future PRD.
+
+### 6.2 Text Cleaning Requirements
+
+Cleaning must go beyond standard NLP preprocessing to address filing-specific noise:
+
+| Step | Requirement | Rationale |
+|:-----|:------------|:----------|
+| Case normalization | Lowercase all text | Vocabulary consistency |
+| Punctuation removal | Strip punctuation | Reduce vocabulary noise |
+| Stop word removal | Standard English stop words | Focus on content words |
+| Table / artifact removal | Strip tables, page numbers, headers/footers from narrative | Filing-specific noise not caught by parser |
+| HTML cleanup | Remove leftover tags (`&nbsp;`, `<div>`, etc.) and ASCII artifacts | EDGAR HTML artifacts |
+| Whitespace normalization | Collapse all whitespace to a single space | EDGAR formatting noise |
+| Lemmatization (not stemming) | Reduce to root dictionary form (e.g., "running" → "run") | Stemming corrupts LM lexicon matching ("runn" ≠ "run"); dictionary form required for financial term accuracy |
+
+### 6.3 Feature Engineering
+
+Feature engineering is the primary driver of model performance. Raw text alone is insufficient for financial risk classification.
+
+#### A. Loughran-McDonald (LM) Sentiment
+
+Do **not** use a general-purpose sentiment dictionary — common terms like "liability" and "negative cash flow" are mis-scored by general lexicons. LM is the academic and industry standard for financial text.
+
+Create one count feature per LM word list:
+
+| Word List | Signal |
+|:----------|:-------|
+| Negative | Adverse language density |
+| Positive | Optimistic language density |
+| Uncertainty | Hedging language density |
+| Litigious | Legal exposure density |
+| Strong Modal | Commitment language ("must", "will") |
+| Weak Modal | Hedging language ("may", "could") |
+
+#### B. Readability & Complexity
+
+Obfuscation is a known proxy for risk: harder-to-read 10-Ks correlate with higher audit fees and future stock crash risk.
+
+| Feature | Implementation Note |
+|:--------|:--------------------|
+| Gunning-Fog Index | Use modified version — treat common multisyllabic business words ("company", "operations") as easy words |
+| Flesch Reading Ease | Standard formula |
+| Word count (Item 1A) | Simple complexity proxy; longer disclosures correlate with higher risk |
+
+#### C. Boilerplate vs. Specific Risk (Year-over-Year Similarity)
+
+Differentiate newly disclosed risks from generic repeated boilerplate. For each company, compute cosine similarity between the current year's Item 1A text and the prior year's Item 1A text (using TF-IDF vectors or Doc2Vec embeddings). A low similarity score signals new material risks are being disclosed and should be weighted accordingly by the classifier.
+
+#### D. Topic Modeling (LDA)
+
+Train a Latent Dirichlet Allocation (LDA) model on the full corpus of Item 1A sections. For each filing, the output is a topic exposure vector (e.g., 25% Cybersecurity, 15% Regulatory) used as a feature vector input to the classifier.
+
+### 6.4 Text Vectorization
+
+| Method | Type | Primary Use Case |
+|:-------|:-----|:-----------------|
+| TF-IDF | Sparse | Baseline classifier; year-over-year similarity computation |
+| FinBERT (`ProsusAI/finbert`) | Dense | State-of-the-art classifier input; understands financial context and disambiguation |
+
+### 6.5 Target Model Architecture (Hybrid)
+
+The highest-performing model combines:
+
+1. **FinBERT** — contextual dense embeddings for the risk segment text
+2. **Engineered features** — LM sentiment counts, readability scores, YoY similarity score, LDA topic exposure vector
+
+These are concatenated and passed to a classification head. This gives the model both deep semantic understanding from the transformer and interpretable domain-specific risk signals from feature engineering.
+
+---
+
+## 7. Open Questions
 
 | # | Question | Owner | Status |
 |---|----------|-------|--------|

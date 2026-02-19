@@ -18,6 +18,7 @@ Status values: `DRAFT` · `IN-REVIEW` · `APPROVED` · `DEPRECATED`
 | [PRD-001](PRD-001_SEC_Finetune_MVP.md) | SEC 10-K Risk Factor Analyzer — MVP | APPROVED | 2026-02-18 |
 | [PRD-002](PRD-002_SEC_Finetune_Pipeline_v2.md) | SEC Finetune Pipeline v2 — Current State & MLOps | APPROVED | 2026-02-18 |
 | [PRD-003](PRD-003_Training_Data_Quality_Remediation.md) | SEC 10-K Training Data Quality Remediation | DRAFT | 2026-02-18 |
+| [PRD-004](PRD-004_Business_Intelligence_Use_Cases.md) | SEC 10-K Business Intelligence — Multi-Stakeholder Use Cases | DRAFT | 2026-02-18 |
 
 ---
 
@@ -39,6 +40,7 @@ Individual story files live in [`stories/`](stories/). PRD tables carry the one-
 | **EP-4** Performance | Iterate on the full corpus within a work session | US-011 | — |
 | **EP-5** Observability | Inspect failures, trace sources, and automate operations | US-005, US-007 | US-018, US-019 |
 | **EP-6** ML Readiness | Enrich output and close the gap to a training-ready dataset | US-008 | US-006, US-013, US-015, US-016, US-017 |
+| **EP-7** Business Applications | Deliver model output to non-ML stakeholders via query CLI and exports | US-021, US-023 | US-022, US-024, US-025, US-026, US-027 |
 
 ---
 
@@ -91,6 +93,19 @@ Individual story files live in [`stories/`](stories/). PRD tables carry the one-
 | [US-015](stories/US-015_token_aware_truncation.md) | **P1** | Data Scientist | Split long paragraphs into shorter chunks at natural sentence breaks | AI model can process text within its input limits | ❌ Not implemented | [Detail](stories/US-015_token_aware_truncation.md) |
 | [US-016](stories/US-016_reproducible_splitting.md) | **P1** | Data Scientist | Deterministic train/val/test split keeping each company entirely in one set | Model never sees the same company in both training and testing | ❌ Not implemented | [Detail](stories/US-016_reproducible_splitting.md) |
 | [US-017](stories/US-017_model_explainability.md) | **P1** | Tools Manager | See the specific words that caused a risk classification | Understand and trust the model's logic | ❌ Not implemented | [Detail](stories/US-017_model_explainability.md) |
+
+### EP-7 — Business Applications
+
+| ID | Priority | Role | Action | Value | Status | Detail |
+|:---|:---------|:-----|:-------|:------|:-------|:-------|
+| [US-021](stories/US-021_competitive_benchmarking.md) | **P0** | Strategic Analyst | Query competitor risk profiles by category in a single CLI command | Benchmark risk posture without reading 300-page filings | ❌ Not implemented (PRD-004 Phase 3) | [Detail](stories/US-021_competitive_benchmarking.md) |
+| [US-022](stories/US-022_supplier_risk_screening.md) | **P1** | Risk Manager | Query a supplier's 10-K for financial and operational risk signals | Update vendor risk register with audited, structured data | ❌ Not implemented (PRD-004 Phase 3) | [Detail](stories/US-022_supplier_risk_screening.md) |
+| [US-023](stories/US-023_ma_due_diligence.md) | **P0** | Corporate Development Analyst | Get a side-by-side risk category comparison of acquisition targets as CSV | Identify material liabilities before issuing a letter of intent | ❌ Not implemented (PRD-004 Phase 3) | [Detail](stories/US-023_ma_due_diligence.md) |
+| [US-024](stories/US-024_ir_peer_benchmarking.md) | **P1** | IR Manager | Benchmark risk disclosure against a SIC-code peer-group cohort | Anticipate analyst questions about risk concentration before earnings calls | ❌ Not implemented (PRD-004 Phase 4) | [Detail](stories/US-024_ir_peer_benchmarking.md) |
+| [US-025](stories/US-025_sales_prospect_intelligence.md) | **P1** | Account Executive | Extract the top-N highest-confidence risk segments from a prospect's latest 10-K | Tailor sales pitch to the prospect's publicly disclosed pain points | ❌ Not implemented (PRD-004 Phase 3) | [Detail](stories/US-025_sales_prospect_intelligence.md) |
+| [US-026](stories/US-026_risk_change_velocity.md) | **P1** | Risk Manager | See a change velocity score comparing current and prior-year risk language | Flag filings with major structural shifts for immediate deep review | ❌ Not implemented (PRD-004 Phase 5) | [Detail](stories/US-026_risk_change_velocity.md) |
+| [US-027](stories/US-027_risk_prioritization_score.md) | **P1** | Portfolio Manager | Get a composite risk prioritization score (1–100) per company | Triage a watchlist of 50 companies in minutes, not hours | ❌ Not implemented (PRD-004 Phase 6) | [Detail](stories/US-027_risk_prioritization_score.md) |
+| [US-028](stories/US-028_annotation_labeler_ui.md) | **P0** | Domain Expert / SME | Review zero-shot predictions and save corrected labels to a local JSONL file | `llm_finetuning/train.py` has human-validated training data | ❌ Not implemented (PRD-004 Phase 1, Step 1.4) | [Detail](stories/US-028_annotation_labeler_ui.md) |
 
 ---
 

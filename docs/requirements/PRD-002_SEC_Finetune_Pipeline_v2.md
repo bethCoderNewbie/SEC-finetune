@@ -5,6 +5,7 @@ status: DRAFT
 author: beth88.career@gmail.com
 created: 2026-02-18
 last_updated: 2026-02-18
+last_revised: 2026-02-18
 version: 0.2.0
 supersedes: PRD-001
 git_sha: 1af473b
@@ -31,38 +32,36 @@ the original MVP spec, and what remains to be done.
 
 ## 2. Goals & Non-Goals
 
-### Goals — MVP (PRD-001 Carry-Forward)
+### Goals
 
-| ID | Goal | Status |
-|:---|:-----|:-------|
-| G-01 | Parse ≥95% of EDGAR HTML 10-K/10-Q filings without crashing | ✅ Implemented (DLQ routes failures; rate not yet measured at scale) |
-| G-02 | Extract Item 1A (Risk Factors) with < 5% text loss | ✅ Validated on AAPL_10K_2021 |
-| G-03 | Segment risk text into atomic, classifiable statements | ✅ Implemented (`RiskSegmenter`) |
-| G-04 | Output JSONL compatible with HuggingFace `datasets` | ⚠️ Outputs JSON, not JSONL; HuggingFace compatibility not confirmed |
-| G-05 | Pipeline must be resumable — crashed runs continue from checkpoint | ✅ Implemented (`CheckpointManager` + `ResumeFilter` + `--resume` flag) |
-| G-06 | Batch CLI: 10,000 filings < 2 hours on 32-core node | ❌ Not benchmarked |
-| G-07 | Parsing success rate KPI in run summary | ✅ `RUN_REPORT.md` + `batch_summary_{run_id}.json` |
+> **G-07 removed.** "Parsing success rate KPI in run summary" is an observability mechanism, not an independent goal. Its requirement (parse success rate visible in `RUN_REPORT.md` and `batch_summary_{run_id}.json`) is captured in G-01's measurement spec and §4.3 Observability. US-005 re-linked to G-01.
 
-### Goals — New in v0.2.0
+| ID | Priority | Since | Goal | Status | Stories |
+|:---|:---------|:------|:-----|:-------|:--------|
+| G-01 | P0 | PRD-001 | Parse ≥95% of EDGAR HTML 10-K/10-Q filings — success rate `(total_submitted − dlq_size) / total_submitted ≥ 0.95` reported in `RUN_REPORT.md` and `batch_summary_{run_id}.json`, on a stratified random sample of ≥30 filings spanning ≥5 SIC sectors and filing years 2019–2024 | ⚠️ DLQ implemented; ≥95% KPI not yet measured — requires corpus of ≥30 filings | US-005 |
+| G-02 | P0 | PRD-001 | Extract Item 1A with < 5% character loss — `(raw_item1a_char_count − Σ segment.char_count) / raw_item1a_char_count < 0.05`, using `RiskSegment.char_count` fields in output JSON, on the same ≥30-filing stratified sample as G-01 | ❌ Not validated — tested on AAPL_10K_2021 only | — |
+| G-03 | P1 | PRD-001 | Segment risk text into atomic, classifiable statements — every output segment must satisfy `50 ≤ char_count ≤ 2000` and `word_count ≥ 10` (configurable via `preprocessing.min/max_segment_length`); every processed filing must produce ≥ 1 segment | ✅ `RiskSegmenter`; bounds enforced by `_filter_segments` and `_split_long_segments` | — |
+| G-04 | P0 | PRD-001 | Output JSONL compatible with HuggingFace `datasets` | ❌ Outputs JSON, not JSONL; HuggingFace compatibility not confirmed — core deliverable unmet | US-001 |
+| G-05 | P0 | PRD-001 | Pipeline must be resumable — crashed runs continue from checkpoint | ✅ `CheckpointManager` + `ResumeFilter` + `--resume` flag | US-002 |
+| G-06 | P1 | PRD-001 | Batch CLI: 10,000 filings < 2 hours on 32-core node | ❌ Not benchmarked | US-021 *(pending)* |
+| G-08 | P1 | PRD-002 | Memory-aware adaptive timeout per file size category | ✅ `MemorySemaphore` + `FileCategory` (Small/Medium/Large) | — |
+| G-09 | P0 | PRD-002 | Dead Letter Queue for malformed filings with drain on final run | ✅ `DeadLetterQueue` | US-003 |
+| G-10 | P2 | PRD-002 | Stamped run directories with full provenance | ✅ `{YYYYMMDD_HHMMSS}_preprocessing_{git_sha}/` | — |
+| G-11 | P1 | PRD-002 | Inline QA validation / quarantine pattern | ✅ `HealthCheckValidator` + `process_and_validate()` | — |
+| G-12 | P0 | PRD-002 | Risk classifier zero-shot inference integrated into `process_batch()` | ❌ `src/analysis/inference.py` exists but is not wired into the batch pipeline | US-022 *(pending)* |
+| G-13 | P0 | PRD-002 | CLI sector filter (`--sic` / `--ticker`) for targeted dataset builds | ❌ Not implemented | US-004 |
+| G-14 | P0 | PRD-002 | NLP features (sentiment, readability, topic) inline in primary output record | ❌ Features exist in separate scripts; not unified | US-008 |
 
-| ID | Goal | Status |
-|:---|:-----|:-------|
-| G-08 | Memory-aware adaptive timeout per file size category | ✅ `MemorySemaphore` + `FileCategory` (Small/Medium/Large) |
-| G-09 | Dead Letter Queue for malformed filings with drain on final run | ✅ `DeadLetterQueue` (B3 fixed) |
-| G-10 | Stamped run directories with full provenance | ✅ `{YYYYMMDD_HHMMSS}_preprocessing_{git_sha}/` |
-| G-11 | Cross-run state manifest (DVC-lite, atomic writes) | ✅ `StateManager` + `.manifest.json` |
-| G-12 | Inline QA validation / quarantine pattern | ✅ `HealthCheckValidator` + `process_and_validate()` |
-| G-13 | Risk classifier zero-shot inference | ⚠️ `src/analysis/inference.py` exists; not integrated into main batch pipeline |
-
-### Non-Goals (Unchanged from PRD-001)
+### Non-Goals
 
 - Real-time streaming ingestion
-- User-facing dashboard beyond Streamlit prototype (Streamlit app exists at `src/visualization/app.py`)
-- Database storage (PostgreSQL / MongoDB — deferred to PRD-003)
+- Production UI deployment — a Streamlit prototype exists at `src/visualization/app.py`; hardening, hosting, and auth are out of scope for Phase 2
+- Database storage — deferred to a future PRD; not in scope for PRD-002 or PRD-003
 - Public REST API
 - Comparative / trend analysis across companies / years
 - Non-SEC financial documents
-- Sentiment as a classification signal (implemented separately in `scripts/feature_engineering/`)
+
+> **Design constraint:** Sentiment features (in `src/features/sentiment.py`) are pipeline outputs, not classifier inputs. They are not used as signals for risk taxonomy classification.
 
 ---
 
@@ -80,19 +79,19 @@ the original MVP spec, and what remains to be done.
 
 ### 2.2 Feature Requirements (Schema)
 
-Before model training begins, these features must be present in every output record.
+Before model training begins, these features must be present in every output record. **Phase 2 Gate** indicates whether absence of the field blocks the Phase 2 exit criteria.
 
-| Feature | Type | Notes |
-|:--------|:-----|:------|
-| `input_text` | `str` — max 512 tokens | Raw cleaned risk segment text (post-`TextCleaner`). Truncation strategy TBD (OQ-3). |
-| `filing_date` | ISO 8601 timestamp | Extracted from EDGAR filing metadata via `sec-downloader`. Currently `None` if not present in HTML header. |
-| `sector_code` | Categorical — SIC code (str) | Extracted by `SECFilingParser`; flows as `sic_code` through all pipeline stages. |
-| `risk_label` | Categorical — 12-class taxonomy | Assigned by `src/analysis/inference.py` (zero-shot). **Not yet in batch output.** |
-| `confidence` | `float` [0, 1] | Classifier confidence score. Threshold ≥ 0.7 (configurable). **Not yet in batch output.** |
-| `word_count` | `int` | Segment word count. Present in `RiskSegment` today. |
-| `char_count` | `int` | Segment char count. Present in `RiskSegment` today. |
-| `ticker` | `str` | Company ticker symbol. Present in `SegmentedRisks` today. |
-| `cik` | `str` | EDGAR Central Index Key. Present in `SegmentedRisks` today. |
+| Feature | Type | Notes | Phase 2 Gate |
+|:--------|:-----|:------|:-------------|
+| `input_text` | `str` — max length TBD (OQ-3) | Raw cleaned risk segment text (post-`TextCleaner`). Truncation strategy open; see OQ-3. | ✅ Blocking |
+| `filing_date` | ISO 8601 timestamp | Extracted from EDGAR filing metadata via `sec-downloader`. See data dictionary for null-handling behavior. | ❌ Non-blocking |
+| `sector_code` | Categorical — SIC code (str) | Extracted by `SECFilingParser`; flows as `sic_code` through all pipeline stages. | ✅ Blocking |
+| `risk_label` | Categorical — 12-class taxonomy | Assigned by `src/analysis/inference.py` (zero-shot). **Not yet in batch output — blocks Phase 2.** | ✅ Blocking |
+| `confidence` | `float` [0, 1] | Classifier confidence score. Threshold ≥ 0.7 (configurable). **Not yet in batch output — blocks Phase 2.** | ✅ Blocking |
+| `word_count` | `int` | Segment word count. Present in `RiskSegment` today. | ✅ Blocking |
+| `char_count` | `int` | Segment char count. Present in `RiskSegment` today. | ✅ Blocking |
+| `ticker` | `str` | Company ticker symbol. Present in `SegmentedRisks` today. | ✅ Blocking |
+| `cik` | `str` | EDGAR Central Index Key. Present in `SegmentedRisks` today. | ✅ Blocking |
 
 ---
 
@@ -137,6 +136,8 @@ Define success mathematically. "Make it better" is not an acceptance criterion.
   `RANDOM_SEED=42` must be recorded in every run.
 - **Preprocessing entry point:** `scripts/data_preprocessing/run_preprocessing_pipeline.py`
   (batch CLI, `--resume`, `--workers`, `--chunk-size` flags).
+- **Cross-run state manifest:** `StateManager` writes `data/processed/.manifest.json` with atomic
+  file ops. Tracks per-file content hashes across runs (DVC-lite pattern). ✅ Implemented.
 
 ### 4.2 Serving Strategy
 
@@ -217,16 +218,16 @@ We do not proceed to the next phase without meeting the Exit Criteria.
 
 > Acceptance criteria (Gherkin Given/When/Then) are in individual story files linked below.
 
-| ID | Priority | As a… | I want to… | So that… | Status | Detail |
-|:---|:---------|:------|:-----------|:---------|:-------|:-------|
-| US-001 | **P0** | Data Scientist | Run the full pipeline on a directory of HTML filings and receive **JSONL** output | I get a HuggingFace-compatible dataset without format conversion | ⚠️ Batch mode ✅; output is JSON not JSONL (gap) | [→](stories/US-001_batch_pipeline_execution.md) |
-| US-002 | **P0** | ML Engineer | Resume a crashed pipeline run | I don't lose hours of compute | ✅ `--resume` + `CheckpointManager` | [→](stories/US-002_pipeline_resume.md) |
-| US-003 | **P0** | ML Engineer | Route malformed filings to a Dead Letter Queue | Pipeline does not halt on bad input | ✅ `DeadLetterQueue` | [→](stories/US-003_dead_letter_queue.md) |
-| US-004 | **P0** | Data Scientist | Filter filings by ticker or SIC code **at the CLI before processing** | Build sector-specific sets without wasting compute on irrelevant filings | ❌ CLI flag not implemented (P0 gap) | [→](stories/US-004_sector_filtering.md) |
-| US-005 | **P1** | Data Scientist | Inspect which filings failed and why | I can improve parser/extractor logic | ✅ `RUN_REPORT.md`, DLQ log, `_progress.log` | [→](stories/US-005_failure_inspection.md) |
-| US-006 | **P1** | Financial Analyst | View extracted risk segments in Streamlit UI | I can validate quality without writing code | ⚠️ `src/visualization/app.py` exists; integration status unknown | [→](stories/US-006_streamlit_ui.md) |
-| US-007 | **P1** | ML Engineer | Configure all pipeline settings via YAML + env vars | I can deploy to different environments | ✅ 16-module config system; Pydantic V2 + env-prefix | [→](stories/US-007_yaml_config.md) |
-| US-008 | **P0** | Data Scientist | Get sentiment, readability, and topic features **inline in the primary JSONL record** | Load one file and train immediately without complex joins | ❌ Features exist in separate scripts; not unified (P0 gap) | [→](stories/US-008_nlp_features.md) |
+| ID | Priority | As a… | I want to… | So that… | Status | Goal | Detail |
+|:---|:---------|:------|:-----------|:---------|:-------|:-----|:-------|
+| US-001 | **P0** | Data Scientist | Run the full pipeline on a directory of HTML filings and receive **JSONL** output | I get a HuggingFace-compatible dataset without format conversion | ⚠️ Batch mode ✅; output is JSON not JSONL (gap) | G-04 | [→](stories/US-001_batch_pipeline_execution.md) |
+| US-002 | **P0** | ML Engineer | Resume a crashed pipeline run | I don't lose hours of compute | ✅ `--resume` + `CheckpointManager` | G-05 | [→](stories/US-002_pipeline_resume.md) |
+| US-003 | **P0** | ML Engineer | Route malformed filings to a Dead Letter Queue | Pipeline does not halt on bad input | ✅ `DeadLetterQueue` | G-09 | [→](stories/US-003_dead_letter_queue.md) |
+| US-004 | **P0** | Data Scientist | Filter filings by ticker or SIC code **at the CLI before processing** | Build sector-specific sets without wasting compute on irrelevant filings | ❌ CLI flag not implemented (P0 gap) | G-13 | [→](stories/US-004_sector_filtering.md) |
+| US-005 | **P1** | Data Scientist | Inspect which filings failed and why | I can improve parser/extractor logic | ✅ `RUN_REPORT.md`, DLQ log, `_progress.log` | G-01 | [→](stories/US-005_failure_inspection.md) |
+| US-006 | **P1** | Financial Analyst | View extracted risk segments in Streamlit UI | I can validate quality without writing code | ⚠️ `src/visualization/app.py` exists; integration status unknown | — | [→](stories/US-006_streamlit_ui.md) |
+| US-007 | **P1** | ML Engineer | Configure all pipeline settings via YAML + env vars | I can deploy to different environments | ✅ 16-module config system; Pydantic V2 + env-prefix | — | [→](stories/US-007_yaml_config.md) |
+| US-008 | **P0** | Data Scientist | Get sentiment, readability, and topic features **inline in the primary JSONL record** | Load one file and train immediately without complex joins | ❌ Features exist in separate scripts; not unified (P0 gap) | G-14 | [→](stories/US-008_nlp_features.md) |
 
 ---
 
@@ -418,7 +419,7 @@ streamlit>=1.28.0
 | OQ-9 | Which experiment tracking system: MLflow or W&B? | ML Engineer | **New — blocks Phase 2 Gate** |
 | OQ-10 | Which orchestration system: Airflow or Dagster for scheduled retraining? | Eng Lead | **New — blocks Phase 3** |
 | OQ-11 | **Materiality Audit:** How do we verify 0% loss for critical "Black Swan" triggers? | Data Eng | **New** |
-| OQ-12 | **RLHF Loop:** How will analysts correct misclassifications in the Streamlit UI? | Product | **New** |
+| OQ-12 | **RLHF Loop:** How will analysts correct misclassifications in the Streamlit UI? | Product | **Resolved** — PRD-004 G-09 and US-028 define the HITL labeler (`src/visualization/labeler_app.py`); corrected labels are appended to `data/processed/synthesized_risk_categories.jsonl` |
 | OQ-13 | **Unit Cost:** What is the per-filing cost for GPU inference vs. business value? | FinOps | **New** |
 
 ---
