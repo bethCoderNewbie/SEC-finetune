@@ -84,20 +84,21 @@ meaningful. These defects are pre-conditions, not nice-to-haves.
 | File size range | 100 KB – 150 MB (financial SIC 6000-6799) |
 | Output unit | `SegmentedRisks` JSON, one file per filing |
 
-### 3.2 Training Unit Schema (unchanged from PRD-002)
+### 3.2 Training Unit Schema (v0.3.0)
 
 ```json
 {
   "cik": "0000320193",
   "company_name": "APPLE INC",
+  "sic_code": "7372",
+  "sic_name": "PREPACKAGED SOFTWARE",
   "form_type": "10-K",
-  "filing_date": "2021-10-29",
   "segments": [
     {
-      "segment_id": "seg_0001",
+      "index": 0,
       "text": "...",
       "word_count": 142,
-      "segment_index": 0
+      "char_count": 893
     }
   ],
   "metadata": {
@@ -109,7 +110,11 @@ meaningful. These defects are pre-conditions, not nice-to-haves.
 }
 ```
 
-**New field:** `extraction_method` distinguishes anchor-seek path from full-parse fallback.
+**Field notes:**
+- `index` is the integer position of the segment within the filing (`RiskSegment.index`). A formatted string identifier (`"seg_NNNN"`) does not exist in v0.3.0; any downstream consumer must derive it from `index` at query time.
+- `sic_code` and `sic_name` are typed top-level fields (`src/preprocessing/models/segmentation.py:46`); they must be populated at ingest for PRD-004 peer-group filtering to work.
+- `filing_date` is **not** a v0.3.0 field; it is planned as a new top-level field in v0.4.0 (PRD-004 §4.1). PRD-003 pipelines do not need to emit it, but downstream consumers must not assume it is present in v0.3.0 output.
+- **New field:** `extraction_method` distinguishes anchor-seek path (`"anchor_seek_v2"`) from full-parse fallback (`"full_parse_fallback"`).
 
 ### 3.3 Quality Gates (Post-Remediation)
 
@@ -125,6 +130,32 @@ Every `SegmentedRisks` file must satisfy all blocking checks before entering tra
 | No ToC contamination | ToC pattern match rate == 0.0 per segment | **Yes** (new) |
 | Domain vocabulary | ≥ 1 domain anchor keyword per segment | No (warn) |
 | Segment dedup | MinHash similarity < 0.85 across segments | No (warn → quarantine) |
+
+### 3.4 Downstream Consumer Requirements (PRD-004)
+
+PRD-003's `SegmentedRisks` output is the sole input to PRD-004's annotation and classification pipeline. The v0.3.0 corpus must satisfy these properties **before** PRD-004 Phase 1 (annotation) begins:
+
+| Requirement | Why PRD-004 needs it | PRD-003 gate that satisfies it |
+|:------------|:--------------------|:-------------------------------|
+| Segments contain clean prose only — no ToC lines, no table numerics | The annotation labeler displays raw segment text to domain experts; ToC noise causes incorrect label decisions | G-01, G-02 (Fixes 2A/2B); ToC contamination rate = 0% |
+| Every segment is a complete grammatical sentence | FinBERT tokenises to 512-token chunks; mid-sentence splits corrupt the training signal | G-03 (Fix 3); Gunning Fog ≥ 10.0 |
+| No zero-segment filings in corpus | A filing with 0 segments produces 0 labels; the annotator wastes a session on an empty result | G-04 (Fix 1); zero-segment = hard FAIL |
+| Near-duplicate segments excluded from training split | Duplicated segments inflate per-category counts and skew F1; corpus must reflect unique risk disclosures | G-05 (Fix 4); MinHash Jaccard < 0.85 |
+| `sic_code` populated on every filing | PRD-004 Phase 4 `--peer-group SIC:<code>` filter reads this field directly | Existing field; population verified by corpus re-run |
+| Segment text ≥ 20 words and domain-anchored | Segments below this threshold produce `confidence < 0.70` in the classifier and route to `other`, wasting annotation budget | G-08 (Fix 6); domain keyword validator |
+
+The 9-class risk taxonomy defined in PRD-004 §3.2 (`cybersecurity`, `regulatory`, `financial`, `supply_chain`, `market`, `esg`, `macro`, `human_capital`, `other`) is applied **after** v0.3.0 corpus delivery. PRD-003 does not assign category labels; it ensures the segment text is clean enough for labels to be meaningful.
+
+### 3.5 Roles & Responsibilities
+
+Corpus preparation requires clear ownership across quality verification, pipeline engineering, and product alignment.
+
+| Role | Owner | Responsibilities in PRD-003 scope |
+|:-----|:------|:----------------------------------|
+| **Domain Expert / SME** (Financial Analyst or Legal Counsel) | TBD | Owns ground truth quality: spot-checks 50-segment samples after each Phase gate to confirm ToC removal and sentence boundaries produce readable, standalone risk statements; signs off that cleaned segments are interpretable before PRD-004 annotation begins |
+| **ML Engineer** | beth | Owns all eight pipeline fixes (§4.1–§4.8); runs `check_extractor_batch.py` and `check_preprocessing_batch.py` after each phase; ensures 100% Key Item Recall is maintained throughout |
+| **Data Annotator** *(optional / scale)* | TBD | Not in scope for PRD-003; role activates in PRD-004 Phase 1 once the clean corpus is delivered. Annotators must not begin labeling until the Phase 5 gate (all quality checks green) is confirmed by the ML Engineer |
+| **Product Manager** | beth | Owns alignment between corpus attributes and PRD-004 analyst needs; confirms that `sic_code` coverage and corpus size (309 → 887 filings) match the peer-group cohorts required by the Strategic Analyst and IR Manager stakeholders before corpus expansion begins |
 
 ---
 
