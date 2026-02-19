@@ -402,21 +402,14 @@ field populated in all output files.
 
 ## 7. User Stories
 
-**US-01 (Data Scientist):** "When I train FinBERT on the output corpus, the validation loss
-should decrease monotonically — not plateau due to boilerplate ToC text or duplicate AAPL
-risk segments from 2020–2023."
+> Acceptance criteria (Gherkin Given/When/Then) are in individual story files linked below.
 
-**US-02 (ML Engineer):** "When a filing's Item 1A extraction fails completely, I want the
-pipeline to surface a FAIL status in the run report, not silently produce a zero-segment
-JSON that looks like a valid training example."
-
-**US-03 (Pipeline Operator):** "When I re-run the pipeline on an 887-filing corpus, parsing
-should complete in under 3 hours, not 8.4. I need to be able to iterate on segmenter
-parameters."
-
-**US-04 (Data Scientist):** "When I inspect a training segment, I want confidence that it
-contains complete sentences expressing a risk argument — not sentences cut at `U.S.` or
-truncated by a table's numeric rows."
+| ID | Priority | As a… | I want to… | So that… | Detail |
+|:---|:---------|:------|:-----------|:---------|:-------|
+| US-009 | **P0** | Data Scientist | The extracted corpus contains no ToC lines or HTML table text | Training loss decreases monotonically on clean risk factor prose | [→](stories/US-009_clean_training_corpus.md) |
+| US-010 | **P0** | ML Engineer | A filing that produces zero segments fails QA with a hard FAIL | Silent empty training examples never reach the corpus | [→](stories/US-010_zero_segment_hard_fail.md) |
+| US-011 | **P0** | Pipeline Operator | Parsing completes in ≤ 3s per filing (median) | I can iterate on segmenter parameters on the 887-filing corpus within a work session | [→](stories/US-011_anchor_parse_performance.md) |
+| US-012 | **P1** | Data Scientist | Segments contain complete sentences not split on financial abbreviations | Training examples express coherent risk arguments | [→](stories/US-012_sentence_boundary_quality.md) |
 
 ---
 

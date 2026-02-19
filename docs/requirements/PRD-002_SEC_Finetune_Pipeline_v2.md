@@ -215,16 +215,18 @@ We do not proceed to the next phase without meeting the Exit Criteria.
 
 ## 6. User Stories (Functional Requirements)
 
-| ID | Priority | As a… | I want to… | So that… | Status |
-|:---|:---------|:------|:-----------|:---------|:-------|
-| US-01 | **P0** | Data Scientist | Run the full pipeline on a directory of HTML filings | I get a labeled JSON dataset without manual processing | ✅ `--batch` mode |
-| US-02 | **P0** | ML Engineer | Resume a crashed pipeline run | I don't lose hours of compute | ✅ `--resume` + `CheckpointManager` |
-| US-03 | **P0** | ML Engineer | Route malformed filings to a Dead Letter Queue | Pipeline does not halt on bad input | ✅ `DeadLetterQueue` |
-| US-04 | **P0** | Data Scientist | Filter filings by ticker or SIC code | I can build sector-specific training sets | ⚠️ Metadata preserved in output; no CLI filter flag yet |
-| US-05 | **P1** | Data Scientist | Inspect which filings failed and why | I can improve parser/extractor logic | ✅ `RUN_REPORT.md`, DLQ log, `_progress.log` |
-| US-06 | **P1** | Financial Analyst | View extracted risk segments in Streamlit UI | I can validate quality without writing code | ⚠️ `src/visualization/app.py` exists; integration status unknown |
-| US-07 | **P1** | ML Engineer | Configure all pipeline settings via YAML + env vars | I can deploy to different environments | ✅ 16-module config system; Pydantic V2 + env-prefix |
-| US-08 | **P2** | Data Scientist | Get sentiment, readability, and topic features per segment | I can use feature-rich inputs for training | ⚠️ Implemented in separate `scripts/feature_engineering/`; not unified |
+> Acceptance criteria (Gherkin Given/When/Then) are in individual story files linked below.
+
+| ID | Priority | As a… | I want to… | So that… | Status | Detail |
+|:---|:---------|:------|:-----------|:---------|:-------|:-------|
+| US-001 | **P0** | Data Scientist | Run the full pipeline on a directory of HTML filings and receive **JSONL** output | I get a HuggingFace-compatible dataset without format conversion | ⚠️ Batch mode ✅; output is JSON not JSONL (gap) | [→](stories/US-001_batch_pipeline_execution.md) |
+| US-002 | **P0** | ML Engineer | Resume a crashed pipeline run | I don't lose hours of compute | ✅ `--resume` + `CheckpointManager` | [→](stories/US-002_pipeline_resume.md) |
+| US-003 | **P0** | ML Engineer | Route malformed filings to a Dead Letter Queue | Pipeline does not halt on bad input | ✅ `DeadLetterQueue` | [→](stories/US-003_dead_letter_queue.md) |
+| US-004 | **P0** | Data Scientist | Filter filings by ticker or SIC code **at the CLI before processing** | Build sector-specific sets without wasting compute on irrelevant filings | ❌ CLI flag not implemented (P0 gap) | [→](stories/US-004_sector_filtering.md) |
+| US-005 | **P1** | Data Scientist | Inspect which filings failed and why | I can improve parser/extractor logic | ✅ `RUN_REPORT.md`, DLQ log, `_progress.log` | [→](stories/US-005_failure_inspection.md) |
+| US-006 | **P1** | Financial Analyst | View extracted risk segments in Streamlit UI | I can validate quality without writing code | ⚠️ `src/visualization/app.py` exists; integration status unknown | [→](stories/US-006_streamlit_ui.md) |
+| US-007 | **P1** | ML Engineer | Configure all pipeline settings via YAML + env vars | I can deploy to different environments | ✅ 16-module config system; Pydantic V2 + env-prefix | [→](stories/US-007_yaml_config.md) |
+| US-008 | **P0** | Data Scientist | Get sentiment, readability, and topic features **inline in the primary JSONL record** | Load one file and train immediately without complex joins | ❌ Features exist in separate scripts; not unified (P0 gap) | [→](stories/US-008_nlp_features.md) |
 
 ---
 

@@ -1,8 +1,8 @@
 # Requirements
 
-Index of product specification documents (PRDs).
+Index of product specification documents (PRDs) and user stories.
 
-Naming convention: `PRD-{NNN}_{ShortName}.md`
+Naming convention: `PRD-{NNN}_{ShortName}.md` · `US-{NNN}_{slug}.md`
 
 > **ADRs and RFCs** are engineering lifecycle documents. They live in and are indexed by
 > [`docs/architecture/README.md`](../architecture/README.md), not here.
@@ -11,13 +11,82 @@ Status values: `DRAFT` · `IN-REVIEW` · `APPROVED` · `DEPRECATED`
 
 ---
 
-## Documents
+## PRDs
 
 | ID | Title | Status | Last Updated |
 |----|-------|--------|-------------|
 | [PRD-001](PRD-001_SEC_Finetune_MVP.md) | SEC 10-K Risk Factor Analyzer — MVP | APPROVED | 2026-02-18 |
 | [PRD-002](PRD-002_SEC_Finetune_Pipeline_v2.md) | SEC Finetune Pipeline v2 — Current State & MLOps | APPROVED | 2026-02-18 |
 | [PRD-003](PRD-003_Training_Data_Quality_Remediation.md) | SEC 10-K Training Data Quality Remediation | DRAFT | 2026-02-18 |
+
+---
+
+## User Stories
+
+Stories follow the Card + Validation format:
+- **Card:** `As a <Role>, I want <Action>, So that <Benefit>`
+- **Validation:** Gherkin `Scenario / Given / When / Then` per acceptance criterion
+
+Individual story files live in [`stories/`](stories/). PRD tables carry the one-line summary and link here for acceptance criteria.
+
+### Epics
+
+| Epic | Theme | P0 Stories | P1 Stories |
+|------|-------|-----------|------------|
+| **EP-1** Core Pipeline | Run, filter, and emit training-ready JSONL | US-001, US-004 | — |
+| **EP-2** Resilience & Recovery | Survive crashes, bad input, and silent failures | US-002, US-003, US-010 | — |
+| **EP-3** Data Quality | Produce corpus-ready, uncontaminated training text | US-009 | US-012, US-014 |
+| **EP-4** Performance | Iterate on the full corpus within a work session | US-011 | — |
+| **EP-5** Observability | Inspect failures and configure environments | US-005, US-007 | — |
+| **EP-6** ML Readiness | Enrich output and close the gap to a training-ready dataset | US-008 | US-006, US-013, US-015, US-016 |
+
+---
+
+### EP-1 — Core Pipeline
+
+| ID | Priority | Role | Action | Value | Status | Detail |
+|:---|:---------|:-----|:-------|:------|:-------|:-------|
+| [US-001](stories/US-001_batch_pipeline_execution.md) | **P0** | Data Scientist | Run full pipeline; receive JSONL output | HuggingFace-compatible dataset without format conversion | ⚠️ Batch ✅; JSONL not yet emitted | [Detail](stories/US-001_batch_pipeline_execution.md) |
+| [US-004](stories/US-004_sector_filtering.md) | **P0** | Data Scientist | Filter by ticker / SIC code at the CLI before processing | Sector-specific training sets without wasting compute | ❌ CLI flag not implemented | [Detail](stories/US-004_sector_filtering.md) |
+
+### EP-2 — Resilience & Recovery
+
+| ID | Priority | Role | Action | Value | Status | Detail |
+|:---|:---------|:-----|:-------|:------|:-------|:-------|
+| [US-002](stories/US-002_pipeline_resume.md) | **P0** | ML Engineer | Resume a crashed run with `--resume` | Don't lose hours of compute | ✅ Implemented | [Detail](stories/US-002_pipeline_resume.md) |
+| [US-003](stories/US-003_dead_letter_queue.md) | **P0** | ML Engineer | Route malformed filings to a Dead Letter Queue | Pipeline does not halt on bad input | ✅ Implemented | [Detail](stories/US-003_dead_letter_queue.md) |
+| [US-010](stories/US-010_zero_segment_hard_fail.md) | **P0** | ML Engineer | Zero-segment filings produce a blocking QA FAIL | Silent empty training examples never reach the corpus | ❌ Not implemented (PRD-003 Phase 1) | [Detail](stories/US-010_zero_segment_hard_fail.md) |
+
+### EP-3 — Data Quality
+
+| ID | Priority | Role | Action | Value | Status | Detail |
+|:---|:---------|:-----|:-------|:------|:-------|:-------|
+| [US-009](stories/US-009_clean_training_corpus.md) | **P0** | Data Scientist | Corpus contains no ToC lines or HTML table text | Training loss decreases monotonically on clean prose | ❌ Not implemented (PRD-003 Phase 2) | [Detail](stories/US-009_clean_training_corpus.md) |
+| [US-012](stories/US-012_sentence_boundary_quality.md) | **P1** | Data Scientist | Segments contain complete sentences, not split on abbreviations | Training examples express coherent risk arguments | ❌ Not implemented (PRD-003 Phase 3) | [Detail](stories/US-012_sentence_boundary_quality.md) |
+| [US-014](stories/US-014_semantic_deduplication.md) | **P1** | Data Scientist | Near-duplicate segments identified and excluded from training split across filings and years | Prevent data leakage from year-over-year boilerplate copy-paste | ❌ Not implemented | [Detail](stories/US-014_semantic_deduplication.md) |
+
+### EP-4 — Performance
+
+| ID | Priority | Role | Action | Value | Status | Detail |
+|:---|:---------|:-----|:-------|:------|:-------|:-------|
+| [US-011](stories/US-011_anchor_parse_performance.md) | **P0** | Pipeline Operator | Parse filings in ≤ 3s (median) via anchor-based pre-seek | Iterate on the 887-filing corpus within a work session | ❌ Not implemented (PRD-003 Phase 4) | [Detail](stories/US-011_anchor_parse_performance.md) |
+
+### EP-5 — Observability
+
+| ID | Priority | Role | Action | Value | Status | Detail |
+|:---|:---------|:-----|:-------|:------|:-------|:-------|
+| [US-005](stories/US-005_failure_inspection.md) | **P1** | Data Scientist | Inspect which filings failed and exactly why | Improve parser/extractor logic iteratively | ✅ Implemented | [Detail](stories/US-005_failure_inspection.md) |
+| [US-007](stories/US-007_yaml_config.md) | **P1** | ML Engineer | Configure all settings via YAML + env vars | Deploy to different environments without code changes | ✅ Implemented | [Detail](stories/US-007_yaml_config.md) |
+
+### EP-6 — ML Readiness
+
+| ID | Priority | Role | Action | Value | Status | Detail |
+|:---|:---------|:-----|:-------|:------|:-------|:-------|
+| [US-008](stories/US-008_nlp_features.md) | **P0** | Data Scientist | Sentiment, readability, topic features inline in every JSONL record | Load one file, train immediately — no joins | ❌ Features exist separately; not unified | [Detail](stories/US-008_nlp_features.md) |
+| [US-006](stories/US-006_streamlit_ui.md) | **P1** | Financial Analyst | View extracted segments in a Streamlit UI | Validate extraction quality without writing code | ⚠️ App exists; integration not confirmed | [Detail](stories/US-006_streamlit_ui.md) |
+| [US-013](stories/US-013_class_balance_reporting.md) | **P1** | Data Scientist | Label distribution report after every batch run | Identify class imbalance before training | ❌ Not implemented | [Detail](stories/US-013_class_balance_reporting.md) |
+| [US-015](stories/US-015_token_aware_truncation.md) | **P1** | Data Scientist | Configure segment truncation/splitting at the token level | Natively compatible with Transformer input limits | ❌ Not implemented | [Detail](stories/US-015_token_aware_truncation.md) |
+| [US-016](stories/US-016_reproducible_splitting.md) | **P1** | Data Scientist | Deterministic train/val/test split grouped by company | No data leakage between train and test sets | ❌ Not implemented | [Detail](stories/US-016_reproducible_splitting.md) |
 
 ---
 

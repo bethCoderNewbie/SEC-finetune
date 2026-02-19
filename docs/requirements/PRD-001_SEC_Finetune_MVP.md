@@ -45,16 +45,18 @@ version: 0.1.0
 
 ## 3. User Stories (Functional Requirements)
 
-| ID | Priority | As a… | I want to… | So that… |
-|:---|:---------|:------|:-----------|:---------|
-| US-01 | **P0** | Data Scientist | Run the full pipeline on a directory of HTML filings | I get a labeled JSONL dataset without manual processing |
-| US-02 | **P0** | ML Engineer | Resume a crashed pipeline run | I don't lose hours of compute from a transient failure |
-| US-03 | **P0** | ML Engineer | Route malformed filings to a Dead Letter Queue | Pipeline does not halt on bad input |
-| US-04 | **P0** | Data Scientist | Filter filings by ticker or SIC code | I can build sector-specific training sets |
-| US-05 | **P1** | Data Scientist | Inspect which filings failed and why | I can improve the parser/extractor logic iteratively |
-| US-06 | **P1** | Financial Analyst | View extracted risk segments in a Streamlit UI | I can validate extraction quality without writing code |
-| US-07 | **P1** | ML Engineer | Configure all pipeline settings via YAML + env vars | I can deploy to different environments without code changes |
-| US-08 | **P2** | Data Scientist | Get sentiment, readability, and topic features per segment | I can use feature-rich inputs for downstream model training |
+> Acceptance criteria (Gherkin Given/When/Then) are in individual story files linked below.
+
+| ID | Priority | As a… | I want to… | So that… | Detail |
+|:---|:---------|:------|:-----------|:---------|:-------|
+| US-001 | **P0** | Data Scientist | Run the full pipeline on a directory of HTML filings and receive JSONL output | I get a HuggingFace-compatible training dataset without format conversion | [→](stories/US-001_batch_pipeline_execution.md) |
+| US-002 | **P0** | ML Engineer | Resume a crashed pipeline run | I don't lose hours of compute from a transient failure | [→](stories/US-002_pipeline_resume.md) |
+| US-003 | **P0** | ML Engineer | Route malformed filings to a Dead Letter Queue | Pipeline does not halt on bad input | [→](stories/US-003_dead_letter_queue.md) |
+| US-004 | **P0** | Data Scientist | Filter filings by ticker or SIC code **at the CLI before processing** | I can build a sector-specific training set without wasting compute on irrelevant filings | [→](stories/US-004_sector_filtering.md) |
+| US-005 | **P1** | Data Scientist | Inspect which filings failed and why | I can improve the parser/extractor logic iteratively | [→](stories/US-005_failure_inspection.md) |
+| US-006 | **P1** | Financial Analyst | View extracted risk segments in a Streamlit UI | I can validate extraction quality without writing code | [→](stories/US-006_streamlit_ui.md) |
+| US-007 | **P1** | ML Engineer | Configure all pipeline settings via YAML + env vars | I can deploy to different environments without code changes | [→](stories/US-007_yaml_config.md) |
+| US-008 | **P0** | Data Scientist | Get sentiment, readability, and topic features **inline in the primary JSONL record** | I can load one file and train immediately without complex joins | [→](stories/US-008_nlp_features.md) |
 
 ---
 

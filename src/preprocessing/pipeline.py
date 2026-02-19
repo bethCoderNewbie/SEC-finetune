@@ -764,46 +764,12 @@ def process_filing(
 
 
 if __name__ == "__main__":
-    import sys
-
-    # Set up logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-
-    print("SEC Preprocessing Pipeline")
-    print("=" * 50)
-    print("\nFlow: Parse → Extract → Clean → Segment")
-    print("\nOptimizations:")
-    print("  - Global worker objects (models loaded once per worker)")
-    print("  - HTML sanitization removed (unnecessary overhead)")
-    print("\nMetadata preserved throughout:")
-    print("  - sic_code, sic_name")
-    print("  - cik, ticker, company_name")
-    print("  - form_type")
-
-    # Example usage
-    if len(sys.argv) > 1:
-        file_path = sys.argv[1]
-        form_type = sys.argv[2] if len(sys.argv) > 2 else "10-K"
-
-        result = process_filing(file_path, form_type=form_type)
-
-        if result:
-            print(f"\n{'=' * 50}")
-            print(f"Company: {result.company_name}")
-            print(f"CIK: {result.cik}")
-            print(f"SIC Code: {result.sic_code}")
-            print(f"SIC Name: {result.sic_name}")
-            print(f"Form Type: {result.form_type}")
-            print(f"Total Segments: {len(result)}")
-            print(f"\nFirst 3 segments:")
-            for seg in result.segments[:3]:
-                preview = seg.text[:150].replace('\n', ' ')
-                print(f"  [{seg.index}] {preview}...")
-        else:
-            print("Failed to process filing")
-    else:
-        print("\nUsage: python -m src.preprocessing.pipeline <file_path> [form_type]")
-        print("Example: python -m src.preprocessing.pipeline data/raw/AFL_10K_2025.html")
+    # Running this module directly (python src/preprocessing/pipeline.py) is not
+    # recommended — it triggers a RuntimeWarning because the package __init__.py
+    # already imports this module before runpy can execute it as __main__.
+    #
+    # Use the proper entry point instead:
+    #   python -m src.preprocessing <file_path> [form_type]
+    print("Use the package entry point to avoid import conflicts:")
+    print("  python -m src.preprocessing <file_path> [form_type]")
+    print("  python -m src.preprocessing data/raw/AAPL_10K_2025.html")

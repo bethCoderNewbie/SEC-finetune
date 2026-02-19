@@ -100,6 +100,25 @@ Each type has its own independent numeric counter. Examples: `PRD-003_quality_re
 * **Status field:** `DRAFT` → `APPROVED`. Never delete; write a superseding PRD instead.
 * **Current PRDs:** PRD-001 (MVP baseline), PRD-002 (pipeline v2, current state), PRD-003 (training data quality remediation).
 
+#### User Stories in PRDs
+
+* **Table format (required):** Every user story in a PRD table must use three columns: `As a <Role>`, `I want to <Action>`, `So that <Benefit>`. Never write prose stories ("When I...") in this table.
+* **Roles must be specific:** Use `ML Engineer`, `Data Scientist`, `Pipeline Operator`, `Financial Analyst`. Never write `"User"`.
+* **Link column required:** Every PRD story table must include a `Detail` column linking to the individual story file.
+
+#### Individual Story Files (P0 and P1 stories)
+
+* **Location:** `docs/requirements/stories/US-NNN_slug.md`
+* **When to write:** For every P0 or P1 story in a new PRD, before implementation begins.
+* **Required sections:**
+  1. YAML frontmatter: `id`, `epic`, `priority`, `status`, `source_prd`, `estimation`
+  2. **The Story** — Card formula: `As a <Role>, I want <Action>, So that <Benefit>`
+  3. **Acceptance Criteria** — One or more named Gherkin scenarios per story using `Scenario: / Given / When / Then / And`. Every scenario must be independently executable as a test.
+  4. **Technical Notes** — file paths, implementation class, current status
+* **Gherkin rules:** `Given` sets preconditions. `When` is the single user or system action. `Then` is the observable outcome. `And` extends the previous step. Never use vague `Then` clauses like "it works correctly" — name the exact field, file, log message, or exit code.
+* **Epic grouping:** Assign every story to one of the Epics defined in `docs/requirements/README.md`. If a new Epic is needed, add it to the README Epic table first.
+* **Current story count:** US-001 through US-016 (next ID: US-017).
+
 ### ADRs (Architecture Decision Records)
 
 * **Location:** `docs/architecture/adr/ADR-NNN_slug.md`
