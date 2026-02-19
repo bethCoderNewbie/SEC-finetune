@@ -173,10 +173,29 @@ Development, debugging, and testing utilities.
 **Scripts:**
 - `check_installation.py` - Validate environment setup
 - `setup_nlp_models.py` - Download required NLP models
+- `doc_gen.py` - Generate structured docs (PRD, RFC, ADR, User Story) via Claude CLI
 - `debugging/diagnose_extraction.py` - Diagnose extraction issues
 - `debugging/debug_node_structure.py` - Debug tree structure
 - `inspection/inspect_parsed.py` - Inspect parsed filings
 - `testing/test_extractor_fix.py` - Test extraction fixes
+
+**Usage (`doc_gen.py`):**
+```bash
+# Preview assembled prompt without calling Claude
+python scripts/utils/doc_gen.py story "Zero-segment filings must hard-FAIL QA" --dry-run
+
+# Print generated document to stdout (redirect to file manually)
+python scripts/utils/doc_gen.py rfc "How to integrate classification into batch pipeline"
+
+# Auto-save to the correct docs/ path with the next sequential ID
+python scripts/utils/doc_gen.py prd  "Automated daily ingestion from EDGAR" --save
+python scripts/utils/doc_gen.py rfc  "Classification integration design" --save
+python scripts/utils/doc_gen.py adr  "Use JSONL as training output format" --save --slug jsonl_training_output
+python scripts/utils/doc_gen.py story "Pipeline operator can pause a running batch" --save
+```
+
+Skill templates live in `.claude/skills/`. The script auto-detects the next sequential ID
+by scanning existing files in the target `docs/` directory.
 
 See `utils/README.md` for detailed documentation.
 

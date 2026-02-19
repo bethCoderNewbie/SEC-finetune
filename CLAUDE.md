@@ -68,6 +68,9 @@ You are an expert Senior Software Engineer specializing in **Context Engineering
 
 ## Documentation Requirements
 
+> **Full workflow reference:** [`docs/dev/DOCUMENTATION_WORKFLOW.md`](docs/dev/DOCUMENTATION_WORKFLOW.md)
+> — V-Model lifecycle, goal-setting matrix, and feedback loop for PRDs → RFCs → ADRs → Stories.
+
 Every significant engineering decision and operational concern must be captured in the correct layer of the documentation hierarchy. Do not mix layers.
 
 ```
