@@ -117,7 +117,7 @@ Each type has its own independent numeric counter. Examples: `PRD-003_quality_re
   4. **Technical Notes** — file paths, implementation class, current status
 * **Gherkin rules:** `Given` sets preconditions. `When` is the single user or system action. `Then` is the observable outcome. `And` extends the previous step. Never use vague `Then` clauses like "it works correctly" — name the exact field, file, log message, or exit code.
 * **Epic grouping:** Assign every story to one of the Epics defined in `docs/requirements/README.md`. If a new Epic is needed, add it to the README Epic table first.
-* **Current story count:** US-001 through US-016 (next ID: US-017).
+* **Current story count:** US-001 through US-020 (next ID: US-021).
 
 ### ADRs (Architecture Decision Records)
 

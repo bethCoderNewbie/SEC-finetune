@@ -34,11 +34,11 @@ Individual story files live in [`stories/`](stories/). PRD tables carry the one-
 | Epic | Theme | P0 Stories | P1 Stories |
 |------|-------|-----------|------------|
 | **EP-1** Core Pipeline | Run, filter, and emit training-ready JSONL | US-001, US-004 | — |
-| **EP-2** Resilience & Recovery | Survive crashes, bad input, and silent failures | US-002, US-003, US-010 | — |
+| **EP-2** Resilience & Recovery | Survive crashes, bad input, and silent failures | US-002, US-003, US-010, US-020 | — |
 | **EP-3** Data Quality | Produce corpus-ready, uncontaminated training text | US-009 | US-012, US-014 |
 | **EP-4** Performance | Iterate on the full corpus within a work session | US-011 | — |
-| **EP-5** Observability | Inspect failures and configure environments | US-005, US-007 | — |
-| **EP-6** ML Readiness | Enrich output and close the gap to a training-ready dataset | US-008 | US-006, US-013, US-015, US-016 |
+| **EP-5** Observability | Inspect failures, trace sources, and automate operations | US-005, US-007 | US-018, US-019 |
+| **EP-6** ML Readiness | Enrich output and close the gap to a training-ready dataset | US-008 | US-006, US-013, US-015, US-016, US-017 |
 
 ---
 
@@ -56,6 +56,7 @@ Individual story files live in [`stories/`](stories/). PRD tables carry the one-
 | [US-002](stories/US-002_pipeline_resume.md) | **P0** | ML Engineer | Resume a crashed run with `--resume` | Don't lose hours of compute | ✅ Implemented | [Detail](stories/US-002_pipeline_resume.md) |
 | [US-003](stories/US-003_dead_letter_queue.md) | **P0** | ML Engineer | Route malformed filings to a Dead Letter Queue | Pipeline does not halt on bad input | ✅ Implemented | [Detail](stories/US-003_dead_letter_queue.md) |
 | [US-010](stories/US-010_zero_segment_hard_fail.md) | **P0** | ML Engineer | Zero-segment filings produce a blocking QA FAIL | Silent empty training examples never reach the corpus | ❌ Not implemented (PRD-003 Phase 1) | [Detail](stories/US-010_zero_segment_hard_fail.md) |
+| [US-020](stories/US-020_quality_circuit_breaker.md) | **P0** | Quality Owner | Halt the run automatically if > 5% of files fail quality checks | Don't train a model on a garbage corpus | ⚠️ Per-filing checks exist; batch halt not implemented | [Detail](stories/US-020_quality_circuit_breaker.md) |
 
 ### EP-3 — Data Quality
 
@@ -77,16 +78,19 @@ Individual story files live in [`stories/`](stories/). PRD tables carry the one-
 |:---|:---------|:-----|:-------|:------|:-------|:-------|
 | [US-005](stories/US-005_failure_inspection.md) | **P1** | Data Scientist | Inspect which filings failed and exactly why | Improve parser/extractor logic iteratively | ✅ Implemented | [Detail](stories/US-005_failure_inspection.md) |
 | [US-007](stories/US-007_yaml_config.md) | **P1** | ML Engineer | Configure all settings via YAML + env vars | Deploy to different environments without code changes | ✅ Implemented | [Detail](stories/US-007_yaml_config.md) |
+| [US-018](stories/US-018_source_traceability.md) | **P1** | Audit / Compliance | Click a link on any segment to view the original sentence in the SEC filing | Verify context and accuracy without manual searching | ❌ Not implemented | [Detail](stories/US-018_source_traceability.md) |
+| [US-019](stories/US-019_automated_daily_ingestion.md) | **P1** | Data Manager | System automatically checks for and processes new filings every 24 hours | Always working with up-to-date information without manual runs | ❌ Not wired | [Detail](stories/US-019_automated_daily_ingestion.md) |
 
 ### EP-6 — ML Readiness
 
 | ID | Priority | Role | Action | Value | Status | Detail |
 |:---|:---------|:-----|:-------|:------|:-------|:-------|
-| [US-008](stories/US-008_nlp_features.md) | **P0** | Data Scientist | Sentiment, readability, topic features inline in every JSONL record | Load one file, train immediately — no joins | ❌ Features exist separately; not unified | [Detail](stories/US-008_nlp_features.md) |
+| [US-008](stories/US-008_nlp_features.md) | **P0** | Data Scientist | Mood (sentiment) and complexity (readability) scores inline in every JSONL record | Load one file, train immediately — no joins | ❌ Features exist separately; not unified | [Detail](stories/US-008_nlp_features.md) |
 | [US-006](stories/US-006_streamlit_ui.md) | **P1** | Financial Analyst | View extracted segments in a Streamlit UI | Validate extraction quality without writing code | ⚠️ App exists; integration not confirmed | [Detail](stories/US-006_streamlit_ui.md) |
-| [US-013](stories/US-013_class_balance_reporting.md) | **P1** | Data Scientist | Label distribution report after every batch run | Identify class imbalance before training | ❌ Not implemented | [Detail](stories/US-013_class_balance_reporting.md) |
-| [US-015](stories/US-015_token_aware_truncation.md) | **P1** | Data Scientist | Configure segment truncation/splitting at the token level | Natively compatible with Transformer input limits | ❌ Not implemented | [Detail](stories/US-015_token_aware_truncation.md) |
-| [US-016](stories/US-016_reproducible_splitting.md) | **P1** | Data Scientist | Deterministic train/val/test split grouped by company | No data leakage between train and test sets | ❌ Not implemented | [Detail](stories/US-016_reproducible_splitting.md) |
+| [US-013](stories/US-013_class_balance_reporting.md) | **P1** | Data Scientist | Chart showing how many risks fall into each category after every run | Know if more examples of a specific risk type are needed | ❌ Not implemented | [Detail](stories/US-013_class_balance_reporting.md) |
+| [US-015](stories/US-015_token_aware_truncation.md) | **P1** | Data Scientist | Split long paragraphs into shorter chunks at natural sentence breaks | AI model can process text within its input limits | ❌ Not implemented | [Detail](stories/US-015_token_aware_truncation.md) |
+| [US-016](stories/US-016_reproducible_splitting.md) | **P1** | Data Scientist | Deterministic train/val/test split keeping each company entirely in one set | Model never sees the same company in both training and testing | ❌ Not implemented | [Detail](stories/US-016_reproducible_splitting.md) |
+| [US-017](stories/US-017_model_explainability.md) | **P1** | Tools Manager | See the specific words that caused a risk classification | Understand and trust the model's logic | ❌ Not implemented | [Detail](stories/US-017_model_explainability.md) |
 
 ---
 

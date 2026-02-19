@@ -5,6 +5,7 @@ priority: P0
 status: Not implemented as unified output — features exist in separate scripts (gap)
 source_prd: PRD-001, PRD-002
 estimation: 5 points
+dod: The output file includes columns for mood (sentiment) and complexity (readability) alongside every risk segment.
 ---
 
 # US-008: NLP Features Inline in Primary JSONL Output
@@ -14,6 +15,10 @@ estimation: 5 points
 > **As a** `Data Scientist`,
 > **I want** sentiment, readability, and topic model features attached inline to each JSONL record,
 > **So that** I can load one file and train immediately — without complex joins between the primary output and separate feature files.
+
+## Definition of Done (Plain Language)
+
+The output JSONL file includes a **mood score** (positive / neutral / negative sentiment) and a **complexity score** (reading difficulty grade) directly on the same line as each risk segment. No separate file or join is needed.
 
 ## Why This Is P0
 
