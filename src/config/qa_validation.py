@@ -615,10 +615,15 @@ class HealthCheckValidator:
         re.IGNORECASE
     )
 
-    # Domain validation
+    # Domain validation (Fix 4C: expanded to domain-specific risk anchors)
     RISK_KEYWORDS = {
-        "risk", "adverse", "material", "uncertain",
-        "may", "could", "might", "potential"
+        # Domain-specific (strong signal)
+        "impair", "litigation", "regulatory", "infringement", "cybersecurity",
+        "volatility", "liquidity", "covenant", "indemnif", "injunction",
+        "writedown", "goodwill", "impairment", "restatement",
+        "noncompliance", "sanction", "breach", "default",
+        # Retained generic modals (weaker signal)
+        "risk", "adverse", "material", "uncertain", "may", "could", "might",
     }
     REQUIRED_IDENTITY_FIELDS = ["cik", "company_name"]
     RECOMMENDED_IDENTITY_FIELDS = ["sic_code", "ticker", "form_type"]
@@ -824,6 +829,13 @@ class HealthCheckValidator:
                     over_limit_segments += 1
 
         if total_segments == 0:
+            # Fix 4A: explicit FAIL — extraction produced no segments
+            threshold = self.registry.get("empty_segment_rate")
+            if threshold:
+                return [ValidationResult.from_threshold(
+                    threshold, 1.0,
+                    message="Zero segments extracted — Item 1A likely not found"
+                )]
             return results
 
         # Empty segment rate
@@ -877,11 +889,18 @@ class HealthCheckValidator:
                         threshold, file_size_mb
                     ))
 
-                # Calculate extraction yield (PPM)
-                # Ratio of extracted text chars to raw file bytes
+                # Fix 4D: Calculate extraction yield against stripped-text bytes
+                # (not raw HTML bytes, which inflate the denominator ~60-80%)
                 extracted_chars = sum(len(seg.get("text", "")) for seg in data.get("segments", []))
                 if file_size_bytes > 0:
-                    yield_ppm = (extracted_chars / file_size_bytes) * 1_000_000
+                    html_content_approx = data.get("html_content", "")
+                    if html_content_approx:
+                        stripped = re.sub(r'<[^>]+>', '', html_content_approx)
+                        denom = max(len(stripped.encode('utf-8')), 1)
+                    else:
+                        # Fallback: assume ~40% text density in raw HTML
+                        denom = max(int(file_size_bytes * 0.4), 1)
+                    yield_ppm = (extracted_chars / denom) * 1_000_000
                     threshold = self.registry.get("extraction_yield_ppm")
                     if threshold:
                         results.append(ValidationResult.from_threshold(
@@ -918,7 +937,7 @@ class HealthCheckValidator:
                 threshold, duplicate_rate
             ))
 
-        # Risk keyword presence
+        # Risk keyword presence (Fix 4C: larger keyword set, min count 25)
         total_risk_words = 0
         for data in file_data:
             text = " ".join(s.get("text", "") for s in data.get("segments", []))
@@ -928,7 +947,35 @@ class HealthCheckValidator:
         threshold = self.registry.get("risk_keyword_present")
         if threshold:
             results.append(ValidationResult.from_threshold(
-                threshold, total_risk_words >= 10
+                threshold, total_risk_words >= 25
             ))
+
+        # Fix 4B: segment-level near-duplicate detection
+        results.extend(self._check_segment_duplicates(file_data))
+
+        return results
+
+    def _check_segment_duplicates(self, file_data: List[Dict]) -> List[ValidationResult]:
+        """Check for near-duplicate segments across all files (Fix 4B)."""
+        results = []
+        seg_hashes: Dict[str, int] = {}
+        total_segs = 0
+
+        for data in file_data:
+            for seg in data.get("segments", []):
+                total_segs += 1
+                text = re.sub(r'\s+', ' ', seg.get("text", "").lower().strip())
+                h = hashlib.sha256(text.encode()).hexdigest()[:12]
+                seg_hashes[h] = seg_hashes.get(h, 0) + 1
+
+        if total_segs == 0:
+            return results
+
+        dup_segments = sum(count - 1 for count in seg_hashes.values() if count > 1)
+        dup_rate = dup_segments / total_segs
+
+        threshold = self.registry.get("segment_duplicate_rate")
+        if threshold:
+            results.append(ValidationResult.from_threshold(threshold, dup_rate))
 
         return results

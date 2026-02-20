@@ -106,8 +106,8 @@ def validate_single_file(
 
     try:
         # HealthCheckValidator.check_run() expects a directory, not a single file
-        # Create a temporary directory and copy the file into it
-        temp_dir = run_dir / "_temp_validation"
+        # PID-stamp the temp dir to prevent race conditions in parallel workers (Fix 4E)
+        temp_dir = run_dir / f"_temp_validation_{os.getpid()}"
         temp_dir.mkdir(exist_ok=True)
         temp_file = temp_dir / file_path.name
 

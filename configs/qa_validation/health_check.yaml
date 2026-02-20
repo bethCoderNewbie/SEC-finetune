@@ -148,6 +148,15 @@ thresholds:
       tags: [substance, size_validation, extraction_efficiency]
       unit: ppm
 
+    min_segment_count:
+      display_name: Minimum Segment Count
+      metric_type: count
+      target: 1
+      operator: ">="
+      blocking: true
+      description: Filing must have at least one extracted segment (zero means Item 1A not found)
+      tags: [substance, blocking, health_check]
+
     over_limit_word_rate:
       display_name: Over-Limit Word Rate (>380 words)
       metric_type: rate
@@ -181,4 +190,14 @@ thresholds:
       target: true
       blocking: false
       description: Risk Factors section should contain risk-related keywords
+      tags: [domain, health_check]
+
+    segment_duplicate_rate:
+      display_name: Segment Duplicate Rate
+      metric_type: rate
+      target: 0.15
+      warn_threshold: 0.10
+      operator: "<="
+      blocking: false
+      description: Rate of near-duplicate segments across all files (12-char SHA-256 prefix)
       tags: [domain, health_check]

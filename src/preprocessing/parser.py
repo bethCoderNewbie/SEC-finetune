@@ -323,9 +323,18 @@ class SECFilingParser:
         )
         fiscal_year = period_match.group(1)[:4] if period_match else None
 
-        # Determine a Ticker (heuristic, often the CIK is used by services or can be mapped)
-        # For now, we'll leave Ticker as None unless explicitly found, or derive from CIK later
-        ticker = None  # More complex to extract directly from HTML, usually needs CIK lookup
+        # Extract ticker from DEI inline XBRL tag (present in ~99.9% of EDGAR HTML filings)
+        # Two formats: direct text or nested <span>
+        # <ix:nonNumeric name="dei:TradingSymbol" ...>AAPL</ix:nonNumeric>
+        # <ix:nonNumeric name="dei:TradingSymbol" ...><span ...>ABT</span></ix:nonNumeric>
+        ticker_match = re.search(
+            r'<ix:nonNumeric[^>]*name="dei:TradingSymbol"[^>]*>(.*?)</ix:nonNumeric>',
+            html_content, re.IGNORECASE | re.DOTALL
+        )
+        if ticker_match:
+            ticker = re.sub(r'<[^>]+>', '', ticker_match.group(1)).strip() or None
+        else:
+            ticker = None
 
         return {
             'total_elements': len(elements),

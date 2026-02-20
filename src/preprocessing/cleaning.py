@@ -156,8 +156,9 @@ class TextCleaner:
         Returns:
             str: Text without page artifacts
         """
-        # Remove standalone page numbers (e.g., "Page 12", "12", "-12-")
-        text = re.sub(r'^[\s\-]*\d+[\s\-]*$', '', text, flags=re.MULTILINE)
+        # Fix 5A: only remove 2+ digit standalone numbers to avoid stripping
+        # single-digit list items (e.g., "1." or "3" that precede content)
+        text = re.sub(r'^[\s\-]*\d{2,}[\s\-]*$', '', text, flags=re.MULTILINE)
         text = re.sub(r'^[\s\-]*Page\s+\d+[\s\-]*$', '', text, flags=re.MULTILINE | re.IGNORECASE)
 
         # Remove table of contents page references (e.g., "... 45")

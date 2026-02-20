@@ -18,7 +18,7 @@ except ImportError:
     sp = None
 
 from .parser import ParsedFiling, SECFilingParser
-from .constants import SectionIdentifier, SECTION_PATTERNS, PAGE_HEADER_PATTERN
+from .constants import SectionIdentifier, SECTION_PATTERNS, PAGE_HEADER_PATTERN, TOC_PATTERNS_COMPILED
 from ..config import settings
 # Import data model from models package
 from .models.extraction import ExtractedSection
@@ -229,10 +229,12 @@ class SECSectionExtractor:
                     'is_table': node_type == 'TableElement',
                 })
 
-        # Build full text
+        # Build full text — exclude tables (Fix 2B) and ToC lines (Fix 2A)
         full_text = "\n\n".join([
             node.get('text', '') for node in content_nodes
             if node.get('text', '').strip()
+            and node.get('type') != 'TableElement'
+            and not self._is_toc_node(node.get('text', ''))
         ])
 
         # Include header
@@ -467,10 +469,13 @@ class SECSectionExtractor:
 
             elements.append(element_dict)
 
-        # Combine all text
+        # Combine all text — exclude tables (Fix 2B) and ToC lines (Fix 2A)
         full_text = "\n\n".join([
             node.text for node in content_nodes
-            if hasattr(node, 'text') and node.text.strip()
+            if hasattr(node, 'text')
+            and node.text.strip()
+            and not isinstance(node.semantic_element, sp.TableElement)
+            and not self._is_toc_node(node.text)
         ])
 
         # Include the section header in the text
@@ -500,6 +505,16 @@ class SECSectionExtractor:
             if re.match(r'item\s+\d+[a-z]?\s*\.', text):
                 return True
 
+        return False
+
+    def _is_toc_node(self, text: str) -> bool:
+        """Return True if text looks like a Table of Contents entry (Fix 2A)."""
+        text = text.strip()
+        if not text:
+            return False
+        for pattern in TOC_PATTERNS_COMPILED:
+            if pattern.search(text):
+                return True
         return False
 
     def _extract_subsections(self, node: sp.TreeNode) -> List[str]:

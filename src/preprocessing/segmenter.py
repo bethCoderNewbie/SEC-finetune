@@ -21,12 +21,29 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Lazy-init spaCy sentencizer (Fix 3A) — blank model, no downloaded data required
+_sentencizer = None
+
+
+def _get_sentencizer():
+    global _sentencizer
+    if _sentencizer is None:
+        import spacy
+        nlp = spacy.blank("en")
+        nlp.add_pipe("sentencizer")
+        _sentencizer = nlp
+    return _sentencizer
+
+
 # Import data models from models package
 from .models.segmentation import RiskSegment, SegmentedRisks
 
 
 class RiskSegmenter:
     """Segments Risk Factors section into individual risk segments"""
+
+    # Fix 3B: require at least 5 semantic segments before preferring over header-based
+    SEMANTIC_MIN_SEGMENTS = 5
 
     def __init__(
         self,
@@ -84,14 +101,13 @@ class RiskSegmenter:
         segments = []
         if self.semantic_model:
             segments = self._segment_by_semantic_breaks(text)
-            # If semantic segmentation yields at least 2 segments, use it
-            if len(segments) > 1:
+            # Fix 3B: require SEMANTIC_MIN_SEGMENTS before preferring semantic segmentation
+            if len(segments) >= self.SEMANTIC_MIN_SEGMENTS:
                 logger.info("Using semantic segmentation. Found %d segments.", len(segments))
             else:
-                # Fallback if semantic segmentation didn't produce enough segments
                 logger.info(
-                    "Semantic segmentation yielded too few segments, "
-                    "falling back to heuristic methods."
+                    "Semantic segmentation yielded %d segments (< %d), falling back.",
+                    len(segments), self.SEMANTIC_MIN_SEGMENTS
                 )
                 segments = self._segment_by_headers(text)
         else:
@@ -270,6 +286,12 @@ class RiskSegmenter:
 
         return False
 
+    def _get_sentences(self, text: str) -> List[str]:
+        """Split text into sentences using spaCy sentencizer (Fix 3A)."""
+        nlp = _get_sentencizer()
+        doc = nlp(text)
+        return [sent.text.strip() for sent in doc.sents if sent.text.strip()]
+
     def _split_long_segments(self, segments: List[str]) -> List[str]:
         """
         Split segments that are too long
@@ -303,23 +325,19 @@ class RiskSegmenter:
         Returns:
             List[str]: List of chunks
         """
-        # Split by sentences
-        sentences = re.split(r'([.!?]\s+)', text)
+        # Fix 3A: use spaCy sentencizer (handles financial abbreviations correctly)
+        sentences = self._get_sentences(text)
 
         chunks = []
         current_chunk = []
         current_length = 0
 
-        for i in range(0, len(sentences), 2):
-            sentence = sentences[i]
-            if i + 1 < len(sentences):
-                sentence += sentences[i + 1]  # Add punctuation back
-
+        for sentence in sentences:
             sentence_length = len(sentence)
 
             if current_length + sentence_length > max_length and current_chunk:
                 # Start new chunk
-                chunks.append(''.join(current_chunk).strip())
+                chunks.append(' '.join(current_chunk).strip())
                 current_chunk = [sentence]
                 current_length = sentence_length
             else:
@@ -328,7 +346,7 @@ class RiskSegmenter:
 
         # Add remaining text
         if current_chunk:
-            chunks.append(''.join(current_chunk).strip())
+            chunks.append(' '.join(current_chunk).strip())
 
         return chunks
 
@@ -345,9 +363,8 @@ class RiskSegmenter:
         if not SENTENCE_TRANSFORMERS_AVAILABLE or self.semantic_model is None:
             return []  # Fallback if model not available
 
-        # Split by sentence, keeping punctuation
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        sentences = [s.strip() for s in sentences if s.strip()]
+        # Fix 3A: use spaCy sentencizer (handles financial abbreviations correctly)
+        sentences = self._get_sentences(text)
 
         if len(sentences) < 2:
             return sentences

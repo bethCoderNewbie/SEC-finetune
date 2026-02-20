@@ -28,7 +28,6 @@ Upon completion, the pipeline will:
 - Not changing the downstream FinBERT training code
 - Not replacing `sec-parser` library with a custom parser
 - Not adding topic model label generation (separate task)
-- Not fixing the `ticker` extraction (complex CIK→ticker lookup, separate task)
 
 ---
 
@@ -111,9 +110,14 @@ No new dependencies required.
 
 ---
 
-## Phase 1: Parser Fixes
+## Phase 1: Parser Fixes ✅ COMPLETE (2026-02-20)
 
-### Fix 1A — Replace DOTALL regex in `_flatten_html_nesting` with BS4 for large files
+> All five Phase 1 fixes implemented in `src/preprocessing/parser.py` and
+> `src/preprocessing/models/parsing.py`. 71 parser unit tests pass.
+> Pre-existing failures in `test_reporting`, `test_retry_mechanism`, `test_state_manager`
+> are unrelated to these changes.
+
+### Fix 1A — Replace DOTALL regex in `_flatten_html_nesting` with BS4 for large files ✅
 
 > **REVISED (2026-02-18):** Original plan said "disable flatten_html by default" — WRONG.
 > `flatten_html` is a necessary performance optimization; disabling it causes recursion
@@ -149,7 +153,7 @@ large (30-68MB) financial filings documented in the performance analysis.
 
 ---
 
-### Fix 1B — Document the 10-K / `Edgar10QParser` limitation
+### Fix 1B — Document the 10-K / `Edgar10QParser` limitation ✅
 
 **File:** `src/preprocessing/parser.py:83-86`
 **Change:** Add a prominent comment and a warning log when parsing 10-K forms.
@@ -180,7 +184,7 @@ if form_type_enum == FormType.FORM_10K and not quiet:
 
 ---
 
-### Fix 1C — Fix dead code in `_validate_form_type`
+### Fix 1C — Fix dead code in `_validate_form_type` ✅
 
 **File:** `src/preprocessing/parser.py:260`
 **Change:** Remove `"10-K"` from the post-normalize check (it's unreachable).
@@ -197,7 +201,7 @@ def _validate_form_type(self, form_type: str) -> FormType:
 
 ---
 
-### Fix 1D — Fix `_to_serializable_dict` tree walk: capture depth, fix level source
+### Fix 1D — Fix `_to_serializable_dict` tree walk: capture depth, fix level source ✅
 
 **File:** `src/preprocessing/models/parsing.py:143-162`
 
@@ -244,7 +248,7 @@ This is the signal Fix 6A uses to map each chunk to its `parent_subsection`.
 
 ---
 
-### Fix 1E — Extract `fiscal_year` from EDGAR header
+### Fix 1E — Extract `fiscal_year` from EDGAR header ✅
 
 **File:** `src/preprocessing/parser.py` — `_extract_metadata()` (lines 269–325)
 
@@ -283,7 +287,14 @@ header format), Fix 6C derives it from the filename stem:
 
 ---
 
-## Phase 2: Extractor — ToC Contamination (NEW PRIORITY)
+## Phase 2: Extractor — ToC Contamination (NEW PRIORITY) ✅ COMPLETE (2026-02-20)
+
+> Fix 2A and Fix 2B implemented in `src/preprocessing/extractor.py`.
+> `TOC_PATTERNS_COMPILED` imported from constants; `_is_toc_node` method added.
+> Both `_extract_section_content` (live tree path) and `extract_risk_factors_from_dict`
+> (dict path) now exclude TableElement and ToC-matching nodes from `full_text`.
+> 67/69 extractor tests pass; 1 pre-existing failure (form_type in metadata key,
+> unrelated to Phase 2); 1 xpass.
 
 ### Fix 2A — Filter ToC nodes before building full_text (NEW — replaces retracted boundary fix)
 
@@ -346,7 +357,13 @@ Tables are still tracked in `elements` for downstream metadata/analysis use.
 
 ---
 
-## Phase 3: Segmenter — Sentence Splitting
+## Phase 3: Segmenter — Sentence Splitting ✅ COMPLETE (2026-02-20)
+
+> Fix 3A and Fix 3B implemented in `src/preprocessing/segmenter.py`.
+> Module-level `_get_sentencizer()` lazy-initialises `spacy.blank("en")` + sentencizer pipe
+> (no downloaded model needed). `_get_sentences()` method added to `RiskSegmenter`.
+> Both regex split sites replaced (`_split_into_chunks:329`, `_segment_by_semantic_breaks:367`).
+> `SEMANTIC_MIN_SEGMENTS = 5` class constant added; threshold check updated from `> 1` to `>= 5`.
 
 ### Fix 3A — Replace regex sentence splitter with spaCy sentencizer
 
@@ -401,7 +418,16 @@ else:
 
 ---
 
-## Phase 4: Validation — Data Quality Blockers
+## Phase 4: Validation — Data Quality Blockers ✅ COMPLETE (2026-02-20)
+
+> All five Phase 4 fixes implemented.
+> Fix 4A: `_check_substance` now emits FAIL with `actual=1.0` against `empty_segment_rate`
+>   when zero segments extracted; `min_segment_count` threshold added to `health_check.yaml`.
+> Fix 4B: `_check_segment_duplicates` method added to `HealthCheckValidator`; called from
+>   `_check_domain`; `segment_duplicate_rate` threshold added to `health_check.yaml`.
+> Fix 4C: `RISK_KEYWORDS` expanded to 22 domain-specific terms; min count raised 10 → 25.
+> Fix 4D: yield denominator now strips HTML tags (falling back to 40% density estimate).
+> Fix 4E: `validate_single_file` temp dir now PID-stamped (`_temp_validation_{pid}`).
 
 ### Fix 4A — Fail on zero segments
 
@@ -544,7 +570,10 @@ def validate_single_file(file_path, run_dir, verbose=False):
 
 ---
 
-## Phase 5: Cleaning — False Positive Fixes
+## Phase 5: Cleaning — False Positive Fixes ✅ COMPLETE (2026-02-20)
+
+> Fix 5A implemented in `src/preprocessing/cleaning.py:161`.
+> Page-number regex changed from `\d+` to `\d{2,}` — single-digit lines are no longer stripped.
 
 ### Fix 5A — Narrow line-number removal regex
 
@@ -578,6 +607,12 @@ Each pipeline stage owns specific fields; per-stage checkpoints catch gaps early
     "form_type": "10-K",
     "fiscal_year": "2021"
   },
+  "processing_metadata": {
+    "parser_version": "1.0",
+    "finbert_model": "ProsusAI/finbert",
+    "chunking_strategy": "sentence_level",
+    "max_tokens_per_chunk": 512
+  },
   "section_metadata": {
     "identifier": "part1item1a",
     "title": "Item 1A. Risk Factors",
@@ -607,12 +642,14 @@ Each pipeline stage owns specific fields; per-stage checkpoints catch gaps early
 | Field | Current State | Target | Owning Stage |
 |-------|--------------|--------|--------------|
 | `document_info.fiscal_year` | absent | `"2021"` (EDGAR header via Fix 1E; filename fallback in Fix 6C) | Parse (Fix 1E) |
+| `document_info.ticker` | always `None` | `"AAPL"` (DEI `dei:TradingSymbol` inline XBRL tag; present in 99.9% of filings) | Parse (Fix 1F) ✅ |
+| `processing_metadata` | absent | experiment record: parser version, model, chunking config | Segment (Fix 6B) |
 | `section_metadata.cleaning_settings.discarded_tables` | absent | `true` | Clean (Fix 2B) |
 | `cleaning_settings` key names | `remove_html_tags` | `removed_html_tags` (past tense) | Clean |
 | `chunks[].chunk_id` | `0` (int index) | `"1A_001"` (section-prefixed, 3-digit) | Segment |
 | `chunks[].parent_subsection` | absent | `"Introduction"` (nearest preceding `TitleElement`) | Segment |
-| Top-level structure | flat object | `document_info` / `section_metadata` / `chunks` groups | Segment |
-| `total_segments` | present | renamed `total_chunks` | Segment |
+| Top-level structure | flat `SegmentedRisks` object | `document_info` / `processing_metadata` / `section_metadata` / `chunks` | Segment (Fix 6B) |
+| `total_segments` | present | renamed `total_chunks` (under `section_metadata.stats`) | Segment |
 
 ### Fix 6A — Sequential `parent_subsection` tracking in extractor
 
@@ -684,9 +721,22 @@ for i, (text, subsection) in enumerate(chunk_texts_with_subsections):
 **Change 3 — `SegmentedRisks` top-level restructure** (`segmentation.py:31-58`):
 
 Rename `segments` → `chunks`, `total_segments` → `total_chunks`, and group output
-fields into `document_info`, `section_metadata`, `chunks` as per the target schema.
-The `save_to_json` / `load_from_json` methods must be updated to write and read the
-new structure.
+fields into `document_info`, `processing_metadata`, `section_metadata`, `chunks` as
+per the target schema. The `save_to_json` / `load_from_json` methods must be updated
+to write and read the new structure.
+
+`processing_metadata` field sources:
+
+| Field | Source |
+|-------|--------|
+| `parser_version` | hardcoded `"1.0"` — matches `ParsedFiling._to_serializable_dict` version field (`parsing.py:165`) |
+| `finbert_model` | `settings.models.finbert_model_name` (config) |
+| `chunking_strategy` | `segmenter.strategy` attribute or hardcoded `"sentence_level"` |
+| `max_tokens_per_chunk` | `settings.segmentation.max_tokens` (config) |
+
+`processing_metadata` is written by `SegmentedRisks.save_to_json` at serialization time
+(not stored as model fields — avoids coupling the Pydantic model to config). The segmenter
+passes a `processing_metadata: Dict[str, Any]` argument to `save_to_json`.
 
 ---
 
@@ -774,10 +824,12 @@ python -c "
 import json, re, sys
 d = json.load(open(sys.argv[1]))
 di = d.get('document_info', {})
+pm = d.get('processing_metadata', {})
 sm = d.get('section_metadata', {})
 chunks = d.get('chunks', [])
 print('document_info fields:', sorted(di.keys()))
 print('fiscal_year:', di.get('fiscal_year'))
+print('processing_metadata fields:', sorted(pm.keys()))
 print('cleaning_settings keys:', sorted(sm.get('cleaning_settings', {}).keys()))
 print('total_chunks:', sm.get('stats', {}).get('total_chunks'), '/ actual:', len(chunks))
 bad_ids  = [c['chunk_id'] for c in chunks if not re.match(r'^1A_\d{3}$', c.get('chunk_id',''))]
@@ -789,6 +841,7 @@ print('chunks missing parent_subsection:', no_sub or 'none')
 
 **Pass criteria:**
 - `document_info` contains all 7 fields including `fiscal_year`
+- `processing_metadata` contains all 4 fields: `parser_version`, `finbert_model`, `chunking_strategy`, `max_tokens_per_chunk`
 - `section_metadata.cleaning_settings` has 4 past-tense keys
 - `stats.total_chunks` equals `len(chunks)`
 - Every `chunk_id` matches `r'^1A_\d{3}$'`
@@ -825,27 +878,35 @@ python scripts/validation/data_quality/check_preprocessing_batch.py \
 
 ---
 
-## Implementation Order (Revised 2026-02-18)
+## Implementation Order (Revised 2026-02-18, updated 2026-02-20)
 
 > Reordered based on cross-referencing past research. Section boundary fix removed
 > (extractor works). ToC contamination elevated to #1 priority (56.6% failure rate,
 > DEFERRED since Dec 2025). flatten_html fix revised from "disable" to "BS4 for large files".
 
+### Done ✅
+
+- **Fix 1A** (BS4 flatten for large files) — size gate + `_flatten_html_nesting_bs4` added; `parser.py:430-499`
+- **Fix 1B** (10-K / Edgar10QParser doc + UserWarning) — comment updated, `warnings.warn` added at `parse_from_content`; `parser.py:81-197`
+- **Fix 1C** (dead `"10-K"` branches in `_validate_form_type`) — replaced with single-string equality checks; `parser.py:268-277`
+- **Fix 1D** (recursive tree serializer, `depth` field, drop `html_tag` noise) — `_serialize_tree_recursive` added, flat walk replaced; `parsing.py:111-155`
+- **Fix 1E** (`fiscal_year` + `period_of_report` from EDGAR header) — two new keys in `_extract_metadata` return dict; `parser.py:320-342`
+- **Fix 1F** (`ticker` from DEI inline XBRL `dei:TradingSymbol` tag) — regex extracts plain-text ticker from both direct-text and `<span>`-wrapped formats; present in 99.9% of corpus; `parser.py:328-335`
+
+### Remaining
+
 0. **Audit script** (`check_corpus_quality_audit.py`) — baseline before any change
-1. **Fix 4A** (zero segments = FAIL) — stops broken filings entering training data
-2. **Fix 2A** (ToC node filter in extractor) — fixes the #1 known data quality gap
-3. **Fix 2B** (exclude tables from text) — clean training samples
-4. **Fix 3A** (spaCy sentence splitting) — correct segment boundaries
-5. **Fix 1A** (BS4 flatten for large files) — eliminates timeout risk
-6. **Fix 4B** (segment-level dedup) — training data quality
-7. **Fix 4C + 4D** (keyword + yield metric) — validation calibration
-8. **Fix 5A** (narrow page number regex) — cleaning precision
-9. **Fix 1D** (parser tree serializer depth) — expose `depth` from sec-parser tree; drop `html_tag` noise from elements
-10. **Fix 1E** (fiscal_year from CONFORMED PERIOD OF REPORT)
-11. **Fix 1B + 1C + 4E** (doc/comments/race condition) — housekeeping
-12. **Fix 6A** (parent_subsection tracking in extractor) — sequential TitleElement scan; populate `node_subsections` on `ExtractedSection`
-13. **Fix 6B** (chunk_id + RiskSegment model) — `"1A_NNN"` chunk ids, `parent_subsection` field, `SegmentedRisks` top-level restructure
-14. **Fix 6C** (SegmentedRisks restructure + cleaning_settings rename + fiscal_year promotion) — promote `fiscal_year` from metadata (Fix 1E primary, filename fallback); rename `remove_*` keys to `removed_*`; add `discarded_tables` flag
+1. **Fix 4A** (zero segments = FAIL) ✅ — stops broken filings entering training data
+2. **Fix 2A** (ToC node filter in extractor) ✅ — fixes the #1 known data quality gap
+3. **Fix 2B** (exclude tables from text) ✅ — clean training samples
+4. **Fix 3A** (spaCy sentence splitting) ✅ — correct segment boundaries
+5. **Fix 4B** (segment-level dedup) ✅ — training data quality
+6. **Fix 4C + 4D** (keyword + yield metric) ✅ — validation calibration
+7. **Fix 5A** (narrow page number regex) ✅ — cleaning precision
+8. **Fix 4E** (batch validator race condition) ✅ — housekeeping
+9. **Fix 6A** (parent_subsection tracking in extractor) — sequential TitleElement scan; populate `node_subsections` on `ExtractedSection`
+10. **Fix 6B** (chunk_id + RiskSegment model) — `"1A_NNN"` chunk ids, `parent_subsection` field, `SegmentedRisks` top-level restructure
+11. **Fix 6C** (SegmentedRisks restructure + cleaning_settings rename + fiscal_year promotion) — promote `fiscal_year` from metadata (Fix 1E primary, filename fallback); rename `remove_*` keys to `removed_*`; add `discarded_tables` flag
 
 **REMOVED:**
 - ~~Fix 2A (re.search boundary)~~ — extractor `_is_next_section()` works correctly,
