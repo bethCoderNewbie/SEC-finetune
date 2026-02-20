@@ -108,6 +108,19 @@ class ParsedFiling(BaseModel):
 
         return output_path
 
+    def _serialize_tree_recursive(self, nodes: list, depth: int = 0) -> List[Dict]:
+        result = []
+        for node in nodes:
+            elem = node.semantic_element
+            result.append({
+                'text':  str(node.text) if hasattr(node, 'text') else '',
+                'type':  elem.__class__.__name__,
+                'level': getattr(elem, 'level', 0),  # HTML heading level (always 0 for SEC)
+                'depth': depth,                       # actual nesting depth in tree
+            })
+            result.extend(self._serialize_tree_recursive(node.children, depth + 1))
+        return result
+
     def _to_serializable_dict(self) -> Dict:
         """
         Convert ParsedFiling to a serializable dictionary
@@ -127,12 +140,6 @@ class ParsedFiling(BaseModel):
                         'type': element.__class__.__name__,
                         'text': str(element.text) if hasattr(element, 'text') else '',
                     }
-                    # Add other simple attributes if available
-                    try:
-                        if hasattr(element, 'html_tag'):
-                            element_data['html_tag'] = str(element.html_tag)
-                    except (AttributeError, TypeError, ValueError):
-                        pass
                     elements_data.append(element_data)
                 except (AttributeError, TypeError, ValueError) as e:
                     # Skip problematic elements
@@ -140,24 +147,10 @@ class ParsedFiling(BaseModel):
         except (AttributeError, TypeError) as e:
             print(f"Warning: Error extracting elements: {e}")
 
-        # Extract tree structure (simplified) with error handling
+        # Extract tree structure (recursive, captures nesting depth) with error handling
         tree_data = []
         try:
-            if hasattr(self.tree, 'nodes'):
-                for node in self.tree.nodes:
-                    try:
-                        elem_type = ''
-                        if hasattr(node, 'semantic_element'):
-                            elem_type = node.semantic_element.__class__.__name__
-                        node_data = {
-                            'text': str(node.text) if hasattr(node, 'text') else '',
-                            'type': elem_type,
-                            'level': int(node.level) if hasattr(node, 'level') else 0,
-                        }
-                        tree_data.append(node_data)
-                    except (AttributeError, TypeError, ValueError):
-                        # Skip problematic nodes
-                        continue
+            tree_data = self._serialize_tree_recursive(list(self.tree))
         except (AttributeError, TypeError) as e:
             print(f"Warning: Error extracting tree: {e}")
 

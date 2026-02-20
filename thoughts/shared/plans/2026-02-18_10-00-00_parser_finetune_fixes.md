@@ -18,6 +18,9 @@ Upon completion, the pipeline will:
 4. Reject filings with 0 segments at validation time (hard blocker)
 5. Detect segment-level near-duplicates across filings
 6. Use sentence-aware splitting that handles financial abbreviations
+7. Output each filing as structured JSON: document_info / section_metadata / chunks,
+   where every chunk carries a formatted chunk_id ("1A_001") and parent_subsection
+8. Extract fiscal_year from EDGAR header (CONFORMED PERIOD OF REPORT) for every filing
 
 ## Anti-Scope (What We Are NOT Doing)
 
@@ -26,6 +29,85 @@ Upon completion, the pipeline will:
 - Not replacing `sec-parser` library with a custom parser
 - Not adding topic model label generation (separate task)
 - Not fixing the `ticker` extraction (complex CIK→ticker lookup, separate task)
+
+---
+
+## Strategic Context: Why We Keep sec-parser
+
+`sec-parser` is the HTML parsing backbone. This section documents the build-vs-buy
+decision so it is not revisited during implementation.
+
+### What sec-parser provides that would be expensive to reproduce
+
+| Capability | How sec-parser implements it | Reproduce cost |
+|---|---|---|
+| EDGAR HTML section boundary detection | `Edgar10QParser` with EDGAR-specific lexical rules; handles multi-doc containers, nested `<div>/<font>/<span>` | **High** — SEC HTML is non-standard; corpus-tested |
+| Semantic element classification | 10+ types: `TopSectionTitle`, `TitleElement`, `TextElement`, `TableElement`, `PageHeaderElement`, `PageNumberElement`, `EmptyElement`, `TableOfContentsElement`, `SupplementaryText`, `ImageElement` | **High** — requires extensive rule corpus |
+| Tree construction with typed nesting | `TreeBuilder` + `AlwaysNestAsParentRule(TopSectionTitle)`, `AlwaysNestAsParentRule(TitleElement)`, `NestSameTypeDependingOnLevelRule` | **Medium** — tree logic reproducible but not EDGAR-tested |
+| Table detection and export | `TableElement` + `table_to_markdown()` | **Medium** — already monkey-patched at `parser.py:26–46` for `<th>`-only crash |
+| ToC page detection | `TableOfContentsElement` auto-classified at document level | **Medium** |
+
+### What sec-parser does NOT provide (our wrapper adds this)
+
+- **Tree depth in serialised output** — Bug in our `parsing.py:155` (`node.level`
+  reads a nonexistent `TreeNode` attribute; always falls back to `0`). Fixed by Fix 1D.
+- **`parent_subsection` per chunk** — Our schema requirement. Fixed by Fix 6A.
+- **`fiscal_year`** — EDGAR header field, not HTML semantics. Fixed by Fix 1E.
+- **Inline ToC text filtering** — sec-parser classifies `TableOfContentsElement` for
+  top-level ToC _pages_ but NOT inline dot-leader lines inside section text (e.g.
+  `"Item 1A. Risk Factors..... 25"`). Fixed by Fix 2A.
+- **Table text exclusion from narrative** — sec-parser correctly classifies
+  `TableElement` but our extractor still joins table text into `full_text`. Fixed by
+  Fix 2B.
+
+### Accepted limitation
+
+All `TitleElement.level` values are `0` for real 10-K filings because SEC HTML uses
+`<p><b>heading</b></p>` styling, not semantic `<h1>`–`<h6>` tags. sec-parser's
+`AbstractLevelElement.level` is derived from the HTML element type — it cannot infer
+visual heading depth from CSS alone. We compensate with:
+- Fix 1D: adds `depth` field from `TreeNode.children` recursion
+- Fix 6A: sequential `TitleElement` scan for `parent_subsection` (does not require depth)
+
+---
+
+## Phase 0: Diagnostic Baseline
+
+**Before implementing any fix**, run a one-shot audit to measure the current scale of
+each research issue. This gives a pre-fix baseline to compare against post-fix runs.
+
+### Script: `check_corpus_quality_audit.py` (NEW)
+
+**File:** `scripts/validation/data_quality/check_corpus_quality_audit.py`
+
+**Purpose:** Standalone diagnostic — no side effects, no data modification.
+Reads all `*_segmented_risks.json` in a run directory.
+
+**CLI:**
+```bash
+python scripts/validation/data_quality/check_corpus_quality_audit.py \
+    --run-dir data/processed/<run_dir> [--output audit_report.md]
+```
+
+**7 checks:**
+
+| Check | Metric | Research Issue |
+|-------|--------|----------------|
+| A | Segments matching `r'\.{3,}.*\d+\s*$'` (ToC lines) | §NEW Critical |
+| B | Filings where `total_segments == 0` | §3 Critical |
+| C | Segments with 4+ consecutive numeric tokens | §7 High |
+| D | Segments whose first word is ≤3 chars + lowercase (abbreviation split) | §4 High |
+| E | SHA-256 segment-level exact duplicates | §6 High |
+| F | Filings that pass risk keyword check via modal verbs only | §9 Medium |
+| G | `yield_ppm_html` (current) vs `yield_ppm_text` (correct) delta | §10 Medium |
+
+**Implementation:**
+- Load each file via `SegmentedRisks.load_from_json()` (`src/preprocessing/models/segmentation.py:112`)
+- Strip HTML for check G via `TextCleaner.remove_html_tags()` (`src/preprocessing/cleaning.py:307`)
+- Emit markdown with a summary table + per-check section (affected count, %, top 3 offenders, fix reference)
+- Exit 1 if check A or B fire above 1%
+
+No new dependencies required.
 
 ---
 
@@ -112,6 +194,92 @@ def _validate_form_type(self, form_type: str) -> FormType:
         return FormType.FORM_10Q
     raise ValueError(...)
 ```
+
+---
+
+### Fix 1D — Fix `_to_serializable_dict` tree walk: capture depth, fix level source
+
+**File:** `src/preprocessing/models/parsing.py:143-162`
+
+**Root causes (three compounding bugs):**
+1. `parsing.py:155` reads `node.level` — `TreeNode` has no `level` attribute, so the
+   `hasattr` check always falls back to `0`. Every serialized node gets `"level": 0`.
+2. Even fixing to `node.semantic_element.level` (the `AbstractLevelElement.level` attr)
+   would still produce all-zeros: real 10-K HTML uses `<p><b>...</b></p>` styling, not
+   semantic `<h1>/<h2>/<h3>` tags, so sec-parser assigns `level=0` to every `TitleElement`.
+3. `_to_serializable_dict` iterates `self.tree.nodes` — a **flat** generator of all
+   descendants — but never records the parent-child nesting **depth** that the
+   `TreeBuilder` does correctly build. Depth is the only hierarchical signal available.
+
+**Change:** Replace the flat loop with a recursive walk that records `depth` (the node's
+distance from the tree root) and fixes the level source.
+
+```python
+def _serialize_tree_recursive(
+    self, nodes: list, depth: int = 0
+) -> list[dict]:
+    result = []
+    for node in nodes:
+        elem = node.semantic_element
+        result.append({
+            'text':  str(node.text) if hasattr(node, 'text') else '',
+            'type':  elem.__class__.__name__,
+            'level': getattr(elem, 'level', 0),  # HTML heading level (0 for all SEC filings)
+            'depth': depth,                       # actual parent-child nesting depth in tree
+        })
+        result.extend(self._serialize_tree_recursive(node.children, depth + 1))
+    return result
+
+# Replace the tree_data block at parsing.py:144-162:
+tree_data = self._serialize_tree_recursive(list(self.tree))  # list(tree) → root nodes only
+```
+
+**Why `depth` matters for Phase 6:** A `TextElement` at `depth=2` is a content paragraph
+nested under a `TitleElement` at `depth=1`, itself under a `TopSectionTitle` at `depth=0`.
+This is the signal Fix 6A uses to map each chunk to its `parent_subsection`.
+
+**Also fix:** Remove the `html_tag` field from the `elements_data` block
+(`parsing.py:132-135`). It serializes as the Python object repr string
+(`"<sec_parser...HtmlTag object at 0x...>"`) — useless and noisy.
+
+---
+
+### Fix 1E — Extract `fiscal_year` from EDGAR header
+
+**File:** `src/preprocessing/parser.py` — `_extract_metadata()` (lines 269–325)
+
+**Problem:** `fiscal_year` is the only `document_info` field with no extraction fix.
+Every EDGAR filing header already scanned by `_extract_metadata()` contains:
+
+```
+CONFORMED PERIOD OF REPORT:	20251231
+```
+
+This is `YYYYMMDD` format; the year is the first 4 characters.
+
+**Change:** Add one regex alongside the existing `cik_match` / `company_name_match`
+blocks:
+
+```python
+period_match = re.search(
+    r'CONFORMED PERIOD OF REPORT[:\s]+(\d{8})', html_content, re.IGNORECASE
+)
+fiscal_year = period_match.group(1)[:4] if period_match else None
+
+return {
+    ...  # existing fields
+    'fiscal_year': fiscal_year,
+    'period_of_report': period_match.group(1) if period_match else None,
+}
+```
+
+`fiscal_year` flows through:
+`ParsedFiling.metadata` → `ExtractedSection.metadata` → `SegmentedRisks.metadata`
+→ promoted to `document_info.fiscal_year` by Fix 6C.
+
+**Fallback (Fix 6C):** If `fiscal_year` is `None` (e.g., filing pre-dates the EDGAR
+header format), Fix 6C derives it from the filename stem:
+`re.search(r'_(\d{4})[_.]', file_path.stem)`.
 
 ---
 
@@ -392,12 +560,252 @@ text = re.sub(r'^[\s\-]*Page\s+\d+[\s\-]*$', '', text, flags=re.MULTILINE | re.I
 
 ---
 
+## Phase 6: Output Schema
+
+**Goal:** Produce `_segmented_risks.json` files that match the target schema below.
+Each pipeline stage owns specific fields; per-stage checkpoints catch gaps early.
+
+### Target Schema
+
+```json
+{
+  "document_info": {
+    "company_name": "Apple Inc.",
+    "ticker": "AAPL",
+    "cik": "0000320193",
+    "sic_code": "3571",
+    "sic_name": "ELECTRONIC COMPUTERS",
+    "form_type": "10-K",
+    "fiscal_year": "2021"
+  },
+  "section_metadata": {
+    "identifier": "part1item1a",
+    "title": "Item 1A. Risk Factors",
+    "cleaning_settings": {
+      "removed_html_tags": true,
+      "normalized_whitespace": true,
+      "removed_page_numbers": true,
+      "discarded_tables": true
+    },
+    "stats": {
+      "total_chunks": 3,
+      "num_tables": 0
+    }
+  },
+  "chunks": [
+    {
+      "chunk_id": "1A_001",
+      "parent_subsection": "Introduction",
+      "text": "..."
+    }
+  ]
+}
+```
+
+### Gap Analysis (Current → Target)
+
+| Field | Current State | Target | Owning Stage |
+|-------|--------------|--------|--------------|
+| `document_info.fiscal_year` | absent | `"2021"` (EDGAR header via Fix 1E; filename fallback in Fix 6C) | Parse (Fix 1E) |
+| `section_metadata.cleaning_settings.discarded_tables` | absent | `true` | Clean (Fix 2B) |
+| `cleaning_settings` key names | `remove_html_tags` | `removed_html_tags` (past tense) | Clean |
+| `chunks[].chunk_id` | `0` (int index) | `"1A_001"` (section-prefixed, 3-digit) | Segment |
+| `chunks[].parent_subsection` | absent | `"Introduction"` (nearest preceding `TitleElement`) | Segment |
+| Top-level structure | flat object | `document_info` / `section_metadata` / `chunks` groups | Segment |
+| `total_segments` | present | renamed `total_chunks` | Segment |
+
+### Fix 6A — Sequential `parent_subsection` tracking in extractor
+
+**File:** `src/preprocessing/extractor.py` — `_extract_section_content` and
+`extract_risk_factors_from_dict`
+
+**Problem:** `parent_subsection` is not tracked per element. The `subsections` list on
+`ExtractedSection` contains the right titles, but they are not mapped to individual
+content nodes.
+
+**Approach:** Sequential scan — the nearest preceding `TitleElement` in the content node
+list is the `parent_subsection` for all following `TextElement`s until the next title.
+This is correct for 10-K Risk Factors sections, where subsection headings appear in
+document order.
+
+```python
+# In _extract_section_content, after filtering content_nodes (post ToC + table filter):
+current_subsection: Optional[str] = None
+subsection_map: list[tuple[Any, Optional[str]]] = []
+
+for node in content_nodes:
+    if isinstance(node.semantic_element, sp.TitleElement):
+        current_subsection = node.text.strip() or current_subsection
+    elif hasattr(node, 'text') and node.text.strip():
+        subsection_map.append((node, current_subsection))
+
+# Pass subsection_map (node + its subsection) downstream to the segmenter
+# via a new ExtractedSection field: node_subsections: List[Tuple[str, Optional[str]]]
+```
+
+Add `node_subsections: List[Tuple[str, Optional[str]]] = []` to `ExtractedSection`
+(`src/preprocessing/models/extraction.py`). Each entry is `(node_text, subsection_title)`.
+
+---
+
+### Fix 6B — `chunk_id` format + `parent_subsection` field in `RiskSegment`
+
+**Files:**
+- `src/preprocessing/models/segmentation.py:14-28` (`RiskSegment`)
+- `src/preprocessing/segmenter.py:143-156` (segment construction)
+
+**Change 1 — `RiskSegment` model:**
+
+```python
+class RiskSegment(BaseModel):
+    chunk_id: str                          # was: index: int  →  now "1A_001", "1A_002"
+    parent_subsection: Optional[str] = None  # NEW — nearest preceding TitleElement text
+    text: str
+    word_count: int = 0
+    char_count: int = 0
+```
+
+**Change 2 — Segmenter construction** (`segmenter.py:segment_extracted_section`):
+
+When iterating over sentences/chunks to build `RiskSegment` objects, use
+`extracted_section.node_subsections` (populated by Fix 6A) to resolve which subsection
+each chunk belongs to, and format `chunk_id` as `f"1A_{i+1:03d}"`:
+
+```python
+segments = []
+for i, (text, subsection) in enumerate(chunk_texts_with_subsections):
+    segments.append(RiskSegment(
+        chunk_id=f"1A_{i+1:03d}",
+        parent_subsection=subsection,
+        text=text,
+    ))
+```
+
+**Change 3 — `SegmentedRisks` top-level restructure** (`segmentation.py:31-58`):
+
+Rename `segments` → `chunks`, `total_segments` → `total_chunks`, and group output
+fields into `document_info`, `section_metadata`, `chunks` as per the target schema.
+The `save_to_json` / `load_from_json` methods must be updated to write and read the
+new structure.
+
+---
+
+### Per-Stage Validation Checkpoints
+
+#### Stage 1 — After Parse (`*_parsed.json`)
+
+Verify all `document_info` fields flow into the pipeline and `fiscal_year` resolves.
+
+```bash
+python -c "
+import json, re, sys
+d = json.load(open(sys.argv[1]))
+meta = d.get('metadata', {})
+required = ['company_name', 'cik', 'sic_code', 'sic_name', 'form_type']
+missing = [f for f in required if not meta.get(f)]
+fy = meta.get('fiscal_year') or (re.search(r'_(\d{4})[_.]', sys.argv[1]) or [None, 'MISSING'])[1]
+print('missing identity fields:', missing or 'none')
+print('fiscal_year:', fy)
+" data/interim/parsed/<stem>_parsed.json
+```
+
+**Pass criteria:** `missing` is empty; `fiscal_year` is a 4-digit string.
+
+---
+
+#### Stage 2 — After Extract (`*_extracted_risks.json`)
+
+Verify `section_metadata` fields are present and `TitleElement` nodes exist for
+`parent_subsection` mapping.
+
+```bash
+python -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+print('identifier:', d.get('identifier'))
+print('title:', d.get('title'))
+print('subsections:', d.get('subsections', []))
+print('num_tables (stats):', d.get('stats', {}).get('num_tables'))
+title_els = [e for e in d.get('elements', []) if e.get('type') == 'TitleElement']
+print('TitleElements:', len(title_els), '(needed for parent_subsection mapping)')
+" data/interim/extracted/<stem>_extracted_risks.json
+```
+
+**Pass criteria:**
+- `identifier` is non-empty (`"part1item1a"`)
+- `subsections` is a non-empty list
+- `stats.num_tables` is an integer (0 is valid)
+- At least one `TitleElement` present in `elements`
+
+---
+
+#### Stage 3 — After Clean (`*_cleaned_risks.json`)
+
+Verify `cleaning_settings` has all 4 past-tense keys and no HTML remains in text.
+
+```bash
+python -c "
+import json, re, sys
+d = json.load(open(sys.argv[1]))
+cs = d.get('metadata', {}).get('cleaning_settings', {})
+required = ['removed_html_tags', 'normalized_whitespace', 'removed_page_numbers', 'discarded_tables']
+missing = [k for k in required if k not in cs]
+html_left = bool(re.search(r'<[a-zA-Z][^>]*>', d.get('text', '')))
+print('cleaning_settings:', json.dumps(cs))
+print('missing keys:', missing or 'none')
+print('HTML remaining:', html_left)
+" data/interim/extracted/<stem>_cleaned_risks.json
+```
+
+**Pass criteria:**
+- All 4 keys present (requires Fix 2B to add `discarded_tables`)
+- Keys use past-tense form (`removed_*`, `normalized_*`)
+- No HTML tags remain in `text`
+
+---
+
+#### Stage 4 — After Segment (`*_segmented_risks.json`)
+
+Verify the complete target schema: top-level groups, `chunk_id` format, and
+`parent_subsection` on every chunk.
+
+```bash
+python -c "
+import json, re, sys
+d = json.load(open(sys.argv[1]))
+di = d.get('document_info', {})
+sm = d.get('section_metadata', {})
+chunks = d.get('chunks', [])
+print('document_info fields:', sorted(di.keys()))
+print('fiscal_year:', di.get('fiscal_year'))
+print('cleaning_settings keys:', sorted(sm.get('cleaning_settings', {}).keys()))
+print('total_chunks:', sm.get('stats', {}).get('total_chunks'), '/ actual:', len(chunks))
+bad_ids  = [c['chunk_id'] for c in chunks if not re.match(r'^1A_\d{3}$', c.get('chunk_id',''))]
+no_sub   = [c['chunk_id'] for c in chunks if not c.get('parent_subsection')]
+print('malformed chunk_ids:', bad_ids or 'none')
+print('chunks missing parent_subsection:', no_sub or 'none')
+" data/processed/<run_dir>/<stem>_segmented_risks.json
+```
+
+**Pass criteria:**
+- `document_info` contains all 7 fields including `fiscal_year`
+- `section_metadata.cleaning_settings` has 4 past-tense keys
+- `stats.total_chunks` equals `len(chunks)`
+- Every `chunk_id` matches `r'^1A_\d{3}$'`
+- No chunk missing `parent_subsection`
+
+---
+
 ## Verification
 
 ### Automated checks
 ```bash
 # Run existing tests
 python -m pytest tests/ -x -q
+
+# Run pre-fix baseline audit
+python scripts/validation/data_quality/check_corpus_quality_audit.py \
+    --run-dir data/processed/<run_dir> --output audit_baseline.md
 
 # Validate a single 10-K run dir
 python scripts/validation/data_quality/check_preprocessing_single.py \
@@ -410,9 +818,10 @@ python scripts/validation/data_quality/check_preprocessing_batch.py \
 
 ### Manual spot-checks
 1. Parse one known 10-K → confirm Item 1A section is found
-2. Count segments → confirm > 5 segments extracted
-3. Check segment text → confirm no `<td>`, `<tr>`, or raw number sequences
-4. Run batch validator on a corpus dir → confirm 0-segment filings are FAIL
+2. Count chunks → confirm > 5 chunks extracted
+3. Check chunk text → confirm no `<td>`, `<tr>`, or raw number sequences
+4. Run Stage 1–4 checkpoint commands on a sample filing → all pass criteria met
+5. Run batch validator on a corpus dir → confirm 0-segment filings are FAIL
 
 ---
 
@@ -422,6 +831,7 @@ python scripts/validation/data_quality/check_preprocessing_batch.py \
 > (extractor works). ToC contamination elevated to #1 priority (56.6% failure rate,
 > DEFERRED since Dec 2025). flatten_html fix revised from "disable" to "BS4 for large files".
 
+0. **Audit script** (`check_corpus_quality_audit.py`) — baseline before any change
 1. **Fix 4A** (zero segments = FAIL) — stops broken filings entering training data
 2. **Fix 2A** (ToC node filter in extractor) — fixes the #1 known data quality gap
 3. **Fix 2B** (exclude tables from text) — clean training samples
@@ -430,7 +840,12 @@ python scripts/validation/data_quality/check_preprocessing_batch.py \
 6. **Fix 4B** (segment-level dedup) — training data quality
 7. **Fix 4C + 4D** (keyword + yield metric) — validation calibration
 8. **Fix 5A** (narrow page number regex) — cleaning precision
-9. **Fix 1B + 1C + 4E** (doc/comments/race condition) — housekeeping
+9. **Fix 1D** (parser tree serializer depth) — expose `depth` from sec-parser tree; drop `html_tag` noise from elements
+10. **Fix 1E** (fiscal_year from CONFORMED PERIOD OF REPORT)
+11. **Fix 1B + 1C + 4E** (doc/comments/race condition) — housekeeping
+12. **Fix 6A** (parent_subsection tracking in extractor) — sequential TitleElement scan; populate `node_subsections` on `ExtractedSection`
+13. **Fix 6B** (chunk_id + RiskSegment model) — `"1A_NNN"` chunk ids, `parent_subsection` field, `SegmentedRisks` top-level restructure
+14. **Fix 6C** (SegmentedRisks restructure + cleaning_settings rename + fiscal_year promotion) — promote `fiscal_year` from metadata (Fix 1E primary, filename fallback); rename `remove_*` keys to `removed_*`; add `discarded_tables` flag
 
 **REMOVED:**
 - ~~Fix 2A (re.search boundary)~~ — extractor `_is_next_section()` works correctly,

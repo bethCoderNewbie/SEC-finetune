@@ -41,6 +41,15 @@ Then each line contains: filename, processing stage, elapsed_seconds, status (ok
   And the log is written incrementally (visible before the run ends)
 ```
 
+### Scenario D: Parse success rate ≥95% on stratified sample
+```gherkin
+Given a stratified random sample of ≥30 filings spanning ≥5 SIC sectors and filing years 2019–2024
+When the pipeline processes the full sample
+Then (total_submitted − dlq_size) / total_submitted ≥ 0.95
+  And the success rate is present in RUN_REPORT.md under a "Parse Success Rate" heading
+  And the success rate is present in batch_summary_{run_id}.json as a numeric field
+```
+
 ## Technical Notes
 
 - Run report: `MarkdownReportGenerator` → `data/processed/{run_dir}/RUN_REPORT.md`

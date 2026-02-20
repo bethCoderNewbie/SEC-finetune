@@ -78,8 +78,10 @@ class SECFilingParser:
         if not SECPARSER_AVAILABLE:
             raise RuntimeError("sec-parser is not available")
 
-        # Note: sec-parser only provides Edgar10QParser, which works for all SEC forms
-        # (10-K, 10-Q, 8-K, S-1, etc.) but may generate warnings for non-10-Q forms
+        # NOTE: sec-parser does not provide a dedicated Edgar10KParser.
+        # Edgar10QParser is used for both forms. Section identifiers
+        # (TopSectionTitle.identifier) follow 10-Q conventions — regex
+        # fallback in _find_section_node handles 10-K section lookup.
         self.parsers = {
             FormType.FORM_10K: sp.Edgar10QParser(),
             FormType.FORM_10Q: sp.Edgar10QParser(),
@@ -186,6 +188,14 @@ class SECFilingParser:
         # Validate and convert form type
         form_type_enum = self._validate_form_type(form_type)
 
+        if form_type_enum == FormType.FORM_10K and not quiet:
+            warnings.warn(
+                "10-K parsed with Edgar10QParser (no dedicated 10-K parser available). "
+                "Section identifier matching falls back to regex patterns.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # Get appropriate parser
         parser = self.parsers[form_type_enum]
 
@@ -257,9 +267,9 @@ class SECFilingParser:
         """
         form_type = form_type.upper().replace("-", "")
 
-        if form_type in ["10K", "10-K"]:
+        if form_type == "10K":
             return FormType.FORM_10K
-        if form_type in ["10Q", "10-Q"]:
+        if form_type == "10Q":
             return FormType.FORM_10Q
         raise ValueError(
             f"Unsupported form type: {form_type}. "
@@ -307,6 +317,12 @@ class SECFilingParser:
         cik_match = re.search(r'CENTRAL INDEX KEY:\s*(\d+)', html_content, re.IGNORECASE)
         cik = cik_match.group(1).strip() if cik_match else None
 
+        # Extract fiscal year from CONFORMED PERIOD OF REPORT (format: YYYYMMDD)
+        period_match = re.search(
+            r'CONFORMED PERIOD OF REPORT[:\s]+(\d{8})', html_content, re.IGNORECASE
+        )
+        fiscal_year = period_match.group(1)[:4] if period_match else None
+
         # Determine a Ticker (heuristic, often the CIK is used by services or can be mapped)
         # For now, we'll leave Ticker as None unless explicitly found, or derive from CIK later
         ticker = None  # More complex to extract directly from HTML, usually needs CIK lookup
@@ -322,6 +338,8 @@ class SECFilingParser:
             'company_name': company_name,
             'cik': cik,
             'ticker': ticker,  # Placeholder for future ticker extraction
+            'fiscal_year': fiscal_year,
+            'period_of_report': period_match.group(1) if period_match else None,
         }
 
     def _extract_sic_code(self, html_content: str) -> Optional[str]:
@@ -420,6 +438,11 @@ class SECFilingParser:
         Returns:
             HTML with reduced nesting depth
         """
+        # Large files: regex DOTALL patterns can catastrophically backtrack on > ~10MB.
+        # SEC filings commonly run 30–68MB, so delegate to the BS4-based path.
+        if len(html_content) > 10 * 1024 * 1024:  # > 10MB
+            return self._flatten_html_nesting_bs4(html_content)
+
         # Remove redundant nested divs (common in SEC filings)
         # Pattern: <div><div>content</div></div> -> <div>content</div>
 
@@ -464,6 +487,16 @@ class SECFilingParser:
         html_content = re.sub(r'\n\s*\n\s*\n', '\n\n', html_content)
 
         return html_content
+
+    def _flatten_html_nesting_bs4(self, html_content: str) -> str:
+        """BS4-based HTML flattening for large files (safe, no regex backtracking)."""
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html_content, 'lxml')
+        for tag_name in ['div', 'span', 'font']:
+            for tag in soup.find_all(tag_name):
+                if not tag.get_text(strip=True):
+                    tag.decompose()
+        return str(soup)
 
     def get_parser_info(self) -> Dict[str, str]:
         """
