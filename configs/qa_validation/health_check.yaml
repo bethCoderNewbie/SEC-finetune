@@ -148,6 +148,20 @@ thresholds:
       tags: [substance, size_validation, extraction_efficiency]
       unit: ppm
 
+    over_limit_word_rate:
+      display_name: Over-Limit Word Rate (>380 words)
+      metric_type: rate
+      target: 0.0
+      operator: "<="
+      warn_threshold: 0.05
+      blocking: false
+      description: >
+        Fraction of segments exceeding the 380-word Option A ceiling (~512 tokens at
+        1.35 tok/word). Target is 0.0 post-Option-A deployment. Values above 0.0 indicate
+        Option A is not yet deployed (pre-deploy baseline is ~2.75%). Values above 0.05
+        trigger the ModernBERT contingency review per PRD-002 §4.1 OQ-3 / RFC-003 OQ-RFC3-2.
+      tags: [substance, token_safety, word_count, rfc003]
+
   # -------------------------
   # Domain Rules
   # -------------------------

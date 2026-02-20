@@ -16,7 +16,7 @@ Status values: `DRAFT` · `IN-REVIEW` · `APPROVED` · `DEPRECATED`
 | ID | Title | Status | Last Updated |
 |----|-------|--------|-------------|
 | [PRD-001](PRD-001_SEC_Finetune_MVP.md) | SEC 10-K Risk Factor Analyzer — MVP | APPROVED | 2026-02-18 |
-| [PRD-002](PRD-002_SEC_Finetune_Pipeline_v2.md) | SEC Finetune Pipeline v2 — Current State & MLOps | APPROVED | 2026-02-18 |
+| [PRD-002](PRD-002_SEC_Finetune_Pipeline_v2.md) | SEC Finetune Pipeline v2 — Current State & MLOps | DRAFT | 2026-02-19 |
 | [PRD-003](PRD-003_Training_Data_Quality_Remediation.md) | SEC 10-K Training Data Quality Remediation | DRAFT | 2026-02-18 |
 | [PRD-004](PRD-004_Business_Intelligence_Use_Cases.md) | SEC 10-K Business Intelligence — Multi-Stakeholder Use Cases | DRAFT | 2026-02-18 |
 
@@ -39,7 +39,7 @@ Individual story files live in [`stories/`](stories/). PRD tables carry the one-
 | **EP-3** Data Quality | Produce corpus-ready, uncontaminated training text | US-009 | US-012, US-014 |
 | **EP-4** Performance | Iterate on the full corpus within a work session | US-011 | — |
 | **EP-5** Observability | Inspect failures, trace sources, and automate operations | US-005, US-007 | US-018, US-019 |
-| **EP-6** ML Readiness | Enrich output and close the gap to a training-ready dataset | US-008 | US-006, US-013, US-015, US-016, US-017 |
+| **EP-6** ML Readiness | Enrich output and close the gap to a training-ready dataset | US-008, US-029, US-030, US-031 | US-006, US-013, US-015, US-016, US-017 |
 | **EP-7** Business Applications | Deliver model output to non-ML stakeholders via query CLI and exports | US-021, US-023 | US-022, US-024, US-025, US-026, US-027 |
 
 ---
@@ -93,6 +93,9 @@ Individual story files live in [`stories/`](stories/). PRD tables carry the one-
 | [US-015](stories/US-015_token_aware_truncation.md) | **P1** | Data Scientist | Split long paragraphs into shorter chunks at natural sentence breaks | AI model can process text within its input limits | ❌ Not implemented | [Detail](stories/US-015_token_aware_truncation.md) |
 | [US-016](stories/US-016_reproducible_splitting.md) | **P1** | Data Scientist | Deterministic train/val/test split keeping each company entirely in one set | Model never sees the same company in both training and testing | ❌ Not implemented | [Detail](stories/US-016_reproducible_splitting.md) |
 | [US-017](stories/US-017_model_explainability.md) | **P1** | Tools Manager | See the specific words that caused a risk classification | Understand and trust the model's logic | ❌ Not implemented | [Detail](stories/US-017_model_explainability.md) |
+| [US-029](stories/US-029_sasb_aware_classifier_integration.md) | **P0** | ML Engineer | Wire SASB-aware classifier into `process_batch()` emitting two-layer output per segment | Every batch filing is labeled with archetype + SASB topic without post-processing | ❌ Not implemented | [Detail](stories/US-029_sasb_aware_classifier_integration.md) |
+| [US-030](stories/US-030_sasb_taxonomy_data_files.md) | **P0** | Data Engineer | Create `sasb_sics_mapping.json` and `archetype_to_sasb.yaml` for all corpus SIC codes | `TaxonomyManager` returns non-empty SASB topics for every filing | ❌ Not implemented | [Detail](stories/US-030_sasb_taxonomy_data_files.md) |
+| [US-031](stories/US-031_annotation_corpus_build.md) | **P0** | ML Engineer | Build quality-gated annotation corpus with ≥ 500 examples per archetype and clean test split | Fine-tune training has a valid dataset and the Macro F1 gate is measurable | ❌ Not implemented | [Detail](stories/US-031_annotation_corpus_build.md) |
 
 ### EP-7 — Business Applications
 

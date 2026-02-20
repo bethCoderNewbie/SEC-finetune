@@ -625,6 +625,7 @@ class HealthCheckValidator:
 
     # Substance thresholds
     MIN_SEGMENT_LENGTH = 50
+    MAX_SEGMENT_WORDS = 380  # RFC-003 Option A ceiling; ~512 tokens at 1.35 tok/word
 
     def __init__(self):
         """Initialize the validator with threshold registry."""
@@ -809,6 +810,7 @@ class HealthCheckValidator:
         total_segments = 0
         empty_segments = 0
         short_segments = 0
+        over_limit_segments = 0
 
         for data in file_data:
             for seg in data.get("segments", []):
@@ -818,6 +820,8 @@ class HealthCheckValidator:
                     empty_segments += 1
                 elif length < self.MIN_SEGMENT_LENGTH:
                     short_segments += 1
+                if seg.get("word_count", 0) > self.MAX_SEGMENT_WORDS:
+                    over_limit_segments += 1
 
         if total_segments == 0:
             return results
@@ -834,6 +838,13 @@ class HealthCheckValidator:
         if threshold:
             results.append(ValidationResult.from_threshold(
                 threshold, short_segments / total_segments
+            ))
+
+        # Over-limit word rate (RFC-003 Option A token-safety gate)
+        threshold = self.registry.get("over_limit_word_rate")
+        if threshold:
+            results.append(ValidationResult.from_threshold(
+                threshold, over_limit_segments / total_segments
             ))
 
         # Smart Integrity Check - File Size Validation
