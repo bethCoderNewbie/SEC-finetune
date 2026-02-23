@@ -339,15 +339,15 @@ def _build_output_data(
         }
 
     output_data['segments'] = []
-    for seg in segmented_risks.segments:
+    for i, seg in enumerate(segmented_risks.segments):
         segment_dict = {
-            'id': seg.index + 1,
+            'id': seg.chunk_id,
             'text': seg.text,
             'length': seg.char_count,
             'word_count': seg.word_count,
         }
-        if sentiment_features_list and seg.index < len(sentiment_features_list):
-            sentiment = sentiment_features_list[seg.index]
+        if sentiment_features_list and i < len(sentiment_features_list):
+            sentiment = sentiment_features_list[i]
             segment_dict['sentiment'] = {
                 'negative_count':     sentiment.negative_count,
                 'positive_count':     sentiment.positive_count,

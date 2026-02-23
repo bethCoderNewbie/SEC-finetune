@@ -774,6 +774,11 @@ class HealthCheckValidator:
 
         return results
 
+    @staticmethod
+    def _get_segments(data: Dict) -> List[Dict]:
+        """Return segment list from either v2 schema ('chunks') or v1 ('segments')."""
+        return data.get("segments", data.get("chunks", []))
+
     def _check_cleanliness(self, file_data: List[Dict]) -> List[ValidationResult]:
         """Check for HTML and page number artifacts."""
         results = []
@@ -782,7 +787,7 @@ class HealthCheckValidator:
         page_artifacts = 0
 
         for data in file_data:
-            for seg in data.get("segments", []):
+            for seg in self._get_segments(data):
                 total_segments += 1
                 text = seg.get("text", "")
                 if self.HTML_PATTERN.search(text):
@@ -818,7 +823,7 @@ class HealthCheckValidator:
         over_limit_segments = 0
 
         for data in file_data:
-            for seg in data.get("segments", []):
+            for seg in self._get_segments(data):
                 total_segments += 1
                 length = seg.get("length", len(seg.get("text", "")))
                 if length == 0:
@@ -891,7 +896,7 @@ class HealthCheckValidator:
 
                 # Fix 4D: Calculate extraction yield against stripped-text bytes
                 # (not raw HTML bytes, which inflate the denominator ~60-80%)
-                extracted_chars = sum(len(seg.get("text", "")) for seg in data.get("segments", []))
+                extracted_chars = sum(len(seg.get("text", "")) for seg in self._get_segments(data))
                 if file_size_bytes > 0:
                     html_content_approx = data.get("html_content", "")
                     if html_content_approx:
@@ -919,7 +924,7 @@ class HealthCheckValidator:
         # Duplicate detection via content hash
         hashes: Dict[str, List[str]] = {}
         for data in file_data:
-            text = "".join(s.get("text", "") for s in data.get("segments", []))
+            text = "".join(s.get("text", "") for s in self._get_segments(data))
             normalized = re.sub(r'\s+', ' ', text.lower().strip())
             content_hash = hashlib.sha256(normalized.encode()).hexdigest()[:16]
 
@@ -940,7 +945,7 @@ class HealthCheckValidator:
         # Risk keyword presence (Fix 4C: larger keyword set, min count 25)
         total_risk_words = 0
         for data in file_data:
-            text = " ".join(s.get("text", "") for s in data.get("segments", []))
+            text = " ".join(s.get("text", "") for s in self._get_segments(data))
             words = re.findall(r'\b\w+\b', text.lower())
             total_risk_words += sum(1 for w in words if w in self.RISK_KEYWORDS)
 
@@ -962,7 +967,7 @@ class HealthCheckValidator:
         total_segs = 0
 
         for data in file_data:
-            for seg in data.get("segments", []):
+            for seg in self._get_segments(data):
                 total_segs += 1
                 text = re.sub(r'\s+', ' ', seg.get("text", "").lower().strip())
                 h = hashlib.sha256(text.encode()).hexdigest()[:12]

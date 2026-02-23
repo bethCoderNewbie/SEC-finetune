@@ -365,6 +365,7 @@ class SECPreprocessingPipeline:
         save_output: Optional[Union[str, Path]] = None,
         overwrite: bool = False,
         save_intermediates: bool = False,
+        intermediates_dir: Optional[Path] = None,
     ) -> Optional[SegmentedRisks]:
         """
         Process a SEC filing through the complete pipeline
@@ -381,6 +382,10 @@ class SECPreprocessingPipeline:
             section: Section to extract (default: Risk Factors)
             save_output: Optional path to save the result as JSON
             overwrite: Whether to overwrite existing output file
+            save_intermediates: Save parsed/extracted to their default dirs
+            intermediates_dir: When set, save parsed + extracted into subdirs
+                here (parsed/ and extracted/) instead of the default dirs.
+                Takes precedence over save_intermediates.
 
         Returns:
             SegmentedRisks with segments and preserved metadata, or None if extraction fails
@@ -396,7 +401,13 @@ class SECPreprocessingPipeline:
 
         # Step 1: Parse HTML filing (no sanitization)
         logger.info("Step 1/4: Parsing HTML filing...")
-        parsed = self.parser.parse_filing(file_path, form_type, save_output=save_intermediates)
+        if intermediates_dir:
+            parsed_dir = intermediates_dir / "parsed"
+            parsed_dir.mkdir(parents=True, exist_ok=True)
+            parser_save: Union[Path, bool] = parsed_dir / f"{file_path.stem}_parsed.json"
+        else:
+            parser_save = save_intermediates  # True → default parsed_data_dir, False → skip
+        parsed = self.parser.parse_filing(file_path, form_type, save_output=parser_save)
 
         logger.info(
             "Parsed %d elements. Metadata: CIK=%s, SIC=%s (%s)",
@@ -420,11 +431,14 @@ class SECPreprocessingPipeline:
             len(extracted.subsections),
         )
 
-        if save_intermediates:
-            from src.config import settings as _cfg
-            extracted_dir = _cfg.paths.extracted_data_dir
-            extracted_dir.mkdir(parents=True, exist_ok=True)
-            extracted_path = extracted_dir / f"{file_path.stem}_extracted_risks.json"
+        if intermediates_dir or save_intermediates:
+            if intermediates_dir:
+                ext_dir = intermediates_dir / "extracted"
+            else:
+                from src.config import settings as _cfg  # lazy import
+                ext_dir = _cfg.paths.extracted_data_dir
+            ext_dir.mkdir(parents=True, exist_ok=True)
+            extracted_path = ext_dir / f"{file_path.stem}_extracted_risks.json"
             extracted.save_to_json(extracted_path, overwrite=True)
             logger.info("Saved extracted section to: %s", extracted_path)
 
@@ -529,6 +543,7 @@ class SECPreprocessingPipeline:
         save_output: Optional[Union[str, Path]] = None,
         overwrite: bool = False,
         save_intermediates: bool = False,
+        intermediates_dir: Optional[Path] = None,
     ) -> Optional[SegmentedRisks]:
         """
         Convenience method to process Risk Factors section
@@ -538,6 +553,9 @@ class SECPreprocessingPipeline:
             form_type: Type of SEC form ("10-K" or "10-Q")
             save_output: Optional path to save the result as JSON
             overwrite: Whether to overwrite existing output file
+            save_intermediates: Save parsed/extracted to their default dirs
+            intermediates_dir: When set, save parsed + extracted into subdirs
+                here (parsed/ and extracted/) instead of the default dirs.
 
         Returns:
             SegmentedRisks with risk segments and metadata
@@ -554,6 +572,7 @@ class SECPreprocessingPipeline:
             save_output=save_output,
             overwrite=overwrite,
             save_intermediates=save_intermediates,
+            intermediates_dir=intermediates_dir,
         )
 
     def process_batch(

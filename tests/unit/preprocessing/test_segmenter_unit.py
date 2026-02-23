@@ -189,17 +189,17 @@ class TestRiskSegmentModel:
 
     def test_auto_calculates_word_count(self):
         """word_count auto-calculated if not provided."""
-        segment = RiskSegment(index=0, text="one two three four five")
+        segment = RiskSegment(chunk_id="1A_001", text="one two three four five")
         assert segment.word_count == 5
 
     def test_auto_calculates_char_count(self):
         """char_count auto-calculated if not provided."""
-        segment = RiskSegment(index=0, text="hello world")
+        segment = RiskSegment(chunk_id="1A_001", text="hello world")
         assert segment.char_count == 11
 
     def test_explicit_counts_preserved(self):
         """Explicit word_count and char_count preserved."""
-        segment = RiskSegment(index=0, text="test", word_count=10, char_count=100)
+        segment = RiskSegment(chunk_id="1A_001", text="test", word_count=10, char_count=100)
         # When explicitly set to non-zero, values are preserved
         assert segment.word_count == 10
         assert segment.char_count == 100
@@ -213,8 +213,8 @@ class TestSegmentedRisksModel:
         """Create sample SegmentedRisks."""
         return SegmentedRisks(
             segments=[
-                RiskSegment(index=0, text="First risk segment."),
-                RiskSegment(index=1, text="Second risk segment."),
+                RiskSegment(chunk_id="1A_001", text="First risk segment."),
+                RiskSegment(chunk_id="1A_002", text="Second risk segment."),
             ],
             sic_code="7372",
             company_name="TEST INC",

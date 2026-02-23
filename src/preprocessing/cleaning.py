@@ -156,8 +156,10 @@ class TextCleaner:
         Returns:
             str: Text without page artifacts
         """
-        # Fix 5A: only remove 2+ digit standalone numbers to avoid stripping
-        # single-digit list items (e.g., "1." or "3" that precede content)
+        # Fix 5A: remove -N- style page artifacts (dashes required on both sides)
+        # for any digit count, plus bare 2+ digit numbers; avoids stripping
+        # single-digit list items like standalone "3" or "1"
+        text = re.sub(r'^\s*-+\s*\d+\s*-+\s*$', '', text, flags=re.MULTILINE)
         text = re.sub(r'^[\s\-]*\d{2,}[\s\-]*$', '', text, flags=re.MULTILINE)
         text = re.sub(r'^[\s\-]*Page\s+\d+[\s\-]*$', '', text, flags=re.MULTILINE | re.IGNORECASE)
 

@@ -572,8 +572,10 @@ def validate_single_file(file_path, run_dir, verbose=False):
 
 ## Phase 5: Cleaning — False Positive Fixes ✅ COMPLETE (2026-02-20)
 
-> Fix 5A implemented in `src/preprocessing/cleaning.py:161`.
-> Page-number regex changed from `\d+` to `\d{2,}` — single-digit lines are no longer stripped.
+> Fix 5A implemented in `src/preprocessing/cleaning.py:162-163`.
+> Two-pattern approach: `^\s*-+\s*\d+\s*-+\s*$` catches `-5-` style page artifacts (dashes on both sides);
+> `^[\s\-]*\d{2,}[\s\-]*$` catches bare 2+ digit page numbers. Single-digit lines without surrounding
+> dashes (e.g. `"3"` as a list item) are no longer stripped.
 
 ### Fix 5A — Narrow line-number removal regex
 
@@ -589,7 +591,23 @@ text = re.sub(r'^[\s\-]*Page\s+\d+[\s\-]*$', '', text, flags=re.MULTILINE | re.I
 
 ---
 
-## Phase 6: Output Schema
+## Phase 6: Output Schema ✅ COMPLETE (2026-02-20)
+
+> Fix 6A implemented in `src/preprocessing/extractor.py` — `_extract_section_content` returns 4-tuple;
+> sequential `TitleElement` scan populates `node_subsections: List[Tuple[str, Optional[str]]]` on `ExtractedSection`.
+>
+> Fix 6B implemented in `src/preprocessing/models/segmentation.py` + `segmenter.py` —
+> `RiskSegment.index: int` renamed to `chunk_id: str`; `parent_subsection: Optional[str]` added;
+> `_resolve_subsection()` maps each chunk to its nearest preceding `TitleElement` via text-position lookup;
+> `segment_extracted_section` produces `"1A_{i+1:03d}"` chunk IDs.
+>
+> Fix 6C implemented in `src/preprocessing/models/segmentation.py` —
+> `save_to_json` writes the full v2 structured schema (document_info / processing_metadata / section_metadata / chunks);
+> `load_from_json` detects v2 via `'document_info' in data` and is backward-compatible with v1;
+> `HealthCheckValidator._get_segments()` added for schema-agnostic v1/v2 reads.
+>
+> Unit tests (73/73 pass): `test_preprocessing_models_unit.py` + `test_segmenter_unit.py`
+> updated for `chunk_id` field rename.
 
 **Goal:** Produce `_segmented_risks.json` files that match the target schema below.
 Each pipeline stage owns specific fields; per-stage checkpoints catch gaps early.
@@ -892,21 +910,21 @@ python scripts/validation/data_quality/check_preprocessing_batch.py \
 - **Fix 1D** (recursive tree serializer, `depth` field, drop `html_tag` noise) — `_serialize_tree_recursive` added, flat walk replaced; `parsing.py:111-155`
 - **Fix 1E** (`fiscal_year` + `period_of_report` from EDGAR header) — two new keys in `_extract_metadata` return dict; `parser.py:320-342`
 - **Fix 1F** (`ticker` from DEI inline XBRL `dei:TradingSymbol` tag) — regex extracts plain-text ticker from both direct-text and `<span>`-wrapped formats; present in 99.9% of corpus; `parser.py:328-335`
+- **Fix 4A** (zero segments = FAIL) ✅ — stops broken filings entering training data
+- **Fix 2A** (ToC node filter in extractor) ✅ — fixes the #1 known data quality gap
+- **Fix 2B** (exclude tables from text) ✅ — clean training samples
+- **Fix 3A** (spaCy sentence splitting) ✅ — correct segment boundaries
+- **Fix 4B** (segment-level dedup) ✅ — training data quality
+- **Fix 4C + 4D** (keyword + yield metric) ✅ — validation calibration
+- **Fix 5A** (narrow page number regex) ✅ — cleaning precision
+- **Fix 4E** (batch validator race condition) ✅ — housekeeping
 
 ### Remaining
 
-0. **Audit script** (`check_corpus_quality_audit.py`) — baseline before any change
-1. **Fix 4A** (zero segments = FAIL) ✅ — stops broken filings entering training data
-2. **Fix 2A** (ToC node filter in extractor) ✅ — fixes the #1 known data quality gap
-3. **Fix 2B** (exclude tables from text) ✅ — clean training samples
-4. **Fix 3A** (spaCy sentence splitting) ✅ — correct segment boundaries
-5. **Fix 4B** (segment-level dedup) ✅ — training data quality
-6. **Fix 4C + 4D** (keyword + yield metric) ✅ — validation calibration
-7. **Fix 5A** (narrow page number regex) ✅ — cleaning precision
-8. **Fix 4E** (batch validator race condition) ✅ — housekeeping
-9. **Fix 6A** (parent_subsection tracking in extractor) — sequential TitleElement scan; populate `node_subsections` on `ExtractedSection`
-10. **Fix 6B** (chunk_id + RiskSegment model) — `"1A_NNN"` chunk ids, `parent_subsection` field, `SegmentedRisks` top-level restructure
-11. **Fix 6C** (SegmentedRisks restructure + cleaning_settings rename + fiscal_year promotion) — promote `fiscal_year` from metadata (Fix 1E primary, filename fallback); rename `remove_*` keys to `removed_*`; add `discarded_tables` flag
+0. ✅ **Audit script** (`check_corpus_quality_audit.py`) — script already existed with all 7 checks (A–G) implemented; uses `filing.segments`, `seg.text`, `seg.char_count` — all compatible with model changes. No rewrite needed.
+9. ✅ **Fix 6A** (parent_subsection tracking in extractor) — sequential TitleElement scan; `node_subsections: List[Tuple[str, Optional[str]]]` added to `ExtractedSection`; `extractor.py` returns 4-tuple from `_extract_section_content`
+10. ✅ **Fix 6B** (chunk_id + RiskSegment model) — `"1A_NNN"` chunk ids, `parent_subsection` field, `SegmentedRisks` top-level restructure; `_resolve_subsection()` added to segmenter
+11. ✅ **Fix 6C** (SegmentedRisks restructure + cleaning_settings rename + fiscal_year promotion) — `save_to_json` writes v2 schema; `load_from_json` is backward-compatible; `HealthCheckValidator._get_segments()` handles both v1/v2
 
 **REMOVED:**
 - ~~Fix 2A (re.search boundary)~~ — extractor `_is_next_section()` works correctly,

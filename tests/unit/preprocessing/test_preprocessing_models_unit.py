@@ -24,7 +24,7 @@ from src.preprocessing.models.parsing import ParsedFiling, FormType
 
 @pytest.fixture
 def risk_segment():
-    return RiskSegment(index=0, text="We face intense market competition risks.")
+    return RiskSegment(chunk_id="1A_001", text="We face intense market competition risks.")
 
 
 @pytest.fixture
@@ -67,29 +67,29 @@ def extracted_section():
 
 class TestRiskSegment:
     def test_auto_computes_word_count(self):
-        seg = RiskSegment(index=0, text="one two three four five")
+        seg = RiskSegment(chunk_id="1A_001", text="one two three four five")
         assert seg.word_count == 5
 
     def test_auto_computes_char_count(self):
         text = "hello world"
-        seg = RiskSegment(index=0, text=text)
+        seg = RiskSegment(chunk_id="1A_001", text=text)
         assert seg.char_count == len(text)
 
     def test_preserves_explicit_word_count(self):
-        seg = RiskSegment(index=0, text="one two three", word_count=99)
+        seg = RiskSegment(chunk_id="1A_001", text="one two three", word_count=99)
         assert seg.word_count == 99
 
     def test_preserves_explicit_char_count(self):
-        seg = RiskSegment(index=0, text="hello", char_count=999)
+        seg = RiskSegment(chunk_id="1A_001", text="hello", char_count=999)
         assert seg.char_count == 999
 
-    def test_index_stored_correctly(self):
-        seg = RiskSegment(index=42, text="text")
-        assert seg.index == 42
+    def test_chunk_id_stored_correctly(self):
+        seg = RiskSegment(chunk_id="1A_043", text="text")
+        assert seg.chunk_id == "1A_043"
 
-    def test_requires_index_and_text(self):
+    def test_requires_chunk_id_and_text(self):
         with pytest.raises(ValidationError):
-            RiskSegment(text="missing index")
+            RiskSegment(text="missing chunk_id")
 
 
 # ---------------------------------------------------------------------------
@@ -106,8 +106,8 @@ class TestSegmentedRisks:
 
     def test_get_texts_returns_all_texts(self, risk_segment):
         sr = SegmentedRisks(segments=[
-            RiskSegment(index=0, text="First risk."),
-            RiskSegment(index=1, text="Second risk."),
+            RiskSegment(chunk_id="1A_001", text="First risk."),
+            RiskSegment(chunk_id="1A_002", text="Second risk."),
         ])
         texts = sr.get_texts()
         assert texts == ["First risk.", "Second risk."]

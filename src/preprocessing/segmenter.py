@@ -152,11 +152,22 @@ class RiskSegmenter:
         # Segment the text
         segment_texts = self.segment_risks(text_to_segment)
 
-        # Create RiskSegment objects
+        # Fix 6B: build chunk_id and resolve parent_subsection from node_subsections
+        node_subsections = getattr(extracted_section, 'node_subsections', [])
         segments = [
-            RiskSegment(index=i, text=text)
+            RiskSegment(
+                chunk_id=f"1A_{i+1:03d}",
+                parent_subsection=self._resolve_subsection(
+                    text, text_to_segment, node_subsections
+                ),
+                text=text,
+            )
             for i, text in enumerate(segment_texts)
         ]
+
+        # Fix 6C: promote fiscal_year from metadata
+        parsed_meta = getattr(extracted_section, 'metadata', {})
+        fiscal_year = parsed_meta.get('fiscal_year')
 
         # Build SegmentedRisks with preserved metadata
         return SegmentedRisks(
@@ -167,8 +178,10 @@ class RiskSegmenter:
             ticker=getattr(extracted_section, 'ticker', None),
             company_name=getattr(extracted_section, 'company_name', None),
             form_type=getattr(extracted_section, 'form_type', None),
+            fiscal_year=fiscal_year,
             section_title=getattr(extracted_section, 'title', None),
-            metadata=getattr(extracted_section, 'metadata', {}),
+            section_identifier=getattr(extracted_section, 'identifier', None),
+            metadata=parsed_meta,
         )
 
     def _segment_by_headers(self, text: str) -> List[str]:
@@ -285,6 +298,37 @@ class RiskSegmenter:
                 return True
 
         return False
+
+    def _resolve_subsection(
+        self,
+        chunk_text: str,
+        full_text: str,
+        node_subsections: list
+    ) -> Optional[str]:
+        """
+        Return the parent_subsection for a chunk using doc-order text position (Fix 6B).
+
+        Walks node_subsections (ordered list of (node_text, subsection_title)) and
+        returns the subsection of the latest node whose text starts at or before
+        the chunk's position in full_text.
+        """
+        if not node_subsections:
+            return None
+        key = chunk_text[:50]
+        chunk_start = full_text.find(key)
+        if chunk_start == -1:
+            return node_subsections[-1][1]
+        current: Optional[str] = None
+        for node_text, subsection in node_subsections:
+            node_key = node_text[:50]
+            node_start = full_text.find(node_key)
+            if node_start == -1:
+                continue
+            if node_start <= chunk_start:
+                current = subsection
+            else:
+                break
+        return current
 
     def _get_sentences(self, text: str) -> List[str]:
         """Split text into sentences using spaCy sentencizer (Fix 3A)."""

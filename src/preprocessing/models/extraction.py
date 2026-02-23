@@ -4,7 +4,7 @@ Pydantic models for SEC section extraction.
 Contains data structures for extracted sections from SEC filings.
 """
 
-from typing import Optional, List, Dict, Union, Any
+from typing import Optional, List, Dict, Tuple, Union, Any
 from pathlib import Path
 import json
 
@@ -40,6 +40,8 @@ class ExtractedSection(BaseModel):
     subsections: List[str]
     elements: List[Dict[str, Any]]
     metadata: Dict[str, Any]
+    # Fix 6A: ordered list of (node_text, subsection_title) for parent_subsection mapping
+    node_subsections: List[Tuple[str, Optional[str]]] = []
     # Filing-level metadata (preserved through pipeline)
     sic_code: Optional[str] = None
     sic_name: Optional[str] = None

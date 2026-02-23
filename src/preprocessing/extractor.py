@@ -100,20 +100,23 @@ class SECSectionExtractor:
         # Extract content
         # NOTE: sec-parser creates a FLAT tree structure for sub-items
         # Content is in SIBLINGS, not DESCENDANTS
-        text, subsections, elements = self._extract_section_content(
+        text, subsections, elements, node_subs = self._extract_section_content(
             filing.tree, section_node, filing.form_type.value
         )
         title = self._get_section_title(section_id, filing.form_type.value)
 
-        # Build metadata
+        # Extract filing-level metadata
+        filing_metadata = filing.metadata or {}
+
+        # Build metadata — include fiscal_year/period_of_report so the segmenter
+        # can promote them to SegmentedRisks.fiscal_year (Fix 6C)
         metadata = {
             'num_subsections': len(subsections),
             'num_elements': len(elements),
             'element_type_counts': self._count_element_types(elements),
+            'fiscal_year': filing_metadata.get('fiscal_year'),
+            'period_of_report': filing_metadata.get('period_of_report'),
         }
-
-        # Extract filing-level metadata
-        filing_metadata = filing.metadata or {}
 
         return ExtractedSection(
             text=text,
@@ -122,6 +125,7 @@ class SECSectionExtractor:
             subsections=subsections,
             elements=elements,
             metadata=metadata,
+            node_subsections=node_subs,
             # Filing-level metadata
             sic_code=filing_metadata.get('sic_code'),
             sic_name=filing_metadata.get('sic_name'),
@@ -229,6 +233,19 @@ class SECSectionExtractor:
                     'is_table': node_type == 'TableElement',
                 })
 
+        # Fix 6A (dict path): sequential TitleElement scan → parent_subsection map
+        current_subsection: Optional[str] = None
+        node_subsections_list: List[tuple] = []
+        for node in content_nodes:
+            if node.get('type') == 'TitleElement':
+                title_text = node.get('text', '').strip()
+                if title_text:
+                    current_subsection = title_text
+            elif (node.get('text', '').strip()
+                  and node.get('type') != 'TableElement'
+                  and not self._is_toc_node(node.get('text', ''))):
+                node_subsections_list.append((node.get('text', '').strip(), current_subsection))
+
         # Build full text — exclude tables (Fix 2B) and ToC lines (Fix 2A)
         full_text = "\n\n".join([
             node.get('text', '') for node in content_nodes
@@ -259,6 +276,7 @@ class SECSectionExtractor:
                 'num_elements': len(elements),
                 'element_type_counts': self._count_element_types(elements),
             },
+            node_subsections=node_subsections_list,
             sic_code=metadata.get('sic_code'),
             sic_name=metadata.get('sic_name'),
             cik=metadata.get('cik'),
@@ -405,7 +423,7 @@ class SECSectionExtractor:
         tree: sp.TreeNode,
         section_node: sp.TreeNode,
         _form_type: str
-    ) -> tuple[str, List[str], List[Dict]]:
+    ) -> tuple[str, List[str], List[Dict], List[tuple]]:
         """
         Extract content from section node and its siblings (FLAT structure)
 
@@ -420,7 +438,7 @@ class SECSectionExtractor:
             form_type: Form type ("10-K" or "10-Q")
 
         Returns:
-            Tuple of (full_text, subsections, elements)
+            Tuple of (full_text, subsections, elements, node_subsections)
         """
         # Convert tree.nodes to list for indexing
         all_nodes = list(tree.nodes)
@@ -432,7 +450,7 @@ class SECSectionExtractor:
             # Fallback to old method if node not in list
             subsections = self._extract_subsections(section_node)
             elements = self._extract_elements(section_node)
-            return section_node.text, subsections, elements
+            return section_node.text, subsections, elements, []
 
         # Collect content nodes
         content_nodes = []
@@ -469,6 +487,20 @@ class SECSectionExtractor:
 
             elements.append(element_dict)
 
+        # Fix 6A: sequential TitleElement scan → parent_subsection map (doc order)
+        current_subsection: Optional[str] = None
+        node_subsections_list: List[tuple] = []
+        for node in content_nodes:
+            if isinstance(node.semantic_element, sp.TitleElement):
+                title_text = node.text.strip()
+                if title_text:
+                    current_subsection = title_text
+            elif (hasattr(node, 'text')
+                  and node.text.strip()
+                  and not isinstance(node.semantic_element, sp.TableElement)
+                  and not self._is_toc_node(node.text)):
+                node_subsections_list.append((node.text.strip(), current_subsection))
+
         # Combine all text — exclude tables (Fix 2B) and ToC lines (Fix 2A)
         full_text = "\n\n".join([
             node.text for node in content_nodes
@@ -482,7 +514,7 @@ class SECSectionExtractor:
         if section_node.text:
             full_text = section_node.text + "\n\n" + full_text
 
-        return full_text, subsections, elements
+        return full_text, subsections, elements, node_subsections_list
 
     def _is_next_section(self, node: sp.TreeNode) -> bool:
         """
