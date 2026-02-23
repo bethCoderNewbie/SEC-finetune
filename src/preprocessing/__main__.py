@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Optional
 
 from .pipeline import SECPreprocessingPipeline
+from .constants import OutputSuffix
 from src.config import settings, ensure_directories
 from src.utils.metadata import RunMetadata
 from src.utils.naming import parse_run_dir_metadata, format_output_filename
@@ -57,35 +58,39 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _process_one(file_path: Path, form_type: str, run_dir: Path) -> dict:
-    """Process one filing, save all outputs (parsed, extracted, segmented) to run_dir."""
+    """Process one filing, save all section outputs to run_dir."""
     start = time.time()
-    out_path = run_dir / f"{file_path.stem}_segmented_risks.json"
     try:
-        result = SECPreprocessingPipeline().process_risk_factors(
+        results = SECPreprocessingPipeline().process_filing(
             file_path,
             form_type=form_type,
-            save_output=out_path,
+            save_output_dir=run_dir,
             overwrite=True,
             intermediates_dir=run_dir,
         )
         elapsed = time.time() - start
-        if result:
+        successful = {sid: r for sid, r in results.items() if r is not None}
+        if successful:
+            first = next(iter(successful.values()))
+            primary_sid = next(iter(successful))
+            out_path = run_dir / (file_path.stem + OutputSuffix.section_segmented(primary_sid))
             return {
                 'status': 'success',
                 'file': file_path.name,
                 'input_path': str(file_path),
                 'output_path': str(out_path),
-                'num_segments': len(result),
-                'company': result.company_name,
-                'fiscal_year': result.fiscal_year,
-                'sic_code': result.sic_code,
+                'num_segments': sum(len(r) for r in successful.values()),
+                'sections_extracted': list(successful.keys()),
+                'company': first.company_name,
+                'fiscal_year': first.fiscal_year,
+                'sic_code': first.sic_code,
                 'elapsed_time': elapsed,
             }
         return {
             'status': 'warning',
             'file': file_path.name,
             'input_path': str(file_path),
-            'error': 'No risk factors found',
+            'error': 'No sections extracted',
             'elapsed_time': elapsed,
         }
     except Exception as exc:
@@ -116,23 +121,26 @@ def _run_single(
         print(f"Resume mode: {input_file.name} unchanged since last run. Skipping.")
         return
 
-    out_path = run_dir / f"{input_file.stem}_segmented_risks.json"
     if not quiet:
         print(f"Processing: {input_file.name}")
         print(f"Run dir:    {run_dir}")
 
     start = time.time()
     try:
-        result = SECPreprocessingPipeline().process_risk_factors(
+        results = SECPreprocessingPipeline().process_filing(
             input_file,
             form_type=form_type,
-            save_output=out_path,
+            save_output_dir=run_dir,
             overwrite=True,
             intermediates_dir=run_dir,
         )
         elapsed = time.time() - start
+        successful = {sid: r for sid, r in results.items() if r is not None}
 
-        if result:
+        if successful:
+            first = next(iter(successful.values()))
+            primary_sid = next(iter(successful))
+            out_path = run_dir / (input_file.stem + OutputSuffix.section_segmented(primary_sid))
             manifest.record_success(
                 input_path=input_file,
                 output_path=out_path,
@@ -141,27 +149,28 @@ def _run_single(
             manifest.save()
             if not quiet:
                 print(f"\n{'=' * 50}")
-                print(f"Company:     {result.company_name}")
-                print(f"CIK:         {result.cik}")
-                print(f"SIC Code:    {result.sic_code}")
-                print(f"SIC Name:    {result.sic_name}")
-                print(f"Form Type:   {result.form_type}")
-                print(f"Fiscal Year: {result.fiscal_year}")
-                print(f"Segments:    {len(result)}")
-                print(f"Output:      {out_path}")
+                print(f"Company:     {first.company_name}")
+                print(f"CIK:         {first.cik}")
+                print(f"SIC Code:    {first.sic_code}")
+                print(f"SIC Name:    {first.sic_name}")
+                print(f"Form Type:   {first.form_type}")
+                print(f"Fiscal Year: {first.fiscal_year}")
+                print(f"Sections:    {list(successful.keys())}")
+                print(f"Segments:    {sum(len(r) for r in successful.values())}")
+                print(f"Output dir:  {run_dir}")
                 print(f"Elapsed:     {elapsed:.1f}s")
-                print(f"\nFirst 3 segments:")
-                for seg in result.segments[:3]:
+                print(f"\nFirst 3 segments of '{primary_sid}':")
+                for seg in first.segments[:3]:
                     preview = seg.text[:150].replace('\n', ' ')
                     print(f"  [{seg.chunk_id}] ({seg.parent_subsection or 'intro'}) {preview}...")
         else:
             manifest.record_failure(
                 input_path=input_file,
                 run_id=run_id,
-                reason="No risk factors found",
+                reason="No sections extracted",
             )
             manifest.save()
-            print("No risk factors found in filing.")
+            print("No sections found in filing.")
 
     except Exception as exc:
         manifest.record_failure(input_path=input_file, run_id=run_id, reason=str(exc))

@@ -5,6 +5,42 @@ Format: newest first. Dates are the date of the commit or implementation.
 
 ---
 
+## 2026-02-23 — Multi-Section Extraction
+
+**Commit:** `8c9b470` (unreleased)
+
+Pipeline now extracts **all** sections defined in `settings.sec_sections` per filing instead
+of hardcoding Item 1A. Each section produces its own stamped output files.
+
+**Output layout (per filing):**
+```
+run_dir/
+├── parsed/
+│   └── {stem}_parsed.json
+├── extracted/
+│   ├── {stem}_{section_id}_extracted.json   (one per section found)
+│   └── {stem}_{section_id}_cleaned.json
+└── {stem}_{section_id}_segmented.json       (one per section found)
+```
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/preprocessing/constants.py` | Added `OutputSuffix.section_extracted()`, `section_cleaned()`, `section_segmented()` static methods |
+| `src/preprocessing/pipeline.py` | Added `_sections_for_form_type()`; `process_filing()` now returns `Dict[str, Optional[SegmentedRisks]]` and loops over all sections; `process_risk_factors()` kept as backward-compat wrapper; `_process_filing_with_global_workers()` same multi-section loop; `process_and_validate()` adapted; `process_batch()` resume suffix updated |
+| `scripts/data_preprocessing/run_preprocessing_pipeline.py` | Added `_sections_for_form_type()`; `run_pipeline()` and `process_single_file_fast()` loop over all sections; `run_batch_pipeline()` resume suffix updated |
+| `src/preprocessing/__main__.py` | `_process_one()` and `_run_single()` call `process_filing()` multi-section |
+
+**Key design decisions:**
+- Parse HTML **once** per filing; loop extract/clean/segment for each section
+- Sections not present in a filing are silently skipped (no error)
+- `process_risk_factors()` preserved with identical signature for backward compatibility
+- `settings.sec_sections.sections_10k` drives the section list (7 sections); `sections_10q` drives 10-Q (3 sections)
+- Fallback to `["part1item1a"]` for unknown form types
+
+---
+
 ## 2026-02-18 — Documentation Reorganization (Four Pillars)
 
 **Commits:** `2ee61c4`, `469d6cd`

@@ -50,6 +50,16 @@ from src.utils.resource_tracker import ResourceTracker
 logger = logging.getLogger(__name__)
 
 
+def _sections_for_form_type(form_type: str) -> List[str]:
+    """Return the ordered list of section IDs for the given form type."""
+    from src.config import settings as _cfg
+    if form_type.upper() in ("10-K", "10K"):
+        return list(_cfg.sec_sections.sections_10k.keys())
+    elif form_type.upper() in ("10-Q", "10Q"):
+        return list(_cfg.sec_sections.sections_10q.keys())
+    return ["part1item1a"]
+
+
 class PipelineConfig(BaseModel):
     """
     Configuration for the preprocessing pipeline (Pydantic V2)
@@ -108,12 +118,13 @@ def _process_filing_with_global_workers(
     file_path: Path,
     form_type: str,
     config: PipelineConfig,
-    save_output: Optional[Path],
+    output_dir: Optional[Path],
     overwrite: bool,
+    sections: Optional[List[str]] = None,
     save_intermediates: bool = False,
     intermediates_dir: Optional[Path] = None,
     tracker: Optional[ResourceTracker] = None,
-) -> Optional[SegmentedRisks]:
+) -> Dict[str, Optional[SegmentedRisks]]:
     """
     Process a SEC filing using global worker objects (efficient model reuse).
 
@@ -121,35 +132,32 @@ def _process_filing_with_global_workers(
     per worker process via ``init_preprocessing_worker``).
 
     Flow (sanitization removed):
-    1. Parse HTML → ParsedFiling (with metadata)
-    2. Extract section → ExtractedSection (with metadata)
-    3. Clean text → cleaned text
-    4. Segment → SegmentedRisks (with metadata)
+    1. Parse HTML → ParsedFiling (with metadata) — once per filing
+    2-4. For each section: Extract → Clean → Segment
 
     Args:
         file_path: Path to the HTML filing file
         form_type: Type of SEC form ("10-K" or "10-Q")
         config: Pipeline configuration
-        save_output: Optional path to save the result as JSON
-        overwrite: Whether to overwrite existing output file
+        output_dir: Optional directory to save segmented outputs
+        overwrite: Whether to overwrite existing output files
+        sections: Section IDs to extract (None = all for form_type)
         save_intermediates: Save parsed/extracted outputs to interim dirs
+        intermediates_dir: When set, save parsed + extracted into subdirs here
         tracker: Optional ResourceTracker for per-step timing/memory
 
     Returns:
-        SegmentedRisks with segments and preserved metadata, or None if extraction fails
+        Dict mapping section_id → SegmentedRisks (None if section not found)
     """
     from contextlib import nullcontext
 
+    if sections is None:
+        sections = _sections_for_form_type(form_type)
+
     logger.info("Processing filing: %s", file_path.name)
 
-    # Determine section based on form type
-    if form_type.upper() in ["10-K", "10K"]:
-        section = SectionIdentifier.ITEM_1A_RISK_FACTORS
-    else:
-        section = SectionIdentifier.ITEM_1A_RISK_FACTORS_10Q
-
-    # Step 1: Parse HTML filing (no sanitization)
-    logger.info("Step 1/4: Parsing HTML filing...")
+    # Step 1: Parse HTML filing (once — no sanitization)
+    logger.info("Step 1: Parsing HTML filing...")
     with tracker.track_module(PipelineStep.PARSE) if tracker else nullcontext():
         if intermediates_dir:
             parser_save: Union[Path, bool] = intermediates_dir / "parsed" / (file_path.stem + OutputSuffix.PARSED)
@@ -168,69 +176,91 @@ def _process_filing_with_global_workers(
         parsed.metadata.get('sic_name'),
     )
 
-    # Step 2: Extract section (metadata flows through)
-    logger.info("Step 2/4: Extracting section '%s'...", section.value)
-    with tracker.track_module(PipelineStep.EXTRACT) if tracker else nullcontext():
-        extracted = get_worker_extractor().extract_section(parsed, section)
+    # Steps 2-4: Loop over sections
+    results: Dict[str, Optional[SegmentedRisks]] = {}
 
-    if extracted is None:
-        logger.warning("Section '%s' not found in filing", section.value)
-        return None
+    for section_id in sections:
+        try:
+            section_enum = SectionIdentifier(section_id)
+        except ValueError:
+            logger.warning("Unknown section '%s', skipping", section_id)
+            continue
 
-    logger.info(
-        "Extracted section: %d chars, %d subsections",
-        len(extracted.text),
-        len(extracted.subsections),
-    )
+        # Step 2: Extract section (metadata flows through)
+        logger.info("Extracting section '%s'...", section_id)
+        with tracker.track_module(PipelineStep.EXTRACT) if tracker else nullcontext():
+            extracted = get_worker_extractor().extract_section(parsed, section_enum)
 
-    if intermediates_dir or save_intermediates:
+        if extracted is None:
+            results[section_id] = None
+            logger.info("Section '%s' not found in filing, skipping", section_id)
+            continue
+
+        logger.info(
+            "Extracted section '%s': %d chars, %d subsections",
+            section_id, len(extracted.text), len(extracted.subsections),
+        )
+
+        # Determine extracted dir
         if intermediates_dir:
-            ext_dir = intermediates_dir / "extracted"
-        else:
+            ext_dir: Optional[Path] = intermediates_dir / "extracted"
+        elif save_intermediates:
             from src.config import settings as _cfg  # lazy import (avoids circular at module level)
             ext_dir = _cfg.paths.extracted_data_dir
-        ext_dir.mkdir(parents=True, exist_ok=True)
-        extracted.save_to_json(ext_dir / (file_path.stem + OutputSuffix.EXTRACTED), overwrite=True)
-        logger.info("Saved extracted section to: %s", ext_dir / (file_path.stem + OutputSuffix.EXTRACTED))
-
-    # Step 3: Clean text
-    logger.info("Step 3/4: Cleaning text...")
-    with tracker.track_module(PipelineStep.CLEAN) if tracker else nullcontext():
-        if config.remove_html:
-            cleaned_text = get_worker_cleaner().remove_html_tags(extracted.text)
         else:
-            cleaned_text = extracted.text
+            ext_dir = None
 
-        cleaned_text = get_worker_cleaner().clean_text(
-            cleaned_text,
-            deep_clean=config.deep_clean
-        )
-    logger.info("Cleaned text: %d chars", len(cleaned_text))
+        if ext_dir is not None:
+            ext_dir.mkdir(parents=True, exist_ok=True)
+            extracted.save_to_json(
+                ext_dir / (file_path.stem + OutputSuffix.section_extracted(section_id)),
+                overwrite=True,
+            )
 
-    if intermediates_dir:
-        cleaned_section = extracted.model_copy(update={
-            'text': cleaned_text,
-            'metadata': {**extracted.metadata, 'cleaned': True},
-        })
-        clean_path = ext_dir / (file_path.stem + OutputSuffix.CLEANED)
-        cleaned_section.save_to_json(clean_path, overwrite=True)
-        logger.info("Saved cleaned section to: %s", clean_path)
+        # Step 3: Clean text
+        logger.info("Cleaning text for section '%s'...", section_id)
+        with tracker.track_module(PipelineStep.CLEAN) if tracker else nullcontext():
+            if config.remove_html:
+                cleaned_text = get_worker_cleaner().remove_html_tags(extracted.text)
+            else:
+                cleaned_text = extracted.text
 
-    # Step 4: Segment (metadata preserved)
-    logger.info("Step 4/4: Segmenting risks...")
-    with tracker.track_module(PipelineStep.SEGMENT) if tracker else nullcontext():
-        result = get_worker_segmenter().segment_extracted_section(
-            extracted,
-            cleaned_text=cleaned_text
-        )
-    logger.info("Created %d segments", len(result))
+            cleaned_text = get_worker_cleaner().clean_text(
+                cleaned_text,
+                deep_clean=config.deep_clean
+            )
+        logger.info("Cleaned text: %d chars", len(cleaned_text))
 
-    # Save if requested
-    if save_output:
-        output_path = result.save_to_json(save_output, overwrite=overwrite)
-        logger.info("Saved result to: %s", output_path)
+        if intermediates_dir and ext_dir is not None:
+            cleaned_section = extracted.model_copy(update={
+                'text': cleaned_text,
+                'metadata': {**extracted.metadata, 'cleaned': True},
+            })
+            cleaned_section.save_to_json(
+                ext_dir / (file_path.stem + OutputSuffix.section_cleaned(section_id)),
+                overwrite=True,
+            )
 
-    return result
+        # Step 4: Segment (metadata preserved)
+        logger.info("Segmenting section '%s'...", section_id)
+        with tracker.track_module(PipelineStep.SEGMENT) if tracker else nullcontext():
+            result = get_worker_segmenter().segment_extracted_section(
+                extracted,
+                cleaned_text=cleaned_text
+            )
+        logger.info("Section '%s': created %d segments", section_id, len(result))
+
+        # Save segmented output
+        if output_dir:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            result.save_to_json(
+                output_dir / (file_path.stem + OutputSuffix.section_segmented(section_id)),
+                overwrite=overwrite,
+            )
+
+        results[section_id] = result
+
+    return results
 
 
 # Module-level worker function for parallel processing
@@ -259,20 +289,18 @@ def _process_single_filing_worker(args: tuple) -> Dict[str, Any]:
         # Reconstruct pipeline config from dict
         config = PipelineConfig(**config_dict) if config_dict else PipelineConfig()
 
-        # Generate output path if output_dir is provided
-        save_output = None
         if output_dir:
             output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
-            save_output = output_dir / (file_path.stem + OutputSuffix.SEGMENTED)
 
         # Process the file using global workers (no per-file instantiation)
-        result = _process_filing_with_global_workers(
+        results = _process_filing_with_global_workers(
             file_path=file_path,
             form_type=form_type,
             config=config,
-            save_output=save_output,
+            output_dir=output_dir,
             overwrite=overwrite,
+            sections=_sections_for_form_type(form_type),
             save_intermediates=save_intermediates,
             intermediates_dir=output_dir if save_intermediates else None,
             tracker=tracker,
@@ -280,14 +308,25 @@ def _process_single_filing_worker(args: tuple) -> Dict[str, Any]:
 
         usage = tracker.finalize()
 
-        if result:
+        successful = {sid: r for sid, r in results.items() if r is not None}
+        total_segments = sum(len(r) for r in successful.values())
+
+        if successful:
+            first = next(iter(successful.values()))
+            primary_section = next(iter(successful))
+            primary_path = (
+                output_dir / (file_path.stem + OutputSuffix.section_segmented(primary_section))
+                if output_dir else None
+            )
             return {
                 'status': 'success',
                 'file': file_path.name,
-                'result': result,  # Include actual SegmentedRisks object
-                'num_segments': len(result),
-                'sic_code': result.sic_code,
-                'company_name': result.company_name,
+                'result': successful,
+                'num_segments': total_segments,
+                'sections_extracted': list(successful.keys()),
+                'output_path': str(primary_path) if primary_path else None,
+                'sic_code': first.sic_code,
+                'company_name': first.company_name,
                 'elapsed_time': usage.elapsed_time(),
                 'file_size_mb': file_size_mb,
                 'resource_usage': usage.to_dict(),
@@ -297,7 +336,7 @@ def _process_single_filing_worker(args: tuple) -> Dict[str, Any]:
                 'status': 'warning',
                 'file': file_path.name,
                 'result': None,
-                'error': 'No result returned from processing',
+                'error': 'No sections extracted from filing',
                 'elapsed_time': usage.elapsed_time(),
                 'file_size_mb': file_size_mb,
                 'resource_usage': usage.to_dict(),
@@ -338,13 +377,13 @@ class SECPreprocessingPipeline:
 
     Example:
         >>> pipeline = SECPreprocessingPipeline()
-        >>> result = pipeline.process_filing(
+        >>> results = pipeline.process_filing(
         ...     "data/raw/AAPL_10K.html",
         ...     form_type="10-K"
         ... )
-        >>> print(f"Company: {result.company_name}")
-        >>> print(f"SIC: {result.sic_code} - {result.sic_name}")
-        >>> print(f"Segments: {len(result.segments)}")
+        >>> for section_id, result in results.items():
+        ...     if result:
+        ...         print(f"{section_id}: {len(result)} segments")
     """
 
     def __init__(self, config: Optional[PipelineConfig] = None):
@@ -380,46 +419,50 @@ class SECPreprocessingPipeline:
         self,
         file_path: Union[str, Path],
         form_type: str = "10-K",
-        section: SectionIdentifier = SectionIdentifier.ITEM_1A_RISK_FACTORS,
-        save_output: Optional[Union[str, Path]] = None,
+        sections: Optional[List[SectionIdentifier]] = None,
+        save_output_dir: Optional[Union[str, Path]] = None,
         overwrite: bool = False,
         save_intermediates: bool = False,
         intermediates_dir: Optional[Path] = None,
-    ) -> Optional[SegmentedRisks]:
+    ) -> Dict[str, Optional[SegmentedRisks]]:
         """
-        Process a SEC filing through the complete pipeline
+        Process a SEC filing through the complete pipeline for all specified sections.
 
         Flow (sanitization removed for efficiency):
-        1. Parse HTML → ParsedFiling (with metadata)
-        2. Extract section → ExtractedSection (with metadata)
-        3. Clean text → cleaned text
-        4. Segment → SegmentedRisks (with metadata)
+        1. Parse HTML → ParsedFiling (with metadata) — once per filing
+        2-4. For each section: Extract → Clean → Segment
 
         Args:
             file_path: Path to the HTML filing file
             form_type: Type of SEC form ("10-K" or "10-Q")
-            section: Section to extract (default: Risk Factors)
-            save_output: Optional path to save the result as JSON
-            overwrite: Whether to overwrite existing output file
+            sections: Sections to extract (None = all sections for form_type)
+            save_output_dir: Optional directory to save segmented outputs
+            overwrite: Whether to overwrite existing output files
             save_intermediates: Save parsed/extracted to their default dirs
             intermediates_dir: When set, save parsed + extracted into subdirs
                 here (parsed/ and extracted/) instead of the default dirs.
                 Takes precedence over save_intermediates.
 
         Returns:
-            SegmentedRisks with segments and preserved metadata, or None if extraction fails
-
-        Example:
-            >>> pipeline = SECPreprocessingPipeline()
-            >>> result = pipeline.process_filing("AAPL_10K.html")
-            >>> print(f"Found {len(result)} risk segments")
-            >>> print(f"SIC: {result.sic_name}")
+            Dict mapping section_id → SegmentedRisks (None if section not found)
         """
         file_path = Path(file_path)
         logger.info("Processing filing: %s", file_path.name)
 
-        # Step 1: Parse HTML filing (no sanitization)
-        logger.info("Step 1/4: Parsing HTML filing...")
+        # Resolve sections: if None, use all sections for this form type
+        if sections is None:
+            section_ids = _sections_for_form_type(form_type)
+            section_list: List[SectionIdentifier] = []
+            for sid in section_ids:
+                try:
+                    section_list.append(SectionIdentifier(sid))
+                except ValueError:
+                    logger.warning("Unknown section '%s' in config, skipping", sid)
+        else:
+            section_list = list(sections)
+
+        # Step 1: Parse HTML filing (once — no sanitization)
+        logger.info("Step 1: Parsing HTML filing...")
         if intermediates_dir:
             parsed_dir = intermediates_dir / "parsed"
             parsed_dir.mkdir(parents=True, exist_ok=True)
@@ -436,69 +479,86 @@ class SECPreprocessingPipeline:
             parsed.metadata.get('sic_name'),
         )
 
-        # Step 2: Extract section (metadata flows through)
-        logger.info("Step 2/4: Extracting section '%s'...", section.value)
-        extracted = self.extractor.extract_section(parsed, section)
+        # Resolve output dir
+        output_dir = Path(save_output_dir) if save_output_dir else None
 
-        if extracted is None:
-            logger.warning("Section '%s' not found in filing", section.value)
-            return None
+        # Steps 2-4: Loop over sections
+        results: Dict[str, Optional[SegmentedRisks]] = {}
 
-        logger.info(
-            "Extracted section: %d chars, %d subsections",
-            len(extracted.text),
-            len(extracted.subsections),
-        )
+        for section in section_list:
+            section_id = section.value
 
-        if intermediates_dir or save_intermediates:
+            # Step 2: Extract section (metadata flows through)
+            logger.info("Extracting section '%s'...", section_id)
+            extracted = self.extractor.extract_section(parsed, section)
+
+            if extracted is None:
+                results[section_id] = None
+                logger.info("Section '%s' not found in filing, skipping", section_id)
+                continue
+
+            logger.info(
+                "Extracted section '%s': %d chars, %d subsections",
+                section_id, len(extracted.text), len(extracted.subsections),
+            )
+
+            # Determine ext_dir
             if intermediates_dir:
-                ext_dir = intermediates_dir / "extracted"
-            else:
+                ext_dir: Optional[Path] = intermediates_dir / "extracted"
+            elif save_intermediates:
                 from src.config import settings as _cfg  # lazy import
                 ext_dir = _cfg.paths.extracted_data_dir
-            ext_dir.mkdir(parents=True, exist_ok=True)
-            extracted_path = ext_dir / (file_path.stem + OutputSuffix.EXTRACTED)
-            extracted.save_to_json(extracted_path, overwrite=True)
-            logger.info("Saved extracted section to: %s", extracted_path)
+            else:
+                ext_dir = None
 
-        # Step 3: Clean text
-        logger.info("Step 3/4: Cleaning text...")
-        if self.config.remove_html:
-            cleaned_text = self.cleaner.remove_html_tags(extracted.text)
-        else:
-            cleaned_text = extracted.text
+            if ext_dir is not None:
+                ext_dir.mkdir(parents=True, exist_ok=True)
+                extracted.save_to_json(
+                    ext_dir / (file_path.stem + OutputSuffix.section_extracted(section_id)),
+                    overwrite=True,
+                )
+                logger.info("Saved extracted section '%s' to: %s", section_id, ext_dir)
 
-        cleaned_text = self.cleaner.clean_text(
-            cleaned_text,
-            deep_clean=self.config.deep_clean
-        )
-        logger.info("Cleaned text: %d chars", len(cleaned_text))
+            # Step 3: Clean text
+            logger.info("Cleaning text for section '%s'...", section_id)
+            if self.config.remove_html:
+                cleaned_text = self.cleaner.remove_html_tags(extracted.text)
+            else:
+                cleaned_text = extracted.text
 
-        if intermediates_dir:
-            clean_dir = intermediates_dir / "extracted"
-            clean_dir.mkdir(parents=True, exist_ok=True)
-            cleaned_section = extracted.model_copy(update={
-                'text': cleaned_text,
-                'metadata': {**extracted.metadata, 'cleaned': True},
-            })
-            clean_path = clean_dir / (file_path.stem + OutputSuffix.CLEANED)
-            cleaned_section.save_to_json(clean_path, overwrite=True)
-            logger.info("Saved cleaned section to: %s", clean_path)
+            cleaned_text = self.cleaner.clean_text(
+                cleaned_text,
+                deep_clean=self.config.deep_clean
+            )
+            logger.info("Cleaned text: %d chars", len(cleaned_text))
 
-        # Step 4: Segment (metadata preserved)
-        logger.info("Step 4/4: Segmenting risks...")
-        result = self.segmenter.segment_extracted_section(
-            extracted,
-            cleaned_text=cleaned_text
-        )
-        logger.info("Created %d segments", len(result))
+            if intermediates_dir and ext_dir is not None:
+                cleaned_section = extracted.model_copy(update={
+                    'text': cleaned_text,
+                    'metadata': {**extracted.metadata, 'cleaned': True},
+                })
+                clean_path = ext_dir / (file_path.stem + OutputSuffix.section_cleaned(section_id))
+                cleaned_section.save_to_json(clean_path, overwrite=True)
+                logger.info("Saved cleaned section '%s' to: %s", section_id, clean_path)
 
-        # Save if requested
-        if save_output:
-            output_path = result.save_to_json(save_output, overwrite=overwrite)
-            logger.info("Saved result to: %s", output_path)
+            # Step 4: Segment (metadata preserved)
+            logger.info("Segmenting section '%s'...", section_id)
+            result = self.segmenter.segment_extracted_section(
+                extracted,
+                cleaned_text=cleaned_text
+            )
+            logger.info("Section '%s': created %d segments", section_id, len(result))
 
-        return result
+            # Save segmented output
+            if output_dir:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                seg_path = output_dir / (file_path.stem + OutputSuffix.section_segmented(section_id))
+                result.save_to_json(seg_path, overwrite=overwrite)
+                logger.info("Saved segmented section '%s' to: %s", section_id, seg_path)
+
+            results[section_id] = result
+
+        return results
 
     def process_and_validate(
         self,
@@ -525,26 +585,17 @@ class SECPreprocessingPipeline:
             - result: SegmentedRisks if processing succeeded, None if failed
             - status: "PASS" or "FAIL" (validation status)
             - validation_report: Validation report dict (if validation performed)
-
-        Example:
-            >>> pipeline = SECPreprocessingPipeline()
-            >>> result, status, report = pipeline.process_and_validate("AAPL_10K.html")
-            >>> if status == "FAIL":
-            ...     # Quarantine the file
-            ...     quarantine_file(result, report)
-            ... else:
-            ...     # Write to production
-            ...     result.save_to_json("output.json")
         """
         # Process the filing
         try:
-            result = self.process_filing(
+            results = self.process_filing(
                 file_path=file_path,
                 form_type=form_type,
-                section=section,
-                save_output=None,  # Don't save yet (wait for validation)
-                overwrite=False
+                sections=[section],
+                save_output_dir=None,
+                overwrite=False,
             )
+            result = results.get(section.value)
 
             if result is None:
                 return None, "FAIL", {"reason": "extraction_failed"}
@@ -576,34 +627,38 @@ class SECPreprocessingPipeline:
         intermediates_dir: Optional[Path] = None,
     ) -> Optional[SegmentedRisks]:
         """
-        Convenience method to process Risk Factors section
+        Backward-compatible wrapper: process Risk Factors section only.
 
         Args:
             file_path: Path to the HTML filing file
             form_type: Type of SEC form ("10-K" or "10-Q")
-            save_output: Optional path to save the result as JSON
+            save_output: Optional exact path to save the result as JSON
             overwrite: Whether to overwrite existing output file
             save_intermediates: Save parsed/extracted to their default dirs
-            intermediates_dir: When set, save parsed + extracted into subdirs
-                here (parsed/ and extracted/) instead of the default dirs.
+            intermediates_dir: When set, save parsed + extracted into subdirs here.
 
         Returns:
             SegmentedRisks with risk segments and metadata
         """
-        if form_type.upper() in ["10-K", "10K"]:
+        if form_type.upper() in ("10-K", "10K"):
             section = SectionIdentifier.ITEM_1A_RISK_FACTORS
         else:
             section = SectionIdentifier.ITEM_1A_RISK_FACTORS_10Q
 
-        return self.process_filing(
+        results = self.process_filing(
             file_path,
             form_type=form_type,
-            section=section,
-            save_output=save_output,
+            sections=[section],
+            save_output_dir=Path(save_output).parent if save_output else None,
             overwrite=overwrite,
             save_intermediates=save_intermediates,
             intermediates_dir=intermediates_dir,
         )
+        result = results.get(section.value)
+        # Honour legacy exact save_output path (section_segmented gives different name)
+        if result and save_output:
+            result.save_to_json(save_output, overwrite=overwrite)
+        return result
 
     def process_batch(
         self,
@@ -632,7 +687,7 @@ class SECPreprocessingPipeline:
             progress_log: Optional path for a persistent progress log file
 
         Returns:
-            List of SegmentedRisks objects (successful results only)
+            List of SegmentedRisks objects (successful results only, all sections flattened)
 
         Note:
             Uses ParallelProcessor for efficient batch processing.
@@ -646,7 +701,7 @@ class SECPreprocessingPipeline:
         if resume and output_dir:
             resume_filter = ResumeFilter(
                 output_dir=Path(output_dir),
-                output_suffix="_segmented.json",
+                output_suffix=OutputSuffix.section_segmented("part1item1a"),
             )
             file_paths = resume_filter.filter_unprocessed(
                 [Path(p) for p in file_paths],
@@ -771,8 +826,11 @@ class SECPreprocessingPipeline:
             if errors:
                 logger.error("Files with errors: %s", [r['file'] for r in errors])
 
-        # Extract SegmentedRisks objects from successful results
-        results = [r['result'] for r in successful if r.get('result') is not None]
+        # Flatten all SegmentedRisks objects from successful results
+        results: List[SegmentedRisks] = []
+        for r in successful:
+            if r.get('result'):
+                results.extend(r['result'].values())
 
         return results
 
@@ -784,7 +842,7 @@ def process_filing(
     save_output: Optional[Union[str, Path]] = None,
 ) -> Optional[SegmentedRisks]:
     """
-    Convenience function to process a single SEC filing
+    Convenience function to process a single SEC filing (Risk Factors only)
 
     Args:
         file_path: Path to the HTML filing file

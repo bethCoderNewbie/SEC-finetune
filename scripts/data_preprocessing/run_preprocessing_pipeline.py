@@ -15,7 +15,7 @@ ARCHITECTURAL NOTE:
 
 Pipeline Flow (with metadata preservation):
     1. Parse   -> ParsedFiling (sic_code, sic_name, cik, company_name)
-    2. Extract -> ExtractedSection (metadata preserved)
+    2. Extract -> ExtractedSection (metadata preserved) — one pass per section
     3. Clean   -> cleaned text
     4. Segment -> SegmentedRisks (metadata preserved)
     5. Sentiment -> sentiment features (optional, feature engineering step)
@@ -28,7 +28,12 @@ Output layout (batch mode):
         ├── _checkpoint.json                   # CheckpointManager (deleted on success)
         ├── RUN_REPORT.md                      # MarkdownReportGenerator report
         ├── batch_summary_{run_id}_...json     # JSON summary (naming.py convention)
-        └── {stem}_segmented_risks.json        # Per-filing output
+        ├── parsed/
+        │   └── {stem}_parsed.json
+        ├── extracted/
+        │   ├── {stem}_{section_id}_extracted.json
+        │   └── {stem}_{section_id}_cleaned.json
+        └── {stem}_{section_id}_segmented.json  # One per section found
 
 Usage:
     # Single file mode
@@ -60,7 +65,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 
 # Preprocessing classes
-from src.preprocessing.constants import OutputSuffix, PipelineStep
+from src.preprocessing.constants import OutputSuffix, PipelineStep, SectionIdentifier
 from src.preprocessing.parser import SECFilingParser, ParsedFiling
 from src.preprocessing.extractor import SECSectionExtractor, ExtractedSection
 from src.preprocessing.cleaning import TextCleaner
@@ -105,6 +110,15 @@ logger = logging.getLogger(__name__)
 _worker_analyzer: Optional[SentimentAnalyzer] = None
 
 
+def _sections_for_form_type(form_type: str) -> List[str]:
+    """Return the ordered list of section IDs for the given form type."""
+    if form_type.upper() in ("10-K", "10K"):
+        return list(settings.sec_sections.sections_10k.keys())
+    elif form_type.upper() in ("10-Q", "10Q"):
+        return list(settings.sec_sections.sections_10q.keys())
+    return ["part1item1a"]
+
+
 def _init_worker(extract_sentiment: bool = True) -> None:
     """
     Initialize worker process with reusable objects.
@@ -128,30 +142,29 @@ def run_pipeline(
     save_intermediates: bool = True,
     extract_sentiment: bool = True,
     output_dir: Optional[Path] = None,
-) -> Tuple[Optional[ParsedFiling], Optional[ExtractedSection], Optional[SegmentedRisks], Optional[List]]:
+) -> Tuple[Optional[ParsedFiling], Dict[str, Optional[SegmentedRisks]]]:
     """
     Run the full preprocessing pipeline on a single filing.
 
     Pipeline Flow:
         1. Parse   -> ParsedFiling (with metadata: sic_code, sic_name, cik, company_name)
-        2. Extract -> ExtractedSection (metadata preserved)
-        3. Clean   -> cleaned text
-        4. Segment -> SegmentedRisks (metadata preserved)
+        2-4. For each section: Extract -> Clean -> Segment
         5. Sentiment -> sentiment features (optional)
 
     Args:
         input_file: Path to input HTML file
         save_intermediates: Whether to save intermediate results
         extract_sentiment: Whether to extract sentiment features (default: True)
+        output_dir: Optional directory to save outputs
 
     Returns:
-        Tuple of (ParsedFiling, ExtractedSection, SegmentedRisks, sentiment_features_list)
+        Tuple of (ParsedFiling, Dict[section_id, SegmentedRisks])
     """
     print(f"Preprocessing Pipeline for: {input_file.name}")
     print("=" * 80)
 
     # Step 1: Parse
-    print("\n[1/5] Parsing SEC filing...")
+    print("\n[1/N] Parsing SEC filing...")
     parser = SECFilingParser()
     parsed_path = None
     if save_intermediates and output_dir:
@@ -170,130 +183,116 @@ def run_pipeline(
     print(f"       - SIC Code: {filing.metadata.get('sic_code', 'N/A')}")
     print(f"       - SIC Name: {filing.metadata.get('sic_name', 'N/A')}")
 
-    # Step 2: Extract section (metadata flows through)
-    print("\n[2/5] Extracting risk factors section...")
+    # Initialize shared objects (once for all sections)
     extractor = SECSectionExtractor()
-    risk_section = extractor.extract_risk_factors(filing)
-
-    if not risk_section:
-        print("  [WARN] Risk Factors section not found in filing")
-        return filing, None, None, None
-
-    print(f"  [OK] Extracted '{risk_section.title}'")
-    print(f"  [OK] Section length: {len(risk_section):,} characters")
-    print(f"  [OK] Found {len(risk_section.subsections)} risk subsections")
-    print(f"  [OK] Contains {risk_section.metadata['num_elements']} semantic elements")
-    print(f"  [OK] Metadata preserved: SIC={risk_section.sic_code}, CIK={risk_section.cik}")
-
-    # Save extracted section if requested
-    if save_intermediates:
-        dest = output_dir / "extracted" if output_dir else EXTRACTED_DATA_DIR
-        dest.mkdir(parents=True, exist_ok=True)
-        output_path = dest / (input_file.stem + OutputSuffix.EXTRACTED)
-        risk_section.save_to_json(output_path, overwrite=True)
-        print(f"  [OK] Saved to: {output_path}")
-
-    # Step 3: Clean text
-    print("\n[3/5] Cleaning extracted text...")
     cleaner = TextCleaner()
-    cleaned_text = cleaner.clean_text(risk_section.text, deep_clean=False)
-    print(f"  [OK] Cleaned text from {len(risk_section.text):,} to {len(cleaned_text):,} characters")
-
-    cleaned_section = ExtractedSection(
-        text=cleaned_text,
-        identifier=risk_section.identifier,
-        title=risk_section.title,
-        subsections=risk_section.subsections,
-        elements=risk_section.elements,
-        metadata={
-            **risk_section.metadata,
-            'cleaned': True,
-            'cleaning_settings': {
-                'remove_html_tags': settings.preprocessing.remove_html_tags,
-                'normalize_whitespace': settings.preprocessing.normalize_whitespace,
-                'remove_page_numbers': settings.preprocessing.remove_page_numbers,
-            }
-        },
-        sic_code=risk_section.sic_code,
-        sic_name=risk_section.sic_name,
-        cik=risk_section.cik,
-        ticker=risk_section.ticker,
-        company_name=risk_section.company_name,
-        form_type=risk_section.form_type,
-    )
-
-    if save_intermediates:
-        dest = output_dir / "extracted" if output_dir else EXTRACTED_DATA_DIR
-        dest.mkdir(parents=True, exist_ok=True)
-        output_path = dest / (input_file.stem + OutputSuffix.CLEANED)
-        cleaned_section.save_to_json(output_path, overwrite=True)
-        print(f"  [OK] Saved cleaned section to: {output_path}")
-
-    # Step 4: Segment (metadata preserved via SegmentedRisks)
-    print("\n[4/5] Segmenting into risk factors...")
     segmenter = RiskSegmenter(
         min_length=settings.preprocessing.min_segment_length,
-        max_length=settings.preprocessing.max_segment_length
+        max_length=settings.preprocessing.max_segment_length,
     )
-    segmented_risks = segmenter.segment_extracted_section(
-        cleaned_section,
-        cleaned_text=cleaned_text
-    )
+    analyzer = SentimentAnalyzer() if extract_sentiment else None
 
-    print(f"  [OK] Segmented into {len(segmented_risks)} risk factors")
-    if len(segmented_risks) > 0:
-        avg_len = sum(seg.char_count for seg in segmented_risks.segments) // len(segmented_risks)
-        print(f"  [OK] Average segment length: {avg_len:,} characters")
-    print(f"  [OK] Metadata preserved in SegmentedRisks:")
-    print(f"       - SIC Code: {segmented_risks.sic_code}")
-    print(f"       - SIC Name: {segmented_risks.sic_name}")
-    print(f"       - CIK: {segmented_risks.cik}")
-    print(f"       - Company: {segmented_risks.company_name}")
+    sections = _sections_for_form_type("10-K")
+    dest_dir = output_dir if output_dir is not None else PROCESSED_DATA_DIR
+    all_results: Dict[str, Optional[SegmentedRisks]] = {}
 
-    # Step 5: Sentiment Analysis (optional)
-    sentiment_features_list = None
-    if extract_sentiment and len(segmented_risks) > 0:
-        print("\n[5/5] Extracting sentiment features...")
-        analyzer = SentimentAnalyzer()
-        segment_texts = segmented_risks.get_texts()
-        sentiment_features_list = analyzer.extract_features_batch(segment_texts)
+    for section_id in sections:
+        try:
+            section_enum = SectionIdentifier(section_id)
+        except ValueError:
+            logger.warning("Unknown section '%s', skipping", section_id)
+            continue
 
-        print(f"  [OK] Extracted sentiment features for {len(sentiment_features_list)} segments")
-        n = len(sentiment_features_list)
-        avg_negative    = sum(f.negative_ratio    for f in sentiment_features_list) / n
-        avg_uncertainty = sum(f.uncertainty_ratio for f in sentiment_features_list) / n
-        avg_positive    = sum(f.positive_ratio    for f in sentiment_features_list) / n
-        print(f"  [OK] Average sentiment ratios across all segments:")
-        print(f"       Negative:    {avg_negative:.4f}")
-        print(f"       Uncertainty: {avg_uncertainty:.4f}")
-        print(f"       Positive:    {avg_positive:.4f}")
-    else:
-        if not extract_sentiment:
-            print("\n[5/5] Sentiment analysis skipped (use without --no-sentiment to enable)")
-        else:
-            print("\n[5/5] No segments to analyze for sentiment")
+        # Step 2: Extract section (metadata flows through)
+        print(f"\n  Extracting section '{section_id}'...")
+        extracted = extractor.extract_section(filing, section_enum)
 
-    # Save final output
-    if save_intermediates and len(segmented_risks) > 0:
-        output_filename = input_file.stem + OutputSuffix.SEGMENTED
-        dest_dir = output_dir if output_dir is not None else PROCESSED_DATA_DIR
-        output_path = dest_dir / output_filename
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if extracted is None:
+            print(f"  [SKIP] Section '{section_id}' not found in filing")
+            all_results[section_id] = None
+            continue
 
-        output_data = _build_output_data(
-            input_file=input_file,
-            segmented_risks=segmented_risks,
-            sentiment_features_list=sentiment_features_list,
-            extract_sentiment=extract_sentiment
+        print(f"  [OK] Extracted '{extracted.title}' ({len(extracted.text):,} chars, "
+              f"{len(extracted.subsections)} subsections)")
+
+        # Save extracted section if requested
+        if save_intermediates:
+            dest = output_dir / "extracted" if output_dir else EXTRACTED_DATA_DIR
+            dest.mkdir(parents=True, exist_ok=True)
+            output_path = dest / (input_file.stem + OutputSuffix.section_extracted(section_id))
+            extracted.save_to_json(output_path, overwrite=True)
+            print(f"  [OK] Saved extracted to: {output_path}")
+
+        # Step 3: Clean text
+        cleaned_text = cleaner.clean_text(extracted.text, deep_clean=False)
+        print(f"  [OK] Cleaned text from {len(extracted.text):,} to {len(cleaned_text):,} characters")
+
+        cleaned_section = ExtractedSection(
+            text=cleaned_text,
+            identifier=extracted.identifier,
+            title=extracted.title,
+            subsections=extracted.subsections,
+            elements=extracted.elements,
+            metadata={
+                **extracted.metadata,
+                'cleaned': True,
+                'cleaning_settings': {
+                    'remove_html_tags': settings.preprocessing.remove_html_tags,
+                    'normalize_whitespace': settings.preprocessing.normalize_whitespace,
+                    'remove_page_numbers': settings.preprocessing.remove_page_numbers,
+                }
+            },
+            sic_code=extracted.sic_code,
+            sic_name=extracted.sic_name,
+            cik=extracted.cik,
+            ticker=extracted.ticker,
+            company_name=extracted.company_name,
+            form_type=extracted.form_type,
         )
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(output_data, f, indent=2, ensure_ascii=False)
-        print(f"  [OK] Saved segments to: {output_path}")
 
+        if save_intermediates:
+            dest = output_dir / "extracted" if output_dir else EXTRACTED_DATA_DIR
+            dest.mkdir(parents=True, exist_ok=True)
+            output_path = dest / (input_file.stem + OutputSuffix.section_cleaned(section_id))
+            cleaned_section.save_to_json(output_path, overwrite=True)
+            print(f"  [OK] Saved cleaned section to: {output_path}")
+
+        # Step 4: Segment (metadata preserved via SegmentedRisks)
+        segmented_risks = segmenter.segment_extracted_section(
+            cleaned_section,
+            cleaned_text=cleaned_text
+        )
+        print(f"  [OK] Segmented '{section_id}' into {len(segmented_risks)} segments")
+
+        # Step 5: Sentiment Analysis (optional)
+        sentiment_features_list = None
+        if analyzer and len(segmented_risks) > 0:
+            segment_texts = segmented_risks.get_texts()
+            sentiment_features_list = analyzer.extract_features_batch(segment_texts)
+            print(f"  [OK] Extracted sentiment features for {len(sentiment_features_list)} segments")
+
+        # Save final output
+        if save_intermediates and len(segmented_risks) > 0:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            output_path = dest_dir / (input_file.stem + OutputSuffix.section_segmented(section_id))
+            output_data = _build_output_data(
+                input_file=input_file,
+                segmented_risks=segmented_risks,
+                sentiment_features_list=sentiment_features_list,
+                extract_sentiment=extract_sentiment,
+            )
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(output_data, f, indent=2, ensure_ascii=False)
+            print(f"  [OK] Saved segments to: {output_path}")
+
+        all_results[section_id] = segmented_risks
+
+    found = sum(1 for r in all_results.values() if r is not None)
     print("\n" + "=" * 80)
     print("Pipeline complete!")
+    print(f"Sections processed: {found}/{len(sections)}")
 
-    return filing, cleaned_section, segmented_risks, sentiment_features_list
+    return filing, all_results
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +392,8 @@ def process_single_file_fast(args: Tuple[Path, bool, Path]) -> Dict[str, Any]:
 
     Returns:
         Dict with keys: file, input_path, output_path, status, num_segments,
-        sic_code, sic_name, cik, elapsed_time, file_size_mb, resource_usage, error
+        sections_extracted, sic_code, sic_name, cik, elapsed_time, file_size_mb,
+        resource_usage, error
     """
     input_file, save_intermediates, output_dir = args
     input_file = Path(input_file)
@@ -415,119 +415,136 @@ def process_single_file_fast(args: Tuple[Path, bool, Path]) -> Dict[str, Any]:
                 save_output=parsed_path if parsed_path else save_intermediates,
             )
 
-        # Step 2: Extract
-        with tracker.track_module(PipelineStep.EXTRACT):
-            risk_section = get_worker_extractor().extract_risk_factors(filing)
+        ext_dir = output_dir / "extracted"
+        sections = _sections_for_form_type("10-K")
+        all_segmented: Dict[str, SegmentedRisks] = {}
+        first_output_path: Optional[Path] = None
 
-        if not risk_section:
-            usage = tracker.finalize()
+        # Steps 2-4: Loop over sections
+        for section_id in sections:
+            try:
+                section_enum = SectionIdentifier(section_id)
+            except ValueError:
+                logger.warning("Unknown section '%s', skipping", section_id)
+                continue
+
+            # Step 2: Extract
+            with tracker.track_module(PipelineStep.EXTRACT):
+                section_result = get_worker_extractor().extract_section(filing, section_enum)
+
+            if not section_result:
+                continue
+
+            if save_intermediates:
+                ext_dir.mkdir(parents=True, exist_ok=True)
+                section_result.save_to_json(
+                    ext_dir / (input_file.stem + OutputSuffix.section_extracted(section_id)),
+                    overwrite=True,
+                )
+
+            # Step 3: Clean
+            with tracker.track_module(PipelineStep.CLEAN):
+                cleaned_text = get_worker_cleaner().clean_text(section_result.text, deep_clean=False)
+
+            cleaned_section = ExtractedSection(
+                text=cleaned_text,
+                identifier=section_result.identifier,
+                title=section_result.title,
+                subsections=section_result.subsections,
+                elements=section_result.elements,
+                metadata={
+                    **section_result.metadata,
+                    'cleaned': True,
+                    'cleaning_settings': {
+                        'remove_html_tags': settings.preprocessing.remove_html_tags,
+                        'normalize_whitespace': settings.preprocessing.normalize_whitespace,
+                        'remove_page_numbers': settings.preprocessing.remove_page_numbers,
+                    }
+                },
+                sic_code=section_result.sic_code,
+                sic_name=section_result.sic_name,
+                cik=section_result.cik,
+                ticker=section_result.ticker,
+                company_name=section_result.company_name,
+                form_type=section_result.form_type,
+            )
+
+            if save_intermediates:
+                ext_dir.mkdir(parents=True, exist_ok=True)
+                cleaned_section.save_to_json(
+                    ext_dir / (input_file.stem + OutputSuffix.section_cleaned(section_id)),
+                    overwrite=True,
+                )
+
+            # Step 4: Segment
+            with tracker.track_module(PipelineStep.SEGMENT):
+                segmented_risks = get_worker_segmenter().segment_extracted_section(
+                    cleaned_section,
+                    cleaned_text=cleaned_text
+                )
+
+            if len(segmented_risks) == 0:
+                continue
+
+            # Step 5: Sentiment (if worker is enabled)
+            sentiment_features_list = None
+            if _worker_analyzer:
+                with tracker.track_module(PipelineStep.SENTIMENT):
+                    sentiment_features_list = _worker_analyzer.extract_features_batch(
+                        segmented_risks.get_texts()
+                    )
+
+            # Save segmented output into stamped run directory
+            if save_intermediates:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                section_output_path = output_dir / (
+                    input_file.stem + OutputSuffix.section_segmented(section_id)
+                )
+                output_data = _build_output_data(
+                    input_file=input_file,
+                    segmented_risks=segmented_risks,
+                    sentiment_features_list=sentiment_features_list,
+                    extract_sentiment=(_worker_analyzer is not None),
+                )
+                with open(section_output_path, 'w', encoding='utf-8') as f:
+                    json.dump(output_data, f, indent=2, ensure_ascii=False)
+                if first_output_path is None:
+                    first_output_path = section_output_path
+
+            all_segmented[section_id] = segmented_risks
+
+        usage = tracker.finalize()
+
+        if not all_segmented:
             return {
                 'file': input_file.name,
                 'input_path': str(input_file),
                 'output_path': None,
                 'status': 'warning',
                 'num_segments': 0,
+                'sections_extracted': [],
                 'sic_code': filing.metadata.get('sic_code'),
                 'sic_name': filing.metadata.get('sic_name'),
                 'cik': filing.metadata.get('cik'),
                 'elapsed_time': usage.elapsed_time(),
                 'file_size_mb': file_size_mb,
                 'resource_usage': usage.to_dict(),
-                'error': 'Risk Factors section not found',
+                'error': 'No sections extracted from filing',
             }
 
-        ext_dir = output_dir / "extracted"
-        if save_intermediates:
-            ext_dir.mkdir(parents=True, exist_ok=True)
-            risk_section.save_to_json(ext_dir / (input_file.stem + OutputSuffix.EXTRACTED), overwrite=True)
-
-        # Step 3: Clean
-        with tracker.track_module(PipelineStep.CLEAN):
-            cleaned_text = get_worker_cleaner().clean_text(risk_section.text, deep_clean=False)
-
-        cleaned_section = ExtractedSection(
-            text=cleaned_text,
-            identifier=risk_section.identifier,
-            title=risk_section.title,
-            subsections=risk_section.subsections,
-            elements=risk_section.elements,
-            metadata={
-                **risk_section.metadata,
-                'cleaned': True,
-                'cleaning_settings': {
-                    'remove_html_tags': settings.preprocessing.remove_html_tags,
-                    'normalize_whitespace': settings.preprocessing.normalize_whitespace,
-                    'remove_page_numbers': settings.preprocessing.remove_page_numbers,
-                }
-            },
-            sic_code=risk_section.sic_code,
-            sic_name=risk_section.sic_name,
-            cik=risk_section.cik,
-            ticker=risk_section.ticker,
-            company_name=risk_section.company_name,
-            form_type=risk_section.form_type,
-        )
-
-        if save_intermediates:
-            cleaned_section.save_to_json(ext_dir / (input_file.stem + OutputSuffix.CLEANED), overwrite=True)
-
-        # Step 4: Segment
-        with tracker.track_module(PipelineStep.SEGMENT):
-            segmented_risks = get_worker_segmenter().segment_extracted_section(
-                cleaned_section,
-                cleaned_text=cleaned_text
-            )
-
-        if len(segmented_risks) == 0:
-            usage = tracker.finalize()
-            return {
-                'file': input_file.name,
-                'input_path': str(input_file),
-                'output_path': None,
-                'status': 'warning',
-                'num_segments': 0,
-                'sic_code': segmented_risks.sic_code,
-                'sic_name': segmented_risks.sic_name,
-                'cik': segmented_risks.cik,
-                'elapsed_time': usage.elapsed_time(),
-                'file_size_mb': file_size_mb,
-                'resource_usage': usage.to_dict(),
-                'error': 'No segments extracted',
-            }
-
-        # Step 5: Sentiment (if worker is enabled)
-        sentiment_features_list = None
-        if _worker_analyzer:
-            with tracker.track_module(PipelineStep.SENTIMENT):
-                sentiment_features_list = _worker_analyzer.extract_features_batch(
-                    segmented_risks.get_texts()
-                )
-
-        usage = tracker.finalize()
-
-        # Save final output into stamped run directory
-        output_path = None
-        if save_intermediates:
-            output_dir.mkdir(parents=True, exist_ok=True)
-            output_path = output_dir / (input_file.stem + OutputSuffix.SEGMENTED)
-            output_data = _build_output_data(
-                input_file=input_file,
-                segmented_risks=segmented_risks,
-                sentiment_features_list=sentiment_features_list,
-                extract_sentiment=(_worker_analyzer is not None),
-            )
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(output_data, f, indent=2, ensure_ascii=False)
+        first_result = next(iter(all_segmented.values()))
+        total_segments = sum(len(r) for r in all_segmented.values())
 
         return {
             'file': input_file.name,
             'input_path': str(input_file),
-            'output_path': str(output_path) if output_path else None,
+            'output_path': str(first_output_path) if first_output_path else None,
             'status': 'success',
-            'num_segments': len(segmented_risks),
-            'sic_code': segmented_risks.sic_code,
-            'sic_name': segmented_risks.sic_name,
-            'cik': segmented_risks.cik,
+            'num_segments': total_segments,
+            'sections_extracted': list(all_segmented.keys()),
+            'sic_code': first_result.sic_code,
+            'sic_name': first_result.sic_name,
+            'cik': first_result.cik,
             'elapsed_time': usage.elapsed_time(),
             'file_size_mb': file_size_mb,
             'resource_usage': usage.to_dict(),
@@ -543,6 +560,7 @@ def process_single_file_fast(args: Tuple[Path, bool, Path]) -> Dict[str, Any]:
             'output_path': None,
             'status': 'error',
             'num_segments': 0,
+            'sections_extracted': [],
             'sic_code': None,
             'sic_name': None,
             'cik': None,
@@ -632,7 +650,10 @@ def run_batch_pipeline(
             print(f"Checkpoint resume: skipping {len(already_done)} already-completed files")
 
     # --- ResumeFilter: skip files already written to run_dir ---
-    resume_filter = ResumeFilter(output_dir=run_dir, output_suffix="_segmented_risks.json")
+    resume_filter = ResumeFilter(
+        output_dir=run_dir,
+        output_suffix=OutputSuffix.section_segmented("part1item1a"),
+    )
     within_run_stems = resume_filter.get_processed_stems()
 
     before = len(input_files)

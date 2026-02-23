@@ -211,6 +211,18 @@ class OutputSuffix:
     CLEANED   = "_cleaned_risks.json"
     SEGMENTED = "_segmented_risks.json"
 
+    @staticmethod
+    def section_extracted(section_id: str) -> str:
+        return f"_{section_id}_extracted.json"
+
+    @staticmethod
+    def section_cleaned(section_id: str) -> str:
+        return f"_{section_id}_cleaned.json"
+
+    @staticmethod
+    def section_segmented(section_id: str) -> str:
+        return f"_{section_id}_segmented.json"
+
 
 class PipelineStep:
     """Canonical ResourceTracker step names.
