@@ -55,6 +55,10 @@ class SegmentedRisks(BaseModel):
     # New fields from ADR-010 SGMLManifest (Stage 0)
     accession_number: Optional[str] = None   # e.g. "0000320193-21-000105"
     filed_as_of_date: Optional[str] = None   # YYYYMMDD
+    # DEI ix:hidden fields (ADR-011)
+    amendment_flag: Optional[bool] = None
+    entity_filer_category: Optional[str] = None
+    ein: Optional[str] = None
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -117,6 +121,9 @@ class SegmentedRisks(BaseModel):
                 'fiscal_year': fiscal_year,
                 'accession_number': self.accession_number,
                 'filed_as_of_date': self.filed_as_of_date,
+                'amendment_flag':        self.amendment_flag,
+                'entity_filer_category': self.entity_filer_category,
+                'ein':                   self.ein,
             },
             'processing_metadata': {
                 'parser_version': '1.0',
@@ -194,6 +201,9 @@ class SegmentedRisks(BaseModel):
                 company_name=di.get('company_name'),
                 form_type=di.get('form_type'),
                 fiscal_year=di.get('fiscal_year'),
+                amendment_flag=di.get('amendment_flag'),
+                entity_filer_category=di.get('entity_filer_category'),
+                ein=di.get('ein'),
                 section_title=sm.get('title'),
                 section_identifier=sm.get('identifier'),
                 total_segments=stats.get('total_chunks', len(segments)),

@@ -679,6 +679,9 @@ class HealthCheckValidator:
         # 4. Domain rules (duplicates, keywords)
         results.extend(self._check_domain(file_data))
 
+        # 5. Amendment flag (ADR-011)
+        results.extend(self._check_amendments(file_data))
+
         # Generate report using existing infrastructure
         overall_status = determine_overall_status(results)
         blocking_summary = generate_blocking_summary(results)
@@ -726,6 +729,9 @@ class HealthCheckValidator:
 
         # 4. Domain rules (duplicates, keywords)
         results.extend(self._check_domain(file_data))
+
+        # 5. Amendment flag (ADR-011)
+        results.extend(self._check_amendments(file_data))
 
         # Generate report using existing infrastructure
         overall_status = determine_overall_status(results)
@@ -983,4 +989,19 @@ class HealthCheckValidator:
         if threshold:
             results.append(ValidationResult.from_threshold(threshold, dup_rate))
 
+        return results
+
+    def _check_amendments(self, file_data: List[Dict]) -> List[ValidationResult]:
+        """Block amended filings from entering training data (ADR-011)."""
+        results = []
+        threshold = self.registry.get("amendment_flag_not_amended")
+        if not threshold:
+            return results
+        for data in file_data:
+            af = data.get("amendment_flag")
+            # None → pre-iXBRL filing, cannot determine → SKIP (actual=None)
+            # False → original filing → PASS (actual=0.0)
+            # True  → is an amendment → FAIL blocking (actual=1.0)
+            actual = None if af is None else (1.0 if af else 0.0)
+            results.append(ValidationResult.from_threshold(threshold, actual))
         return results

@@ -410,17 +410,24 @@ class SECFilingParser:
             fiscal_year = period_match.group(1)[:4] if period_match else None
             period_of_report = period_match.group(1) if period_match else None
 
-        # Extract ticker from DEI inline XBRL tag (always from Document 1 HTML)
-        # <ix:nonNumeric name="dei:TradingSymbol" ...>AAPL</ix:nonNumeric>
-        # <ix:nonNumeric name="dei:TradingSymbol" ...><span ...>ABT</span></ix:nonNumeric>
-        ticker_match = re.search(
-            r'<ix:nonNumeric[^>]*name="dei:TradingSymbol"[^>]*>(.*?)</ix:nonNumeric>',
-            html_content, re.IGNORECASE | re.DOTALL
+        # ── DEI ix:hidden extraction (ADR-011) ───────────────────────────────────
+        # Single generalised pass over all dei:* nonNumeric tags in Document 1 HTML.
+        # Replaces the targeted ticker regex; also captures Tier-1 and Tier-2 fields.
+        _DEI_PAT = re.compile(
+            r'<ix:nonNumeric[^>]*name="(dei:[A-Za-z]+)"[^>]*>(.*?)</ix:nonNumeric>',
+            re.IGNORECASE | re.DOTALL,
         )
-        if ticker_match:
-            ticker = re.sub(r'<[^>]+>', '', ticker_match.group(1)).strip() or None
-        else:
-            ticker = None
+        dei_tags: Dict[str, str] = {}
+        for m in _DEI_PAT.finditer(html_content):
+            name = m.group(1)
+            value = re.sub(r'<[^>]+>', '', m.group(2)).strip()
+            if value:
+                dei_tags[name] = value
+        # ─────────────────────────────────────────────────────────────────────────
+        ticker = dei_tags.get('dei:TradingSymbol') or None
+        _af = dei_tags.get('dei:AmendmentFlag')
+        amendment_flag: Optional[bool] = None if _af is None else _af.strip().lower() == 'true'
+        entity_filer_category = dei_tags.get('dei:EntityFilerCategory') or None
 
         meta: Dict[str, Any] = {
             'total_elements': len(elements),
@@ -433,6 +440,8 @@ class SECFilingParser:
             'company_name': company_name,
             'cik': cik,
             'ticker': ticker,
+            'amendment_flag':        amendment_flag,
+            'entity_filer_category': entity_filer_category,
             'fiscal_year': fiscal_year,
             'period_of_report': period_of_report,
         }
@@ -446,7 +455,18 @@ class SECFilingParser:
             meta['sec_file_number']        = hdr.sec_file_number
             meta['document_count']         = hdr.document_count
             meta['state_of_incorporation'] = hdr.state_of_incorporation
-            meta['ein']                    = hdr.ein
+            meta['ein'] = hdr.ein or dei_tags.get('dei:EntityTaxIdentificationNumber') or None
+        else:
+            meta['ein'] = dei_tags.get('dei:EntityTaxIdentificationNumber') or None
+
+        # Tier-2 DEI metadata passthrough (ADR-011)
+        _T2_KEYS = [
+            'EntityRegistrantName', 'DocumentPeriodEndDate',
+            'EntityIncorporationStateCountryCode', 'SecurityExchangeName',
+            'EntityWellKnownSeasonedIssuer', 'IcfrAuditorAttestationFlag',
+            'Security12bTitle',
+        ]
+        meta['dei'] = {k: dei_tags.get(f'dei:{k}') for k in _T2_KEYS}
 
         return meta
 

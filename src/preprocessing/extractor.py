@@ -135,6 +135,9 @@ class SECSectionExtractor:
             accession_number=filing_metadata.get('accession_number'),
             filed_as_of_date=filing_metadata.get('filed_as_of_date'),
             period_of_report=filing_metadata.get('period_of_report'),
+            amendment_flag=filing_metadata.get('amendment_flag'),
+            entity_filer_category=filing_metadata.get('entity_filer_category'),
+            ein=filing_metadata.get('ein'),
         )
 
     def extract_risk_factors(self, filing: ParsedFiling) -> Optional[ExtractedSection]:

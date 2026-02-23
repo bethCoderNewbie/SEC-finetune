@@ -184,6 +184,9 @@ class RiskSegmenter:
             metadata=parsed_meta,
             accession_number=getattr(extracted_section, 'accession_number', None),
             filed_as_of_date=getattr(extracted_section, 'filed_as_of_date', None),
+            amendment_flag=getattr(extracted_section, 'amendment_flag', None),
+            entity_filer_category=getattr(extracted_section, 'entity_filer_category', None),
+            ein=getattr(extracted_section, 'ein', None),
         )
 
     def _segment_by_headers(self, text: str) -> List[str]:

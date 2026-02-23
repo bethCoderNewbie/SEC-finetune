@@ -38,11 +38,31 @@ These fields are emitted in `document_info` of `SegmentedRisks.save_to_json()`.
 |:------|:-----|:------------|:---------------|:---------|
 | `accession_number` | `str` | EDGAR accession number. E.g., `"0000320193-21-000105"`. | Stage 0: `ACCESSION NUMBER:` line in `<SEC-HEADER>` | No — 100% coverage |
 | `filed_as_of_date` | `str` (YYYYMMDD) | Date the filing was submitted to EDGAR. E.g., `"20211029"`. | Stage 0: `FILED AS OF DATE:` in `<SEC-HEADER>` | No — 100% coverage |
+| `amendment_flag` | `bool` | `false` = original filing; `true` = amendment. Amended filings are quarantined by the blocking QA rule `amendment_flag_not_amended`. | Stage 0 (DEI): `ix:nonNumeric name="dei:AmendmentFlag"`. Normalised to Python `bool`; `None` for pre-iXBRL filings. | Yes — `None` for filings without `<ix:hidden>` block |
+| `entity_filer_category` | `str` | SEC filer size category. E.g., `"Large accelerated filer"`. Used for corpus stratification. | Stage 0 (DEI): `ix:nonNumeric name="dei:EntityFilerCategory"` | Yes |
 | `fiscal_year_end` | `str` (MMDD) | Month and day of fiscal year end. E.g., `"0924"` (Sep 24). | Stage 0: `FISCAL YEAR ENDING:` in `<SEC-HEADER>` | Yes — occasionally absent |
 | `sec_file_number` | `str` | SEC file number. E.g., `"001-36743"`. | Stage 0: `FILE NUMBER:` in `<SEC-HEADER>` | No — 100% coverage |
 | `document_count` | `int` | Number of embedded documents in the SGML container (88–684, mean 152). | Stage 0: `PUBLIC DOCUMENT COUNT:` in `<SEC-HEADER>` | No |
 | `state_of_incorporation` | `str` | Two-letter state code. E.g., `"CA"`. | Stage 0: `STATE OF INCORPORATION:` in `<SEC-HEADER>` | Yes — ~95% coverage |
-| `ein` | `str` | IRS Employer Identification Number. E.g., `"942404110"`. | Stage 0: `IRS NUMBER:` in `<SEC-HEADER>`. Prefer `dei:EntityTaxIdentificationNumber` from DEI block when available (100% coverage). | Yes — 12% SGML coverage |
+| `ein` | `str` | IRS Employer Identification Number, hyphen-formatted. E.g., `"04-2348234"`. | Stage 0 (DEI): `dei:EntityTaxIdentificationNumber` (primary, ~100% for iXBRL filings) falling back to SGML `IRS NUMBER:` (~12% coverage) per ADR-011. | Yes — `None` only for pre-iXBRL filings without SGML EIN |
+
+---
+
+## DEI Metadata Sub-dict (`metadata.dei`)
+
+Populated from the `<ix:hidden>` block present in every modern iXBRL Document 1 filing.
+Available on `SegmentedRisks.metadata["dei"]` (in-memory) and in `metadata.dei` if you
+add it to your pipeline's output schema. All values are raw strings or `None`.
+
+| Key | DEI Tag | Description |
+|:----|:--------|:------------|
+| `EntityRegistrantName` | `dei:EntityRegistrantName` | Registrant name as filed with SEC |
+| `DocumentPeriodEndDate` | `dei:DocumentPeriodEndDate` | Period of report end date (YYYY-MM-DD) |
+| `EntityIncorporationStateCountryCode` | `dei:EntityIncorporationStateCountryCode` | State/country of incorporation (two-letter) |
+| `SecurityExchangeName` | `dei:SecurityExchangeName` | Exchange where primary security is listed |
+| `EntityWellKnownSeasonedIssuer` | `dei:EntityWellKnownSeasonedIssuer` | WKSI status (`"Yes"` / `"No"`) |
+| `IcfrAuditorAttestationFlag` | `dei:IcfrAuditorAttestationFlag` | Whether ICFR auditor attestation is included |
+| `Security12bTitle` | `dei:Security12bTitle` | Title of securities registered under Section 12(b) |
 
 ---
 
@@ -90,6 +110,7 @@ the output file (it is not written to the production run directory).
 | Min file size | raw HTML | Input file ≥ 100 KB | Yes | `min_file_size_kb >= 100` |
 | Max file size (standard) | raw HTML | ≤ 50 MB for non-financial SIC | No | `max_file_size_mb_standard <= 50` |
 | Max file size (financials) | raw HTML | ≤ 150 MB for SIC 6000–6799 | No | `max_file_size_mb_financial <= 150` |
+| Amendment flag check | `amendment_flag` | Filing must not be an amendment (`amendment_flag == false`). Amended filings are quarantined. `None` (pre-iXBRL) → SKIP, not FAIL. | Yes | `amendment_flag_not_amended <= 0.0` |
 
 ---
 
@@ -105,8 +126,12 @@ Stage 0: extract_sgml_manifest()  [sgml_manifest.py]
     │            state_of_incorporation, ein)
     │  Builds: DocumentEntry list with byte offsets for all 88–684 embedded docs
     ▼
-Stage 0 (DEI): extract_document() on doc_10k → DEI regex  [parser._extract_metadata]
-    │  Extracts: ticker (dei:TradingSymbol), fiscal_year (CONFORMED PERIOD OF REPORT)
+Stage 0 (DEI): extract_document() on doc_10k → generalised _DEI_PAT finditer  [parser._extract_metadata]
+    │  Tier-1: ticker, amendment_flag (bool), entity_filer_category, ein (→ merges with SGML)
+    │  Tier-2: EntityRegistrantName, DocumentPeriodEndDate, EntityIncorporationStateCountryCode,
+    │          SecurityExchangeName, EntityWellKnownSeasonedIssuer, IcfrAuditorAttestationFlag,
+    │          Security12bTitle  (stored in metadata["dei"])
+    │  Also: fiscal_year (CONFORMED PERIOD OF REPORT) from SGML header
     ▼
 Stage 1: AnchorPreSeeker.seek()  [pre_seeker.py]
     │  Input: manifest.doc_10k byte range → full Document 1 HTML

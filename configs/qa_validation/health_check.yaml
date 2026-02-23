@@ -201,3 +201,12 @@ thresholds:
       blocking: false
       description: Rate of near-duplicate segments across all files (12-char SHA-256 prefix)
       tags: [domain, health_check]
+
+    amendment_flag_not_amended:
+      display_name: Amendment Flag (Not Amended)
+      metric_type: rate
+      target: 0.0
+      operator: "<="
+      blocking: true
+      description: "Filing must not be an amendment (AmendmentFlag = false). Amended filings are excluded from training data."
+      tags: [domain, blocking, health_check, dei]

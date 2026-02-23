@@ -53,6 +53,10 @@ class ExtractedSection(BaseModel):
     accession_number: Optional[str] = None   # e.g. "0000320193-21-000105"
     filed_as_of_date: Optional[str] = None   # YYYYMMDD — replaces filename-fallback fiscal_year
     period_of_report: Optional[str] = None   # YYYYMMDD — was only in metadata dict
+    # DEI ix:hidden fields (ADR-011)
+    amendment_flag: Optional[bool] = None
+    entity_filer_category: Optional[str] = None
+    ein: Optional[str] = None
 
     def __len__(self) -> int:
         """Return character length of extracted text"""
