@@ -197,3 +197,26 @@ ALL_CONTENT_TYPES = TEXT_ELEMENT_TYPES | TITLE_ELEMENT_TYPES | TABLE_ELEMENT_TYP
 # NOTE: Runtime-configurable values have been moved to src/config/:
 #   - MIN_PARAGRAPH_LENGTH → settings.preprocessing.min_segment_length
 #   - DEFAULT_EXTRACTION_SECTIONS → settings.extraction.default_sections
+
+
+# ===========================
+# Pipeline Output Constants
+# ===========================
+
+class OutputSuffix:
+    """Canonical file suffixes for every pipeline stage output.
+    Import and use these instead of inline string literals."""
+    PARSED    = "_parsed.json"
+    EXTRACTED = "_extracted_risks.json"
+    CLEANED   = "_cleaned_risks.json"
+    SEGMENTED = "_segmented_risks.json"
+
+
+class PipelineStep:
+    """Canonical ResourceTracker step names.
+    Import and use these instead of inline string literals."""
+    PARSE     = "parse"
+    EXTRACT   = "extract"
+    CLEAN     = "clean"
+    SEGMENT   = "segment"
+    SENTIMENT = "sentiment"

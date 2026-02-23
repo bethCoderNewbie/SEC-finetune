@@ -28,7 +28,8 @@ from .parser import SECFilingParser
 from .cleaning import TextCleaner
 from .extractor import SECSectionExtractor
 from .segmenter import RiskSegmenter, SegmentedRisks
-from .constants import SectionIdentifier
+from .constants import SectionIdentifier, OutputSuffix, PipelineStep
+from .models.extraction import ExtractedSection
 # Import parallel processing utility
 from src.utils.parallel import ParallelProcessor
 # Import memory-aware resource allocation
@@ -110,6 +111,7 @@ def _process_filing_with_global_workers(
     save_output: Optional[Path],
     overwrite: bool,
     save_intermediates: bool = False,
+    intermediates_dir: Optional[Path] = None,
     tracker: Optional[ResourceTracker] = None,
 ) -> Optional[SegmentedRisks]:
     """
@@ -148,10 +150,15 @@ def _process_filing_with_global_workers(
 
     # Step 1: Parse HTML filing (no sanitization)
     logger.info("Step 1/4: Parsing HTML filing...")
-    with tracker.track_module("parser") if tracker else nullcontext():
-        parsed = get_worker_parser().parse_filing(
-            file_path, form_type, save_output=save_intermediates
-        )
+    with tracker.track_module(PipelineStep.PARSE) if tracker else nullcontext():
+        if intermediates_dir:
+            parser_save: Union[Path, bool] = intermediates_dir / "parsed" / (file_path.stem + OutputSuffix.PARSED)
+            parser_save.parent.mkdir(parents=True, exist_ok=True)
+        elif save_intermediates:
+            parser_save = True   # existing behaviour: saves to default parsed_data_dir
+        else:
+            parser_save = False
+        parsed = get_worker_parser().parse_filing(file_path, form_type, save_output=parser_save)
 
     logger.info(
         "Parsed %d elements. Metadata: CIK=%s, SIC=%s (%s)",
@@ -163,7 +170,7 @@ def _process_filing_with_global_workers(
 
     # Step 2: Extract section (metadata flows through)
     logger.info("Step 2/4: Extracting section '%s'...", section.value)
-    with tracker.track_module("extractor") if tracker else nullcontext():
+    with tracker.track_module(PipelineStep.EXTRACT) if tracker else nullcontext():
         extracted = get_worker_extractor().extract_section(parsed, section)
 
     if extracted is None:
@@ -176,17 +183,19 @@ def _process_filing_with_global_workers(
         len(extracted.subsections),
     )
 
-    if save_intermediates:
-        from src.config import settings as _cfg  # lazy import (avoids circular at module level)
-        extracted_dir = _cfg.paths.extracted_data_dir
-        extracted_dir.mkdir(parents=True, exist_ok=True)
-        extracted_path = extracted_dir / f"{file_path.stem}_extracted_risks.json"
-        extracted.save_to_json(extracted_path, overwrite=True)
-        logger.info("Saved extracted section to: %s", extracted_path)
+    if intermediates_dir or save_intermediates:
+        if intermediates_dir:
+            ext_dir = intermediates_dir / "extracted"
+        else:
+            from src.config import settings as _cfg  # lazy import (avoids circular at module level)
+            ext_dir = _cfg.paths.extracted_data_dir
+        ext_dir.mkdir(parents=True, exist_ok=True)
+        extracted.save_to_json(ext_dir / (file_path.stem + OutputSuffix.EXTRACTED), overwrite=True)
+        logger.info("Saved extracted section to: %s", ext_dir / (file_path.stem + OutputSuffix.EXTRACTED))
 
     # Step 3: Clean text
     logger.info("Step 3/4: Cleaning text...")
-    with tracker.track_module("cleaner") if tracker else nullcontext():
+    with tracker.track_module(PipelineStep.CLEAN) if tracker else nullcontext():
         if config.remove_html:
             cleaned_text = get_worker_cleaner().remove_html_tags(extracted.text)
         else:
@@ -198,9 +207,18 @@ def _process_filing_with_global_workers(
         )
     logger.info("Cleaned text: %d chars", len(cleaned_text))
 
+    if intermediates_dir:
+        cleaned_section = extracted.model_copy(update={
+            'text': cleaned_text,
+            'metadata': {**extracted.metadata, 'cleaned': True},
+        })
+        clean_path = ext_dir / (file_path.stem + OutputSuffix.CLEANED)
+        cleaned_section.save_to_json(clean_path, overwrite=True)
+        logger.info("Saved cleaned section to: %s", clean_path)
+
     # Step 4: Segment (metadata preserved)
     logger.info("Step 4/4: Segmenting risks...")
-    with tracker.track_module("segmenter") if tracker else nullcontext():
+    with tracker.track_module(PipelineStep.SEGMENT) if tracker else nullcontext():
         result = get_worker_segmenter().segment_extracted_section(
             extracted,
             cleaned_text=cleaned_text
@@ -246,7 +264,7 @@ def _process_single_filing_worker(args: tuple) -> Dict[str, Any]:
         if output_dir:
             output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
-            save_output = output_dir / f"{file_path.stem}_segmented.json"
+            save_output = output_dir / (file_path.stem + OutputSuffix.SEGMENTED)
 
         # Process the file using global workers (no per-file instantiation)
         result = _process_filing_with_global_workers(
@@ -256,6 +274,7 @@ def _process_single_filing_worker(args: tuple) -> Dict[str, Any]:
             save_output=save_output,
             overwrite=overwrite,
             save_intermediates=save_intermediates,
+            intermediates_dir=output_dir if save_intermediates else None,
             tracker=tracker,
         )
 
@@ -404,7 +423,7 @@ class SECPreprocessingPipeline:
         if intermediates_dir:
             parsed_dir = intermediates_dir / "parsed"
             parsed_dir.mkdir(parents=True, exist_ok=True)
-            parser_save: Union[Path, bool] = parsed_dir / f"{file_path.stem}_parsed.json"
+            parser_save: Union[Path, bool] = parsed_dir / (file_path.stem + OutputSuffix.PARSED)
         else:
             parser_save = save_intermediates  # True → default parsed_data_dir, False → skip
         parsed = self.parser.parse_filing(file_path, form_type, save_output=parser_save)
@@ -438,7 +457,7 @@ class SECPreprocessingPipeline:
                 from src.config import settings as _cfg  # lazy import
                 ext_dir = _cfg.paths.extracted_data_dir
             ext_dir.mkdir(parents=True, exist_ok=True)
-            extracted_path = ext_dir / f"{file_path.stem}_extracted_risks.json"
+            extracted_path = ext_dir / (file_path.stem + OutputSuffix.EXTRACTED)
             extracted.save_to_json(extracted_path, overwrite=True)
             logger.info("Saved extracted section to: %s", extracted_path)
 
@@ -454,6 +473,17 @@ class SECPreprocessingPipeline:
             deep_clean=self.config.deep_clean
         )
         logger.info("Cleaned text: %d chars", len(cleaned_text))
+
+        if intermediates_dir:
+            clean_dir = intermediates_dir / "extracted"
+            clean_dir.mkdir(parents=True, exist_ok=True)
+            cleaned_section = extracted.model_copy(update={
+                'text': cleaned_text,
+                'metadata': {**extracted.metadata, 'cleaned': True},
+            })
+            clean_path = clean_dir / (file_path.stem + OutputSuffix.CLEANED)
+            cleaned_section.save_to_json(clean_path, overwrite=True)
+            logger.info("Saved cleaned section to: %s", clean_path)
 
         # Step 4: Segment (metadata preserved)
         logger.info("Step 4/4: Segmenting risks...")

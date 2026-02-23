@@ -53,6 +53,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from src.preprocessing.parser import ParsedFiling
 from src.preprocessing.extractor import SECSectionExtractor, ExtractedSection
+from src.preprocessing.constants import PAGE_HEADER_PATTERN, SECTION_PATTERNS
 from src.config import settings, RunContext
 
 # Directory shortcuts
@@ -232,6 +233,124 @@ def load_checkpoint(checkpoint_path: Path) -> Optional[dict]:
 
 
 # =============================================================================
+# Dict-based Risk Factors extraction (operates on ParsedFiling.load_from_json output)
+# =============================================================================
+
+def _extract_risk_factors_from_dict(
+    data: Dict[str, Any],
+    extractor: SECSectionExtractor,
+) -> Optional[ExtractedSection]:
+    """
+    Extract Item 1A Risk Factors from a ParsedFiling dict (loaded from saved JSON).
+
+    The sec-parser tree is not serialisable, so batch_parse saves a simplified
+    flat list under 'tree'. This function reconstructs the ExtractedSection from
+    that list, mirroring the logic of the live _extract_section_content() path.
+    """
+    tree = data.get('tree', [])
+    form_type = data.get('form_type', '10-K')
+    metadata = data.get('metadata', {})
+
+    section_id = 'part1item1a'
+    target_patterns = [re.compile(p) for p in SECTION_PATTERNS.get(section_id, [])]
+
+    # Locate section start: first Title/TopSection node matching target patterns
+    start_idx = None
+    for i, node in enumerate(tree):
+        node_type = node.get('type', '')
+        if node_type not in ('TopSectionTitle', 'TitleElement'):
+            continue
+        text = node.get('text', '').strip()
+        if any(p.search(text) for p in target_patterns):
+            start_idx = i
+            break
+
+    if start_idx is None:
+        return None
+
+    # Collect content until the next Item section
+    content_nodes: List[Dict] = []
+    subsections: List[str] = []
+    elements: List[Dict] = []
+
+    for node in tree[start_idx + 1:]:
+        node_type = node.get('type', '')
+        text = node.get('text', '').strip()
+        lower_text = text.lower()
+
+        # Stop at any other Item heading
+        if node_type in ('TopSectionTitle', 'TitleElement'):
+            if re.match(r'item\s*\d+[a-z]?[\.\s]', lower_text):
+                if not any(p.search(lower_text) for p in target_patterns):
+                    break
+
+        if not text:
+            continue
+
+        content_nodes.append(node)
+
+        if node_type == 'TitleElement':
+            if not PAGE_HEADER_PATTERN.search(text):
+                subsections.append(text)
+
+        if not PAGE_HEADER_PATTERN.search(text):
+            elements.append({
+                'type': node_type,
+                'text': text,
+                'level': node.get('level', 0),
+                'is_table': node_type == 'TableElement',
+            })
+
+    # Sequential TitleElement scan → parent_subsection map
+    current_subsection: Optional[str] = None
+    node_subsections_list: List[tuple] = []
+    for node in content_nodes:
+        node_type = node.get('type', '')
+        text = node.get('text', '').strip()
+        if node_type == 'TitleElement' and not PAGE_HEADER_PATTERN.search(text):
+            current_subsection = text
+        elif (text
+              and node_type != 'TableElement'
+              and not PAGE_HEADER_PATTERN.search(text)
+              and not extractor._is_toc_node(text)):  # pylint: disable=protected-access
+            node_subsections_list.append((text, current_subsection))
+
+    # Build full text — exclude tables and ToC lines
+    text_nodes = [
+        node.get('text', '') for node in content_nodes
+        if node.get('text', '').strip()
+        and node.get('type') != 'TableElement'
+        and not PAGE_HEADER_PATTERN.search(node.get('text', ''))
+        and not extractor._is_toc_node(node.get('text', ''))  # pylint: disable=protected-access
+    ]
+    header_text = tree[start_idx].get('text', '') if start_idx < len(tree) else ''
+    full_text = '\n\n'.join([header_text] + text_nodes) if header_text else '\n\n'.join(text_nodes)
+
+    if not full_text.strip():
+        return None
+
+    return ExtractedSection(
+        text=full_text,
+        identifier=section_id,
+        title=extractor._get_section_title(section_id, form_type),  # pylint: disable=protected-access
+        subsections=subsections,
+        elements=elements,
+        metadata={
+            'num_subsections': len(subsections),
+            'num_elements': len(elements),
+            'element_type_counts': extractor._count_element_types(elements),  # pylint: disable=protected-access
+        },
+        node_subsections=node_subsections_list,
+        sic_code=metadata.get('sic_code'),
+        sic_name=metadata.get('sic_name'),
+        cik=metadata.get('cik'),
+        ticker=metadata.get('ticker'),
+        company_name=metadata.get('company_name'),
+        form_type=form_type,
+    )
+
+
+# =============================================================================
 # Core Extraction Logic
 # =============================================================================
 
@@ -261,9 +380,9 @@ def extract_single_file(
         filing_data = ParsedFiling.load_from_json(parsed_file)
         metadata = filing_data.get('metadata', {})
 
-        # Extract risk factors section using dict-based method
+        # Extract risk factors section using dict-based helper
         extractor = SECSectionExtractor()
-        risk_section = extractor.extract_risk_factors_from_dict(filing_data)
+        risk_section = _extract_risk_factors_from_dict(filing_data, extractor)
 
         if not risk_section:
             return {
@@ -348,8 +467,8 @@ def extract_single_file_fast(args: Tuple[Path, Path, Optional[str], bool]) -> Di
         filing_data = ParsedFiling.load_from_json(parsed_file)
         metadata = filing_data.get('metadata', {})
 
-        # Extract risk factors section using dict-based method
-        risk_section = _worker_extractor.extract_risk_factors_from_dict(filing_data)
+        # Extract risk factors section using dict-based helper
+        risk_section = _extract_risk_factors_from_dict(filing_data, _worker_extractor)
 
         if not risk_section:
             return {

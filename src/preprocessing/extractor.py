@@ -47,9 +47,6 @@ class SECSectionExtractor:
         >>> print(f"Extracted {len(risk_section)} characters")
         >>> print(f"Found {len(risk_section.subsections)} risk subsections")
 
-    Dict-based extraction example:
-        >>> data = ParsedFiling.load_from_json("parsed_filing.json")
-        >>> risk_section = extractor.extract_risk_factors_from_dict(data)
     """
 
     # Load section titles from config for maintainability
@@ -162,133 +159,6 @@ class SECSectionExtractor:
             section = SectionIdentifier.ITEM_1A_RISK_FACTORS_10Q
 
         return self.extract_section(filing, section)
-
-    def extract_risk_factors_from_dict(self, data: Dict[str, Any]) -> Optional[ExtractedSection]:
-        """
-        Extract Risk Factors section from a parsed filing dict (loaded from JSON).
-
-        This method works with the simplified dict format saved by ParsedFiling.save_to_pickle(),
-        which can be loaded via ParsedFiling.load_from_json().
-
-        Args:
-            data: Dictionary from ParsedFiling.load_from_json() with keys:
-                - tree: list of node dicts with 'text', 'type', 'level'
-                - form_type: "10-K" or "10-Q"
-                - metadata: dict with sic_code, cik, etc.
-
-        Returns:
-            ExtractedSection with Risk Factors content, or None if not found
-
-        Example:
-            >>> data = ParsedFiling.load_from_json("parsed_filing.json")
-            >>> extractor = SECSectionExtractor()
-            >>> risks = extractor.extract_risk_factors_from_dict(data)
-        """
-        tree = data.get('tree', [])
-        form_type = data.get('form_type', '10-K')
-        metadata = data.get('metadata', {})
-
-        # Find Item 1A section start
-        start_idx = None
-        for i, node in enumerate(tree):
-            text = node.get('text', '').strip().lower()
-            node_type = node.get('type', '')
-
-            # Match "Item 1A" patterns
-            if node_type in ('TopSectionTitle', 'TitleElement'):
-                if re.match(r'item\s*1a[\.\s]', text) or 'risk factors' in text:
-                    start_idx = i
-                    break
-
-        if start_idx is None:
-            return None
-
-        # Collect content until next section
-        content_nodes = []
-        subsections = []
-        elements = []
-
-        for i in range(start_idx + 1, len(tree)):
-            node = tree[i]
-            text = node.get('text', '').strip()
-            node_type = node.get('type', '')
-            lower_text = text.lower()
-
-            # Stop at next Item section
-            if node_type in ('TopSectionTitle', 'TitleElement'):
-                if re.match(r'item\s*\d+[a-z]?[\.\s]', lower_text):
-                    if not re.match(r'item\s*1a[\.\s]', lower_text):
-                        break
-
-            # Collect content
-            if text:
-                content_nodes.append(node)
-
-                # Track subsections (TitleElement nodes)
-                if node_type == 'TitleElement':
-                    # Filter out page headers
-                    if not PAGE_HEADER_PATTERN.match(text):
-                        subsections.append(text)
-
-                # Track all elements
-                elements.append({
-                    'type': node_type,
-                    'text': text,
-                    'level': node.get('level', 0),
-                    'is_table': node_type == 'TableElement',
-                })
-
-        # Fix 6A (dict path): sequential TitleElement scan → parent_subsection map
-        current_subsection: Optional[str] = None
-        node_subsections_list: List[tuple] = []
-        for node in content_nodes:
-            if node.get('type') == 'TitleElement':
-                title_text = node.get('text', '').strip()
-                if title_text:
-                    current_subsection = title_text
-            elif (node.get('text', '').strip()
-                  and node.get('type') != 'TableElement'
-                  and not self._is_toc_node(node.get('text', ''))):
-                node_subsections_list.append((node.get('text', '').strip(), current_subsection))
-
-        # Build full text — exclude tables (Fix 2B) and ToC lines (Fix 2A)
-        full_text = "\n\n".join([
-            node.get('text', '') for node in content_nodes
-            if node.get('text', '').strip()
-            and node.get('type') != 'TableElement'
-            and not self._is_toc_node(node.get('text', ''))
-        ])
-
-        # Include header
-        header_text = tree[start_idx].get('text', '') if start_idx < len(tree) else ''
-        if header_text:
-            full_text = header_text + "\n\n" + full_text
-
-        if not full_text.strip():
-            return None
-
-        section_id = 'part1item1a'
-        title = self._get_section_title(section_id, form_type)
-
-        return ExtractedSection(
-            text=full_text,
-            identifier=section_id,
-            title=title,
-            subsections=subsections,
-            elements=elements,
-            metadata={
-                'num_subsections': len(subsections),
-                'num_elements': len(elements),
-                'element_type_counts': self._count_element_types(elements),
-            },
-            node_subsections=node_subsections_list,
-            sic_code=metadata.get('sic_code'),
-            sic_name=metadata.get('sic_name'),
-            cik=metadata.get('cik'),
-            ticker=metadata.get('ticker'),
-            company_name=metadata.get('company_name'),
-            form_type=form_type,
-        )
 
     def extract_mdna(self, filing: ParsedFiling) -> Optional[ExtractedSection]:
         """
@@ -500,6 +370,15 @@ class SECSectionExtractor:
             if not (
                 isinstance(node.semantic_element, sp.TitleElement)
                 and PAGE_HEADER_PATTERN.search(node.text)
+            )
+        ]
+        # Mirror filter on elements list so the saved JSON is also clean.
+        # (elements was built before this filter; defensive for the full-doc1 fallback path.)
+        elements = [
+            e for e in elements
+            if not (
+                e['type'] == 'TitleElement'
+                and PAGE_HEADER_PATTERN.search(e.get('text', ''))
             )
         ]
 

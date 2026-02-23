@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 
 # Preprocessing classes
+from src.preprocessing.constants import OutputSuffix, PipelineStep
 from src.preprocessing.parser import SECFilingParser, ParsedFiling
 from src.preprocessing.extractor import SECSectionExtractor, ExtractedSection
 from src.preprocessing.cleaning import TextCleaner
@@ -125,7 +126,8 @@ def _init_worker(extract_sentiment: bool = True) -> None:
 def run_pipeline(
     input_file: Path,
     save_intermediates: bool = True,
-    extract_sentiment: bool = True
+    extract_sentiment: bool = True,
+    output_dir: Optional[Path] = None,
 ) -> Tuple[Optional[ParsedFiling], Optional[ExtractedSection], Optional[SegmentedRisks], Optional[List]]:
     """
     Run the full preprocessing pipeline on a single filing.
@@ -151,10 +153,14 @@ def run_pipeline(
     # Step 1: Parse
     print("\n[1/5] Parsing SEC filing...")
     parser = SECFilingParser()
+    parsed_path = None
+    if save_intermediates and output_dir:
+        parsed_path = output_dir / "parsed" / (input_file.stem + OutputSuffix.PARSED)
+        parsed_path.parent.mkdir(parents=True, exist_ok=True)
     filing = parser.parse_filing(
         input_file,
         form_type="10-K",
-        save_output=save_intermediates
+        save_output=parsed_path if parsed_path else save_intermediates,
     )
     print(f"  [OK] Parsed {len(filing)} semantic elements")
     print(f"  [OK] Found {filing.metadata['num_sections']} sections")
@@ -181,8 +187,9 @@ def run_pipeline(
 
     # Save extracted section if requested
     if save_intermediates:
-        output_filename = input_file.stem + "_extracted_risks.json"
-        output_path = EXTRACTED_DATA_DIR / output_filename
+        dest = output_dir / "extracted" if output_dir else EXTRACTED_DATA_DIR
+        dest.mkdir(parents=True, exist_ok=True)
+        output_path = dest / (input_file.stem + OutputSuffix.EXTRACTED)
         risk_section.save_to_json(output_path, overwrite=True)
         print(f"  [OK] Saved to: {output_path}")
 
@@ -216,8 +223,9 @@ def run_pipeline(
     )
 
     if save_intermediates:
-        output_filename = input_file.stem + "_cleaned_risks.json"
-        output_path = EXTRACTED_DATA_DIR / output_filename
+        dest = output_dir / "extracted" if output_dir else EXTRACTED_DATA_DIR
+        dest.mkdir(parents=True, exist_ok=True)
+        output_path = dest / (input_file.stem + OutputSuffix.CLEANED)
         cleaned_section.save_to_json(output_path, overwrite=True)
         print(f"  [OK] Saved cleaned section to: {output_path}")
 
@@ -267,8 +275,9 @@ def run_pipeline(
 
     # Save final output
     if save_intermediates and len(segmented_risks) > 0:
-        output_filename = input_file.stem + "_segmented_risks.json"
-        output_path = PROCESSED_DATA_DIR / output_filename
+        output_filename = input_file.stem + OutputSuffix.SEGMENTED
+        dest_dir = output_dir if output_dir is not None else PROCESSED_DATA_DIR
+        output_path = dest_dir / output_filename
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         output_data = _build_output_data(
@@ -395,15 +404,19 @@ def process_single_file_fast(args: Tuple[Path, bool, Path]) -> Dict[str, Any]:
 
     try:
         # Step 1: Parse
-        with tracker.track_module("parse"):
+        with tracker.track_module(PipelineStep.PARSE):
+            parsed_path = None
+            if save_intermediates:
+                parsed_path = output_dir / "parsed" / (input_file.stem + OutputSuffix.PARSED)
+                parsed_path.parent.mkdir(parents=True, exist_ok=True)
             filing = get_worker_parser().parse_filing(
                 input_file,
                 form_type="10-K",
-                save_output=save_intermediates
+                save_output=parsed_path if parsed_path else save_intermediates,
             )
 
         # Step 2: Extract
-        with tracker.track_module("extract"):
+        with tracker.track_module(PipelineStep.EXTRACT):
             risk_section = get_worker_extractor().extract_risk_factors(filing)
 
         if not risk_section:
@@ -423,12 +436,13 @@ def process_single_file_fast(args: Tuple[Path, bool, Path]) -> Dict[str, Any]:
                 'error': 'Risk Factors section not found',
             }
 
+        ext_dir = output_dir / "extracted"
         if save_intermediates:
-            ext_path = EXTRACTED_DATA_DIR / f"{input_file.stem}_extracted_risks.json"
-            risk_section.save_to_json(ext_path, overwrite=True)
+            ext_dir.mkdir(parents=True, exist_ok=True)
+            risk_section.save_to_json(ext_dir / (input_file.stem + OutputSuffix.EXTRACTED), overwrite=True)
 
         # Step 3: Clean
-        with tracker.track_module("clean"):
+        with tracker.track_module(PipelineStep.CLEAN):
             cleaned_text = get_worker_cleaner().clean_text(risk_section.text, deep_clean=False)
 
         cleaned_section = ExtractedSection(
@@ -455,11 +469,10 @@ def process_single_file_fast(args: Tuple[Path, bool, Path]) -> Dict[str, Any]:
         )
 
         if save_intermediates:
-            clean_path = EXTRACTED_DATA_DIR / f"{input_file.stem}_cleaned_risks.json"
-            cleaned_section.save_to_json(clean_path, overwrite=True)
+            cleaned_section.save_to_json(ext_dir / (input_file.stem + OutputSuffix.CLEANED), overwrite=True)
 
         # Step 4: Segment
-        with tracker.track_module("segment"):
+        with tracker.track_module(PipelineStep.SEGMENT):
             segmented_risks = get_worker_segmenter().segment_extracted_section(
                 cleaned_section,
                 cleaned_text=cleaned_text
@@ -485,7 +498,7 @@ def process_single_file_fast(args: Tuple[Path, bool, Path]) -> Dict[str, Any]:
         # Step 5: Sentiment (if worker is enabled)
         sentiment_features_list = None
         if _worker_analyzer:
-            with tracker.track_module("sentiment"):
+            with tracker.track_module(PipelineStep.SENTIMENT):
                 sentiment_features_list = _worker_analyzer.extract_features_batch(
                     segmented_risks.get_texts()
                 )
@@ -496,7 +509,7 @@ def process_single_file_fast(args: Tuple[Path, bool, Path]) -> Dict[str, Any]:
         output_path = None
         if save_intermediates:
             output_dir.mkdir(parents=True, exist_ok=True)
-            output_path = output_dir / f"{input_file.stem}_segmented_risks.json"
+            output_path = output_dir / (input_file.stem + OutputSuffix.SEGMENTED)
             output_data = _build_output_data(
                 input_file=input_file,
                 segmented_risks=segmented_risks,
@@ -939,6 +952,7 @@ def main():
             input_file,
             save_intermediates=not args.no_save,
             extract_sentiment=not args.no_sentiment,
+            output_dir=run_dir,
         )
 
     else:
@@ -955,6 +969,7 @@ def main():
             input_file,
             save_intermediates=not args.no_save,
             extract_sentiment=not args.no_sentiment,
+            output_dir=run_dir,
         )
 
 
