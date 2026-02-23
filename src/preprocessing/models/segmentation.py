@@ -4,7 +4,6 @@ Pydantic models for risk factor segmentation.
 Contains data structures for individual risk segments and segmented risk collections.
 """
 
-import re
 import json
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Union
@@ -53,6 +52,9 @@ class SegmentedRisks(BaseModel):
     section_identifier: Optional[str] = None   # e.g. "part1item1a"
     total_segments: int = 0
     metadata: Dict[str, Any] = {}
+    # New fields from ADR-010 SGMLManifest (Stage 0)
+    accession_number: Optional[str] = None   # e.g. "0000320193-21-000105"
+    filed_as_of_date: Optional[str] = None   # YYYYMMDD
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -87,11 +89,10 @@ class SegmentedRisks(BaseModel):
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Fix 6C: derive fiscal_year — prefer model field, fallback to filename
+        # fiscal_year is sourced from SGMLHeader.period_of_report (100% EDGAR coverage).
+        # Filename-based fallback removed (ADR-010): filing identity comes from the
+        # form itself, not the downloaded file's name.
         fiscal_year = self.fiscal_year
-        if fiscal_year is None:
-            fy_match = re.search(r'_(\d{4})[_.]', output_path.stem)
-            fiscal_year = fy_match.group(1) if fy_match else None
 
         # Fix 6C: processing_metadata from config (lazy import to avoid top-level coupling)
         try:
@@ -114,6 +115,8 @@ class SegmentedRisks(BaseModel):
                 'sic_name': self.sic_name,
                 'form_type': self.form_type,
                 'fiscal_year': fiscal_year,
+                'accession_number': self.accession_number,
+                'filed_as_of_date': self.filed_as_of_date,
             },
             'processing_metadata': {
                 'parser_version': '1.0',

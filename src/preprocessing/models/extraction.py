@@ -49,6 +49,10 @@ class ExtractedSection(BaseModel):
     ticker: Optional[str] = None
     company_name: Optional[str] = None
     form_type: Optional[str] = None
+    # New fields from ADR-010 SGMLManifest (Stage 0)
+    accession_number: Optional[str] = None   # e.g. "0000320193-21-000105"
+    filed_as_of_date: Optional[str] = None   # YYYYMMDD — replaces filename-fallback fiscal_year
+    period_of_report: Optional[str] = None   # YYYYMMDD — was only in metadata dict
 
     def __len__(self) -> int:
         """Return character length of extracted text"""

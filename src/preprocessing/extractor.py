@@ -116,6 +116,8 @@ class SECSectionExtractor:
             'element_type_counts': self._count_element_types(elements),
             'fiscal_year': filing_metadata.get('fiscal_year'),
             'period_of_report': filing_metadata.get('period_of_report'),
+            'accession_number': filing_metadata.get('accession_number'),
+            'filed_as_of_date': filing_metadata.get('filed_as_of_date'),
         }
 
         return ExtractedSection(
@@ -133,6 +135,9 @@ class SECSectionExtractor:
             ticker=filing_metadata.get('ticker'),
             company_name=filing_metadata.get('company_name'),
             form_type=filing.form_type.value,
+            accession_number=filing_metadata.get('accession_number'),
+            filed_as_of_date=filing_metadata.get('filed_as_of_date'),
+            period_of_report=filing_metadata.get('period_of_report'),
         )
 
     def extract_risk_factors(self, filing: ParsedFiling) -> Optional[ExtractedSection]:
@@ -472,7 +477,7 @@ class SECSectionExtractor:
             if isinstance(node.semantic_element, sp.TitleElement):
                 title_text = node.text.strip()
                 # Filter out page headers (e.g., "Company | Year Form 10-K | Page")
-                if not PAGE_HEADER_PATTERN.match(title_text):
+                if not PAGE_HEADER_PATTERN.search(title_text):
                     subsections.append(title_text)
 
             # Track all elements
@@ -486,6 +491,17 @@ class SECSectionExtractor:
                 element_dict['is_table'] = True
 
             elements.append(element_dict)
+
+        # Stage 3 (ADR-010): drop page-header TitleElements before text assembly.
+        # The subsection list was already filtered above (search vs match).
+        # This removes them from content_nodes so they don't appear in full_text either.
+        content_nodes = [
+            node for node in content_nodes
+            if not (
+                isinstance(node.semantic_element, sp.TitleElement)
+                and PAGE_HEADER_PATTERN.search(node.text)
+            )
+        ]
 
         # Fix 6A: sequential TitleElement scan → parent_subsection map (doc order)
         current_subsection: Optional[str] = None

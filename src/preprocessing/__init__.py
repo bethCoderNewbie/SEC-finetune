@@ -1,14 +1,15 @@
 """Preprocessing modules for SEC filings
 
-Pipeline Flow:
-    1. Sanitize → HTMLSanitizer → cleaned HTML (NEW)
-    2. Parse    → SECFilingParser → ParsedFiling
-    3. Extract  → SECSectionExtractor → ExtractedSection
-    4. Clean    → TextCleaner → cleaned text
-    5. Segment  → RiskSegmenter → SegmentedRisks
+Pipeline Flow (ADR-010):
+    0. SGML Manifest → extract_sgml_manifest → SGMLManifest (header + byte index)
+    1. Pre-seek  → AnchorPreSeeker → ~50-200 KB HTML slice
+    2. Parse     → SECFilingParser → ParsedFiling
+    3. Extract   → SECSectionExtractor → ExtractedSection
+    4. Clean     → TextCleaner → cleaned text
+    5. Segment   → RiskSegmenter → SegmentedRisks
 
-All metadata (sic_code, sic_name, cik, ticker, company_name) is preserved
-throughout the pipeline.
+All metadata (sic_code, sic_name, cik, ticker, company_name, accession_number,
+filed_as_of_date) is preserved throughout the pipeline.
 
 Quick Start:
     >>> from src.preprocessing import process_filing
@@ -20,6 +21,8 @@ Quick Start:
 # Data models (canonical location) - TEMPORARILY COMMENTED OUT
 # from .models import ParsedFiling, FormType, ExtractedSection, RiskSegment, SegmentedRisks
 
+from .sgml_manifest import extract_sgml_manifest, extract_document
+from .models.sgml import SGMLManifest, SGMLHeader, DocumentEntry
 from .sanitizer import HTMLSanitizer, SanitizerConfig, sanitize_html
 from .parser import SECFilingParser, parse_filing_from_path
 from .cleaning import TextCleaner, clean_filing_text
@@ -42,6 +45,12 @@ from .pipeline import (
 from .constants import SectionIdentifier
 
 __all__ = [
+    # Stage 0: SGML manifest (ADR-010)
+    'extract_sgml_manifest',
+    'extract_document',
+    'SGMLManifest',
+    'SGMLHeader',
+    'DocumentEntry',
     # Sanitizer (NEW)
     'HTMLSanitizer',
     'SanitizerConfig',

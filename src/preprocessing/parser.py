@@ -94,10 +94,19 @@ class SECFilingParser:
         save_output: Optional[Union[str, Path, bool]] = None,
         overwrite: bool = False,
         recursion_limit: Optional[int] = None,
-        quiet: bool = False
+        quiet: bool = False,
+        section_id: Optional[str] = None,
     ) -> ParsedFiling:
         """
-        Parse a SEC filing from HTML file
+        Parse a SEC filing from HTML file.
+
+        Implements the ADR-010 3-stage pre-seek architecture:
+          Stage 0: extract_sgml_manifest() → SGMLManifest (header + byte index)
+          Stage 1: AnchorPreSeeker.seek()  → ~50–200 KB HTML slice
+          Stage 2: Edgar10QParser.parse()  → element list (on unmodified HTML)
+
+        Falls back to the legacy full-content path if Stage 0 fails (not an SGML
+        container) or Stage 1 cannot locate anchors.
 
         Args:
             file_path: Path to the HTML filing file
@@ -110,6 +119,8 @@ class SECFilingParser:
             recursion_limit: Optional recursion limit override. If None, auto-scales
                            based on file size (10000 base + 1000 per MB).
             quiet: If True, suppress warnings
+            section_id: Section to pre-seek (e.g. "part1item1a"). Defaults to
+                       "part1item1a". Pipeline callers pass the actual target section.
 
         Returns:
             ParsedFiling object with semantic structure
@@ -128,21 +139,67 @@ class SECFilingParser:
         if not file_path.exists():
             raise FileNotFoundError(f"Filing not found: {file_path}")
 
-        # Read HTML content
-        html_content = self._read_html_file(file_path)
+        # --- Stage 0: SGML manifest ---
+        manifest = None
+        try:
+            from .sgml_manifest import (  # pylint: disable=import-outside-toplevel
+                extract_sgml_manifest, extract_document
+            )
+            manifest = extract_sgml_manifest(file_path)
+        except (ValueError, Exception):  # noqa: BLE001  # any error → legacy fallback
+            pass
 
-        # Auto-scale recursion limit based on file size if not specified
-        if recursion_limit is None:
-            file_size_mb = len(html_content) / (1024 * 1024)
-            # Base 10000 + 2000 per MB, capped at 50000
-            recursion_limit = min(50000, 10000 + int(file_size_mb * 2000))
+        filing: ParsedFiling
+        if manifest is not None and manifest.doc_10k is not None:
+            # Extract full Document 1 for DEI metadata (ticker, etc.)
+            full_doc1_bytes = extract_document(file_path, manifest.doc_10k)
+            full_doc1_html = self._decode_bytes(full_doc1_bytes)
 
-        # Parse from content
-        filing = self.parse_from_content(
-            html_content, form_type,
-            recursion_limit=recursion_limit,
-            quiet=quiet
-        )
+            # Auto-scale recursion limit on Document 1 size (not full container)
+            if recursion_limit is None:
+                file_size_mb = len(full_doc1_html) / (1024 * 1024)
+                recursion_limit = min(50000, 10000 + int(file_size_mb * 2000))
+
+            # --- Stage 1: pre-seek requested section ---
+            from .pre_seeker import AnchorPreSeeker  # pylint: disable=import-outside-toplevel
+            fragment = AnchorPreSeeker().seek(
+                file_path,
+                manifest,
+                section_id=section_id or "part1item1a",
+                form_type=form_type,
+            )
+
+            html_for_parser = fragment if fragment is not None else full_doc1_html
+
+            # --- Stage 2: parse fragment (Rule 1: no flatten_html before sec-parser) ---
+            # quiet=True: the "10-K parsed with Edgar10QParser" warning is expected on
+            # this path and fires once per file; suppress it for the internal call.
+            filing = self.parse_from_content(
+                html_for_parser,
+                form_type,
+                flatten_html=False,
+                recursion_limit=recursion_limit,
+                quiet=True,
+            )
+
+            # Override metadata using manifest header + full doc1 DEI
+            filing.metadata = self._extract_metadata(
+                filing.elements, full_doc1_html, sgml_manifest=manifest
+            )
+
+        else:
+            # Legacy path: read the raw file as text and parse from content
+            html_content = self._read_html_file(file_path)
+
+            if recursion_limit is None:
+                file_size_mb = len(html_content) / (1024 * 1024)
+                recursion_limit = min(50000, 10000 + int(file_size_mb * 2000))
+
+            filing = self.parse_from_content(
+                html_content, form_type,
+                recursion_limit=recursion_limit,
+                quiet=quiet,
+            )
 
         # Save output if requested
         if save_output:
@@ -231,6 +288,21 @@ class SECFilingParser:
             metadata=metadata
         )
 
+    def _decode_bytes(self, raw: bytes) -> str:
+        """
+        Decode bytes from an EDGAR document with proper encoding fallback chain.
+
+        Older EDGAR filings frequently use windows-1252 (not latin-1).
+        latin-1 is a last resort: it never throws but may produce mojibake
+        for the 0x80–0x9F range (windows-1252 printable chars).
+        """
+        for encoding in ('utf-8', 'windows-1252'):
+            try:
+                return raw.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return raw.decode('latin-1')  # always succeeds; may produce mojibake in 0x80-0x9F range
+
     def _read_html_file(self, file_path: Path) -> str:
         """
         Read HTML file with proper encoding handling
@@ -279,14 +351,21 @@ class SECFilingParser:
     def _extract_metadata(
         self,
         elements: List[sp.AbstractSemanticElement],
-        html_content: str
+        html_content: str,
+        sgml_manifest: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
-        Extract metadata from parsed elements
+        Extract metadata from parsed elements.
+
+        When sgml_manifest is provided (ADR-010 path), header fields are read
+        directly from SGMLManifest.header instead of regex over html_content.
+        html_content (always full Document 1 HTML) is still scanned for the DEI
+        ticker tag, which is not present in the SGML header.
 
         Args:
-            elements: List of semantic elements
-            html_content: Original HTML content
+            elements: List of semantic elements from sec-parser
+            html_content: Full Document 1 HTML (used for DEI ticker regex)
+            sgml_manifest: Optional SGMLManifest from Stage 0
 
         Returns:
             Dictionary of metadata
@@ -303,28 +382,35 @@ class SECFilingParser:
             if isinstance(el, sp.TopSectionTitle)
         )
 
-        # Extract SIC Code and SIC Name
-        sic_code = self._extract_sic_code(html_content)
-        sic_name = self._extract_sic_name(html_content)
+        if sgml_manifest is not None:
+            # --- ADR-010 path: use structured header fields ---
+            hdr = sgml_manifest.header
+            sic_code    = hdr.sic_code
+            sic_name    = hdr.sic_name
+            company_name = hdr.company_name
+            cik          = hdr.cik
+            fiscal_year  = hdr.fiscal_year
+            period_of_report = hdr.period_of_report
+        else:
+            # --- Legacy path: regex over full HTML ---
+            sic_code = self._extract_sic_code(html_content)
+            sic_name = self._extract_sic_name(html_content)
 
-        # Extract Company Name
-        company_name_match = re.search(
-            r'COMPANY CONFORMED NAME:\s*(.+)', html_content, re.IGNORECASE
-        )
-        company_name = company_name_match.group(1).strip() if company_name_match else None
+            company_name_match = re.search(
+                r'COMPANY CONFORMED NAME:\s*(.+)', html_content, re.IGNORECASE
+            )
+            company_name = company_name_match.group(1).strip() if company_name_match else None
 
-        # Extract CIK
-        cik_match = re.search(r'CENTRAL INDEX KEY:\s*(\d+)', html_content, re.IGNORECASE)
-        cik = cik_match.group(1).strip() if cik_match else None
+            cik_match = re.search(r'CENTRAL INDEX KEY:\s*(\d+)', html_content, re.IGNORECASE)
+            cik = cik_match.group(1).strip() if cik_match else None
 
-        # Extract fiscal year from CONFORMED PERIOD OF REPORT (format: YYYYMMDD)
-        period_match = re.search(
-            r'CONFORMED PERIOD OF REPORT[:\s]+(\d{8})', html_content, re.IGNORECASE
-        )
-        fiscal_year = period_match.group(1)[:4] if period_match else None
+            period_match = re.search(
+                r'CONFORMED PERIOD OF REPORT[:\s]+(\d{8})', html_content, re.IGNORECASE
+            )
+            fiscal_year = period_match.group(1)[:4] if period_match else None
+            period_of_report = period_match.group(1) if period_match else None
 
-        # Extract ticker from DEI inline XBRL tag (present in ~99.9% of EDGAR HTML filings)
-        # Two formats: direct text or nested <span>
+        # Extract ticker from DEI inline XBRL tag (always from Document 1 HTML)
         # <ix:nonNumeric name="dei:TradingSymbol" ...>AAPL</ix:nonNumeric>
         # <ix:nonNumeric name="dei:TradingSymbol" ...><span ...>ABT</span></ix:nonNumeric>
         ticker_match = re.search(
@@ -336,7 +422,7 @@ class SECFilingParser:
         else:
             ticker = None
 
-        return {
+        meta: Dict[str, Any] = {
             'total_elements': len(elements),
             'num_sections': num_sections,
             'element_types': element_types,
@@ -346,10 +432,23 @@ class SECFilingParser:
             'sic_name': sic_name,
             'company_name': company_name,
             'cik': cik,
-            'ticker': ticker,  # Placeholder for future ticker extraction
+            'ticker': ticker,
             'fiscal_year': fiscal_year,
-            'period_of_report': period_match.group(1) if period_match else None,
+            'period_of_report': period_of_report,
         }
+
+        # Add new fields from SGMLManifest header (ADR-010)
+        if sgml_manifest is not None:
+            hdr = sgml_manifest.header
+            meta['accession_number']       = hdr.accession_number
+            meta['filed_as_of_date']       = hdr.filed_as_of_date
+            meta['fiscal_year_end']        = hdr.fiscal_year_end
+            meta['sec_file_number']        = hdr.sec_file_number
+            meta['document_count']         = hdr.document_count
+            meta['state_of_incorporation'] = hdr.state_of_incorporation
+            meta['ein']                    = hdr.ein
+
+        return meta
 
     def _extract_sic_code(self, html_content: str) -> Optional[str]:
         """

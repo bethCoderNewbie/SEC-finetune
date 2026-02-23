@@ -1,8 +1,10 @@
 # ADR-010: Hybrid Pre-Seek Parser Architecture with SGMLManifest (Supersedes ADR-009)
 
-**Status:** Accepted
+**Status:** Accepted — Implemented 2026-02-22
 **Date:** 2026-02-22
 **Author:** bethCoderNewbie
+**Implementation git SHA:** 94d7d6e (plan) + subsequent bug-fix commits
+**Bug report:** `thoughts/shared/research/2026-02-22_19-45-00_adr010_single_file_run_bugs.md`
 
 ---
 
@@ -165,44 +167,56 @@ Stage 3 post-filter runs unconditionally on both paths.
 
 ### SGMLManifest schema
 
+Implemented as Pydantic V2 `BaseModel` (per ADR-001), not `@dataclass`.
+All fields are `Optional` with `None` default to match EDGAR header variability.
+`SGMLManifest.container_path` is a required field (see Rule 8 and Consequences).
+
 ```python
-@dataclass
-class DocumentEntry:
+# src/preprocessing/models/sgml.py
+
+class DocumentEntry(BaseModel):
+    model_config = ConfigDict(validate_assignment=True)
     doc_type:    str    # <TYPE> field, e.g. "10-K", "XML", "JSON", "EX-31.1"
     sequence:    int    # <SEQUENCE> field
     filename:    str    # <FILENAME> field
     description: str    # <DESCRIPTION> field (may be empty)
-    byte_start:  int    # byte offset of <TEXT> content start in container
-    byte_end:    int    # byte offset of </TEXT> content end in container
+    byte_start:  int    # byte offset just after <TEXT>\n in container
+    byte_end:    int    # byte offset of leading \n before </TEXT> in container
 
-@dataclass
-class SGMLHeader:
-    # Currently extracted (unchanged)
-    company_name:          str
-    cik:                   str
-    sic_code:              str
-    sic_name:              str
-    fiscal_year:           str
-    period_of_report:      str
-    # Newly extracted
-    accession_number:      str
-    fiscal_year_end:       str           # MMDD e.g. "0924"
-    sec_file_number:       str
-    filed_as_of_date:      str           # YYYYMMDD
-    document_count:        int
-    state_of_incorporation: str | None   # 95% coverage; None if absent
-    ein:                   str | None    # 12% SGML coverage; prefer DEI fallback
+class SGMLHeader(BaseModel):
+    model_config = ConfigDict(validate_assignment=True)
+    # 6 fields previously extracted (semantics unchanged)
+    company_name:    Optional[str] = None
+    cik:             Optional[str] = None
+    sic_code:        Optional[str] = None
+    sic_name:        Optional[str] = None
+    fiscal_year:     Optional[str] = None   # derived: first 4 chars of period_of_report
+    period_of_report: Optional[str] = None  # YYYYMMDD from CONFORMED PERIOD OF REPORT
+    # 7 newly extracted fields (ADR-010)
+    accession_number:       Optional[str] = None
+    fiscal_year_end:        Optional[str] = None   # MMDD e.g. "0925"
+    sec_file_number:        Optional[str] = None
+    filed_as_of_date:       Optional[str] = None   # YYYYMMDD
+    document_count:         Optional[int] = None
+    state_of_incorporation: Optional[str] = None   # ~95% coverage
+    ein:                    Optional[str] = None    # ~12% SGML coverage; use DEI fallback
 
-@dataclass
-class SGMLManifest:
+class SGMLManifest(BaseModel):
+    model_config = ConfigDict(validate_assignment=True, arbitrary_types_allowed=True)
     header:              SGMLHeader
-    documents:           list[DocumentEntry]   # all embedded docs, sequence order
-    # Promoted first-class accessors (None if not found)
-    doc_10k:             DocumentEntry | None  # TYPE=10-K — iXBRL body
-    doc_metalinks:       DocumentEntry | None  # FILENAME=MetaLinks.json
-    doc_filing_summary:  DocumentEntry | None  # FILENAME=FilingSummary.xml
-    doc_xbrl_instance:   DocumentEntry | None  # FILENAME=*_htm.xml or *-*.xml
+    documents:           List[DocumentEntry] = Field(default_factory=list)
+    container_path:      Path                           # required (see Rule 8)
+    doc_10k:             Optional[DocumentEntry] = None # TYPE=10-K — iXBRL body
+    doc_metalinks:       Optional[DocumentEntry] = None # FILENAME=MetaLinks.json
+    doc_filing_summary:  Optional[DocumentEntry] = None # FILENAME=FilingSummary.xml
+    doc_xbrl_instance:   Optional[DocumentEntry] = None # TYPE=XML, filename *_htm.xml
 ```
+
+**EDGAR DOCUMENT block tag syntax note:** Document metadata lines use angle-bracket tags
+(`<TYPE>10-K`, `<SEQUENCE>1`, `<FILENAME>aapl.htm`, `<DESCRIPTION>...`), NOT the
+`FIELD: value` colon syntax used in the `<SEC-HEADER>` block. The scanner uses distinct
+patterns for each block type (`_DOC_TYPE_PAT`, `_DOC_SEQUENCE_PAT`, etc. in
+`sgml_manifest.py`).
 
 ### Stage 0 scanning method
 
@@ -269,11 +283,19 @@ spanning element positions after sec-parser has completed its classification pas
 **Rule 3 — PAGE_HEADER_PATTERN is the single source of truth, applied in Stage 3.**
 
 ```python
+# src/preprocessing/constants.py
+# Matches any pipe-delimited string containing "Form 10-K" or "Form 10-Q".
+# Handles variations: year present or absent, "Page N" or bare integer after last pipe.
 PAGE_HEADER_PATTERN = re.compile(
-    r'.+\|\s*\d{4}\s+Form\s+10-[KQ]\s*\|\s*\d+',
+    r'[^|]+\|[^|]*Form\s+10-[KQ][^|]*\|',
     re.IGNORECASE
 )
 ```
+
+The earlier pattern `r'.+\|\s*\d{4}\s+Form\s+10-[KQ]\s*\|\s*\d+'` was too rigid:
+it required a 4-digit year immediately before "Form" (missed year-less footers) and
+required a bare integer after the final pipe (missed "Page 21"). The implemented
+pattern requires only two pipe separators enclosing "Form 10-K/Q".
 
 Applied in `extractor._extract_section_content` after sec-parser returns:
 
@@ -281,16 +303,18 @@ Applied in `extractor._extract_section_content` after sec-parser returns:
 content_nodes = [
     node for node in content_nodes
     if not (
-        isinstance(node, TitleElement)
+        isinstance(node.semantic_element, sp.TitleElement)
         and PAGE_HEADER_PATTERN.search(node.text)
     )
 ]
 ```
 
-`TitleElement.text` is the fully merged output of `TextElementMerger`. Split-span page
-footers are reassembled before Stage 3 sees them, making this more reliable than the
-BS4 `.get_text()` approach ADR-009 Stage 2 used. Pattern updates require corpus
-regression test before merge.
+Note: the filter uses `node.semantic_element` (the sec-parser element object) and
+`node.text` (the text attribute of the tree node), not bare `node` which is a
+`TreeNode`. `TitleElement.text` is the fully merged output of `TextElementMerger`.
+Split-span page footers are reassembled before Stage 3 sees them, making this more
+reliable than the BS4 `.get_text()` approach ADR-009 Stage 2 used. Pattern updates
+require corpus regression test before merge.
 
 **Rule 4 — Metadata extraction runs in Stage 0 against full Document 1 before the anchor slice.**
 `parser.py` metadata extraction uses regex against raw HTML for `ix:nonNumeric` tags
@@ -308,66 +332,135 @@ ein = manifest.header.ein or dei_tags.get("EntityTaxIdentificationNumber")
 ```
 
 **Rule 6 — Stage 0 uses string seek and line scan, never BeautifulSoup.**
-SGML header and document boundary parsing uses `str.find()` and line iteration.
-BS4 is instantiated exactly once (Stage 1), on Document 1 content only.
+SGML header and document boundary parsing uses `str.find()` and line iteration on
+raw bytes. BS4 is instantiated exactly once per filing (Stage 1 Strategy A), on
+Document 1 content only, using `SoupStrainer("a")` to limit parse tree size.
 
 **Rule 7 — Fallback for anchor-less filings.**
-If Stage 1 finds no ToC `<a href="#...">` targeting an Item 1A identifier, fall back
-to the existing Fix 1A path: full `Edgar10QParser.parse()` on `extract_document(path,
-manifest.doc_10k)`. Fallback preserves 100% filing coverage. Stage 3 post-filter runs
-unconditionally on both paths.
+If neither Strategy A nor Strategy B locates the target section, fall back to passing
+the full Document 1 HTML to `Edgar10QParser.parse()`. Fallback preserves 100% filing
+coverage. Stage 3 post-filter runs unconditionally on both the pre-seek and fallback
+paths. Expected fallback rate: ~5% of corpus.
+
+**Rule 8 — `SGMLManifest.container_path` is required and must be stable.**
+`SGMLManifest` carries `container_path: Path` as a required field (no default). Byte
+offsets in `DocumentEntry` are valid only for the specific container file they were
+scanned from. Callers must not move, copy, or delete the container between
+`extract_sgml_manifest()` and any subsequent `extract_document()` call. In multi-worker
+batch pipelines, the path must point to a stable location (not a temp copy).
 
 ---
 
-### Stage 1 anchor resolution (read-only)
+### Stage 1 anchor resolution (read-only) — two strategies
 
-EDGAR ToC entries link to section bodies via named anchors:
+`AnchorPreSeeker.seek()` tries strategies in order and returns the first non-None result.
+
+#### Strategy A — ToC `<a href>` → body `id=` resolution (primary)
+
+Modern EDGAR filings include a Table of Contents where each section entry links to its
+body via a named anchor:
 
 ```html
 <!-- Inside ToC <table> -->
-<a href="#i4bf6d0bde838478985b72eb4052bc976_19">Item 1A. Risk Factors</a>
+<a href="#icffec2d5c553492089e1784044e3cc53_16">Item 1A.&#160;&#160;&#160;&#160;Risk Factors</a>
 
-<!-- Section body marker -->
-<a id="i4bf6d0bde838478985b72eb4052bc976_19"></a>
+<!-- Section body — NOTE: a <div id>, NOT <a id> -->
+<div id="icffec2d5c553492089e1784044e3cc53_16"></div>
 ```
 
-Stage 1 locates the raw HTML byte range using two read-only BS4 lookups on
-`extract_document(path, manifest.doc_10k)`:
+**Critical implementation detail:** Modern EDGAR iXBRL filings (including AAPL) use
+`<div id="...">` as anchor targets, not `<a id="...">`. The `_find_anchor_pos()` helper
+searches for `id="FRAGMENT_ID"` on **any element type**:
 
-1. **Start anchor:** find the ToC `<a href>` whose link text matches
-   `re.search(r'item\s+1a', text, re.IGNORECASE)`. Extract the fragment ID from `href`.
-   Find the matching `<a id="FRAGMENT_ID">` tag.
-2. **End anchor:** find the next `<a id="…">` after the start anchor whose surrounding
-   text matches `re.search(r'item\s+(1b|2)\b', text, re.IGNORECASE)`.
+```python
+# src/preprocessing/pre_seeker.py
+def _find_anchor_pos(doc_html: str, fragment_id: str) -> int:
+    pattern = re.compile(
+        r'\bid\s*=\s*"' + re.escape(fragment_id) + r'"',
+        re.IGNORECASE,
+    )
+    m = pattern.search(doc_html)
+    if m is None:
+        return -1
+    tag_start = doc_html.rfind('<', 0, m.start())
+    return tag_start if tag_start != -1 else m.start()
+```
 
-Extract the HTML substring between the two anchor byte positions. No BS4 mutations
-(decompose, insert, replace, wrap, unwrap) are called at any point in Stage 1.
+Strategy A uses `SoupStrainer("a")` so lxml ignores all non-`<a>` nodes at the C level
+(< 50ms on 10 MB documents). It scans the `<a href="#...">` tags for a text match against
+`SECTION_PATTERNS[section_id]`, extracts the fragment ID, then calls `_find_anchor_pos()`
+to resolve the body element position. End anchor is found by the same method for the next
+section in document order.
+
+#### Strategy B — Direct regex scan of raw HTML (fallback)
+
+If no ToC anchor matches (ToC-less filings, non-standard formatting), Strategy B scans
+raw `doc_html` directly with the compiled target and end patterns:
+
+```python
+def _strategy_b(self, doc_html, target_patterns, end_patterns):
+    # Find start: earliest target-pattern match in raw HTML
+    start_match = None
+    for pattern in target_patterns:
+        m = pattern.search(doc_html)
+        if m and (start_match is None or m.start() < start_match.start()):
+            start_match = m
+    if start_match is None:
+        return None
+    # Walk back to opening < of surrounding tag
+    start_pos = doc_html.rfind('<', 0, start_match.start())
+    if start_pos == -1:
+        start_pos = start_match.start()
+    # Find end: first end-pattern match after start_pos
+    end_pos = len(doc_html)
+    for pattern in end_patterns:
+        m = pattern.search(doc_html, start_pos + 1)
+        if m:
+            candidate = doc_html.rfind('<', 0, m.start())
+            if candidate == -1:
+                candidate = m.start()
+            if candidate > start_pos and candidate < end_pos:
+                end_pos = candidate
+    return doc_html[start_pos:end_pos]
+```
+
+**Why not SoupStrainer + `str(tag)`:** BeautifulSoup normalises HTML when stringifying
+tags — `&#160;` in raw HTML becomes `\xa0` in `str(tag)`, quotes and attribute ordering
+may differ. `doc_html.find(str(tag))` always returns -1. Strategy B therefore avoids the
+BS4 round-trip entirely and scans raw HTML directly. EDGAR section headings are plain
+ASCII, so the `SECTION_PATTERNS` regexes reliably match the raw text.
+
+No BS4 mutations (decompose, insert, replace, wrap, unwrap) are called at any point in
+Stage 1 under either strategy.
 
 ---
 
 ## Consequences
 
 **Positive:**
-- Parsing latency: 18.44s → ~1–2s per 10 MB filing. sec-parser processes ~50–200 KB
-  instead of 5.2 MB; all four internal structural invariants are intact.
-- Corpus throughput: 5–16 hours → ~32 minutes for 959 files.
+- Parsing latency: 18.44s → ~5.85s per 10 MB filing (AAPL_10K_2021.html measured
+  post-implementation). sec-parser processes 91.7 KB instead of 5.2 MB; all four
+  internal structural invariants are intact. Stage 1 measured at 106.8 ms.
+- Stage 1 pre-seek succeeds on AAPL iXBRL (which uses `<div id>` anchors); the
+  fix to `_find_anchor_pos()` to match any element type was critical for this class
+  of modern filing.
+- Corpus throughput: 5–16 hours → ~32 minutes for 959 files (estimated from per-file
+  timing; excludes sentence-transformer model load which amortises over a batch).
 - `TitleElement` misclassification (`"Apple Inc. | 2024 Form 10-K | 21"`) eliminated by
-  Stage 3 pattern filter. Operates on fully-merged `TitleElement.text` — more reliable
-  than the BS4 `.get_text()` approach in ADR-009.
-- Stage 0 single pass now captures the full SGML header (8 currently-missing fields)
-  and the complete Document Index at near-zero cost.
+  Stage 3 pattern filter. Zero page-header segments in AAPL output (verified).
+- Stage 0 single pass now captures the full SGML header (7 previously-missing fields)
+  and the complete Document Index at near-zero cost (10.9 ms measured).
 - `accession_number`, `fiscal_year_end`, `state_of_incorporation`, `sec_file_number`,
   `filed_as_of_date` become available to all downstream stages immediately.
 - MetaLinks.json, FilingSummary.xml, and XBRL instance document are addressable by
-  byte offset without re-reading the container. This unblocks Plan D (Metadata
-  Enrichment) and future financial-fact extraction.
+  byte offset without re-reading the container. This unblocks Plan D and future work.
 - `SGMLManifest` replaces ad-hoc dict passing as the filing context carrier.
 - Architecture is simpler than ADR-009: three stages vs four; no pre-sanitization stage.
 
 **Negative:**
 - Stage 0 `</TEXT>` seek step scans content bytes sequentially to record `byte_end`.
   For the 26 MB iXBRL body, this scan is explicit (previously it was implicit in the
-  pass that located Document 1). Measured overhead expected < 0.2s; confirm with profiling.
+  pass that located Document 1). Measured overhead < 11ms in practice.
 - `SGMLManifest.documents` holds up to 684 `DocumentEntry` objects (~70 KB peak). Negligible
   but non-zero increase over the previous bare-bytes Stage 0 output.
 - Serialised `SGMLManifest` objects must carry `container_path` alongside byte offsets —
@@ -376,12 +469,38 @@ Extract the HTML substring between the two anchor byte positions. No BS4 mutatio
 - The `<XBRL>` inner wrapper stripping in `extract_document()` relies on the wrapper
   appearing at the start of content bytes. If EDGAR changes the SGML wrapper format,
   this breaks silently. A `doc_type`-based guard must protect the strip branch.
-- `PAGE_HEADER_PATTERN` is company-name-agnostic: any pipe-delimited string containing a
-  4-digit year and `Form 10-K/Q` is dropped. A risk factor segment legitimately containing
-  such a string would be incorrectly removed. Considered pathologically unlikely; monitor
-  in corpus regression runs.
-- Stage 1 anchor resolution depends on EDGAR ToC formatting conventions. Non-standard or
-  JavaScript-generated ToC patterns silently trigger the fallback (slower but correct).
+- `PAGE_HEADER_PATTERN` is company-name-agnostic: any pipe-delimited string containing
+  `Form 10-K/Q` between two pipes is dropped. A risk factor segment legitimately
+  containing such a string would be incorrectly removed. Considered pathologically
+  unlikely; monitor in corpus regression runs.
+- Stage 1 Strategy A depends on EDGAR ToC formatting conventions. Non-standard or
+  JavaScript-generated ToC patterns cause Strategy A to return None, and Strategy B
+  runs a raw regex scan as secondary fallback. If both fail, the full doc1 is parsed.
+- `fiscal_year_end` SGML field uses `FISCAL YEAR END:` (not `FISCAL YEAR ENDING:`).
+  EDGAR header field names are not published in a machine-readable schema; mismatches
+  are discovered only by running against real filings. The field name is now correct
+  in `sgml_manifest.py:_HDR_PATTERNS` after post-implementation correction.
+
+---
+
+## Post-implementation corrections (2026-02-22)
+
+Four issues were found during the single-file smoke test on `AAPL_10K_2021.html`
+immediately after initial implementation. All were fixed before the first batch run.
+Full documentation: `thoughts/shared/research/2026-02-22_19-45-00_adr010_single_file_run_bugs.md`.
+
+| ID | Severity | Location | Issue | Fix |
+|----|----------|----------|-------|-----|
+| B1 | Critical | `pre_seeker.py:_find_anchor_pos` | Body anchor search was confined to `<a id="...">` tags. AAPL iXBRL (and modern EDGAR generally) uses `<div id="...">`. Zero `<a id>` anchors exist in the 5.2 MB iXBRL body; Strategy A returned None for every filing of this type. | Changed pattern to `\bid\s*=\s*"FRAGMENT_ID"` — matches any element type. |
+| B2 | Critical | `pre_seeker.py:_strategy_b` | Strategy B located matches via BS4 then called `doc_html.find(str(tag))`. BS4 normalises HTML when stringifying: `&#160;` → `\xa0`, quote styles may differ. `str(tag)` never matches raw source. Strategy B silently returned None on every filing. | Rewrote `_strategy_b` to scan raw `doc_html` directly with compiled `SECTION_PATTERNS` regexes. No BS4 round-trip. |
+| B3 | Minor | `sgml_manifest.py:_HDR_PATTERNS` | `fiscal_year_end` pattern matched `FISCAL YEAR ENDING:` but actual EDGAR field is `FISCAL YEAR END:` (no trailing G). Field was None on every filing. | Changed pattern to `rb'FISCAL YEAR END:\s*(\d{4})'`. |
+| W1 | Warning | `parser.py:parse_filing` | `UserWarning: 10-K parsed with Edgar10QParser` fired on every 10-K via the internal `parse_from_content()` call. Non-actionable noise in batch logs. | Passed `quiet=True` on the internal call inside `parse_filing()`. |
+
+**Post-fix verified results on AAPL_10K_2021.html:**
+- Stage 0: 10.9 ms — all 10 metadata fields populated including `fiscal_year_end: "0925"`
+- Stage 1: 106.8 ms — returns 91.7 KB slice (vs. full ~2 MB doc1 before fixes)
+- Total end-to-end: ~5.85s (down from 18.44s baseline; model load amortises over batch)
+- Segments: 136 extracted; 0 page-header segments
 
 ---
 
@@ -404,17 +523,29 @@ from the SGML container.
 
 ## References
 
+**Implementation files:**
+- `src/preprocessing/models/sgml.py` — `DocumentEntry`, `SGMLHeader`, `SGMLManifest` (Pydantic V2)
+- `src/preprocessing/sgml_manifest.py` — Stage 0: `extract_sgml_manifest()`, `extract_document()`
+- `src/preprocessing/pre_seeker.py` — Stage 1: `AnchorPreSeeker`, `_find_anchor_pos`, `_strategy_b`
+- `src/preprocessing/constants.py` — `PAGE_HEADER_PATTERN`, `SECTION_PATTERNS`, anchor patterns
+- `src/preprocessing/extractor.py` — Stage 3 filter in `_extract_section_content()`
+- `src/preprocessing/parser.py` — `parse_filing()` orchestration, `_extract_metadata()`
+
+**Bug report:**
+- `thoughts/shared/research/2026-02-22_19-45-00_adr010_single_file_run_bugs.md` — B1/B2/B3/W1 with evidence and fixes
+
+**sec-parser internals (structural invariants):**
 - `venv/.../sec_parser/processing_steps/text_element_merger.py:47-50` — adjacent position invariant
 - `venv/.../single_element_checks/xbrl_tag_check.py:15-24` — ix:* tag name detection
 - `venv/.../single_element_checks/table_check.py:31` — `has_text_outside_tags()` sibling invariant
 - `venv/.../processing_engine/core.py:46-47` — `TopSectionManagerFor10Q` sequence invariant
-- `src/preprocessing/parser.py:26-46` — monkey-patch for `approx_table_metrics` (evidence sec-parser is fragile about structural assumptions)
-- `src/preprocessing/parser.py:279-352` — current six-field SGML header extraction (to be replaced by full `SGMLHeader` parse)
-- `src/preprocessing/parser.py:326-337` — metadata regex on raw HTML (`ix:nonNumeric` source; must run before anchor slice)
-- `src/preprocessing/extractor.py:459-468` — `_extract_section_content`, target for Stage 3 filter
-- `data/interim/20260220_190317_preprocessing_b9fb777/parsed/AAPL_10K_2024_parsed.json` — production evidence of `TitleElement` misclassification
+
+**Research and evidence:**
 - `thoughts/shared/research/2026-02-22_12-00-00_sec_html_structure_and_extraction.md` §Layer 1–4 — SGML container format, Document Index structure, MetaLinks.json and FilingSummary.xml schemas
 - `thoughts/shared/research/2026-02-22_10-00-00_aapl_parser_metrics_audit.md` — empirical timing breakdown (16.30s in `Edgar10QParser`, 87% of total)
 - `reports/sec_html_structure/2026-02-22_17-57-43_sec_html_structure_findings.md` §3, §7 — SGML header field coverage; 7/22 extraction gap; Document Index distribution (88–684 docs, mean 152)
+- `data/interim/20260220_190317_preprocessing_b9fb777/parsed/AAPL_10K_2024_parsed.json` — production evidence of `TitleElement` misclassification
+
+**Related decisions:**
 - ADR-009 — superseded
 - ADR-002 — sec-parser adoption decision (unchanged)

@@ -15,11 +15,19 @@ from typing import Dict, List
 # Page Header Pattern
 # ===========================
 
-# Pattern for filtering page headers (e.g., "Apple Inc. | 2021 Form 10-K | 6")
+# Matches any pipe-separated string containing "Form 10-K" or "Form 10-Q" between two pipes.
+# Handles variations like:
+#   "Apple Inc. | 2024 Form 10-K | 21"
+#   "Apple Inc. | Form 10-K | Page 21"
+#   "Apple Inc. | 2024 Form 10-K | Page 21"
 PAGE_HEADER_PATTERN = re.compile(
-    r'.+\|\s*\d{4}\s+Form\s+\d+-[KQ]\s*\|\s*\d+',
+    r'[^|]+\|[^|]*Form\s+10-[KQ][^|]*\|',
     re.IGNORECASE
 )
+
+# Pre-seeker anchor patterns (ADR-010 Stage 1)
+ITEM_1A_ANCHOR_PATTERN = re.compile(r'item\s+1\s*a', re.IGNORECASE)
+ITEM_1B_OR_2_ANCHOR_PATTERN = re.compile(r'item\s+(1\s*b|2)\b', re.IGNORECASE)
 
 
 # ===========================
