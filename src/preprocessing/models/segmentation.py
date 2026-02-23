@@ -124,6 +124,7 @@ class SegmentedRisks(BaseModel):
                 'amendment_flag':        self.amendment_flag,
                 'entity_filer_category': self.entity_filer_category,
                 'ein':                   self.ein,
+                'dei':                   self.metadata.get('dei') or {},
             },
             'processing_metadata': {
                 'parser_version': '1.0',
@@ -207,7 +208,9 @@ class SegmentedRisks(BaseModel):
                 section_title=sm.get('title'),
                 section_identifier=sm.get('identifier'),
                 total_segments=stats.get('total_chunks', len(segments)),
-                metadata=data.get('processing_metadata', {}),
+                # Restore dei from document_info so metadata.get('dei') works
+                # after a save→load round-trip (dei is not in processing_metadata).
+                metadata={'dei': di.get('dei', {})},
             )
 
         # Old flat schema: top-level 'segments' list

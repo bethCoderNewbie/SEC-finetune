@@ -160,14 +160,19 @@ class SECFilingParser:
                 file_size_mb = len(full_doc1_html) / (1024 * 1024)
                 recursion_limit = min(50000, 10000 + int(file_size_mb * 2000))
 
-            # --- Stage 1: pre-seek requested section ---
-            from .pre_seeker import AnchorPreSeeker  # pylint: disable=import-outside-toplevel
-            fragment = AnchorPreSeeker().seek(
-                file_path,
-                manifest,
-                section_id=section_id or "part1item1a",
-                form_type=form_type,
-            )
+            # --- Stage 1: pre-seek requested section (ADR-011 Rule 9) ---
+            # Only fire when the caller explicitly names one section.
+            # section_id=None means multi-section extraction — skip Stage 1
+            # and fall through to the full Document 1 parse (Rule 7 path).
+            fragment = None
+            if section_id is not None:
+                from .pre_seeker import AnchorPreSeeker  # pylint: disable=import-outside-toplevel
+                fragment = AnchorPreSeeker().seek(
+                    file_path,
+                    manifest,
+                    section_id=section_id,
+                    form_type=form_type,
+                )
 
             html_for_parser = fragment if fragment is not None else full_doc1_html
 

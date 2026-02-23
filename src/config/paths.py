@@ -105,7 +105,7 @@ class PathsConfig(BaseSettings):
     def lm_dictionary_csv(self) -> Path:
         """Path to LM dictionary source CSV."""
         # Inline constant to avoid circular import with features module
-        return self.dictionary_dir / "Loughran-McDonald_MasterDictionary_1993-2021.csv"
+        return self.dictionary_dir / "Loughran-McDonald_MasterDictionary_1993-2024.csv"
 
     @property
     def lm_dictionary_cache(self) -> Path:

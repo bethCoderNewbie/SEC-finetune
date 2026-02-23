@@ -158,6 +158,9 @@ def _process_filing_with_global_workers(
 
     # Step 1: Parse HTML filing (once — no sanitization)
     logger.info("Step 1: Parsing HTML filing...")
+    # ADR-011 Rule 9: Stage 1 pre-seek is valid only for single-section extraction.
+    # Multi-section requests must parse the full Document 1 HTML.
+    preseek_id = sections[0] if len(sections) == 1 else None
     with tracker.track_module(PipelineStep.PARSE) if tracker else nullcontext():
         if intermediates_dir:
             parser_save: Union[Path, bool] = intermediates_dir / "parsed" / (file_path.stem + OutputSuffix.PARSED)
@@ -166,7 +169,8 @@ def _process_filing_with_global_workers(
             parser_save = True   # existing behaviour: saves to default parsed_data_dir
         else:
             parser_save = False
-        parsed = get_worker_parser().parse_filing(file_path, form_type, save_output=parser_save)
+        parsed = get_worker_parser().parse_filing(file_path, form_type, save_output=parser_save,
+                                                  section_id=preseek_id)
 
     logger.info(
         "Parsed %d elements. Metadata: CIK=%s, SIC=%s (%s)",
@@ -463,13 +467,16 @@ class SECPreprocessingPipeline:
 
         # Step 1: Parse HTML filing (once — no sanitization)
         logger.info("Step 1: Parsing HTML filing...")
+        # ADR-011 Rule 9: pre-seek only for single-section requests.
+        preseek_id = section_list[0].value if len(section_list) == 1 else None
         if intermediates_dir:
             parsed_dir = intermediates_dir / "parsed"
             parsed_dir.mkdir(parents=True, exist_ok=True)
             parser_save: Union[Path, bool] = parsed_dir / (file_path.stem + OutputSuffix.PARSED)
         else:
             parser_save = save_intermediates  # True → default parsed_data_dir, False → skip
-        parsed = self.parser.parse_filing(file_path, form_type, save_output=parser_save)
+        parsed = self.parser.parse_filing(file_path, form_type, save_output=parser_save,
+                                          section_id=preseek_id)
 
         logger.info(
             "Parsed %d elements. Metadata: CIK=%s, SIC=%s (%s)",

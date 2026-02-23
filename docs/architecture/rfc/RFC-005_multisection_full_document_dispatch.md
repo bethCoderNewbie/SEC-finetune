@@ -5,7 +5,7 @@ status: ACCEPTED
 author: beth
 created: 2026-02-23
 last_updated: 2026-02-23
-git_sha: 8f08d4b
+git_sha: 8f08d4b  # RFC authored at this SHA; implementation in working tree (uncommitted)
 superseded_by: null
 related_prd: docs/requirements/PRD-002_SEC_Finetune_Pipeline_v2.md
 related_adr: docs/architecture/adr/ADR-011_preseeker_single_section_constraint.md

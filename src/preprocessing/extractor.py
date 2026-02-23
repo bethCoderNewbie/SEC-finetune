@@ -106,7 +106,9 @@ class SECSectionExtractor:
         filing_metadata = filing.metadata or {}
 
         # Build metadata — include fiscal_year/period_of_report so the segmenter
-        # can promote them to SegmentedRisks.fiscal_year (Fix 6C)
+        # can promote them to SegmentedRisks.fiscal_year (Fix 6C).
+        # dei carries Tier-2 XBRL ix:hidden fields extracted by parser._extract_metadata
+        # (EntityRegistrantName, DocumentPeriodEndDate, SecurityExchangeName, etc.)
         metadata = {
             'num_subsections': len(subsections),
             'num_elements': len(elements),
@@ -115,6 +117,7 @@ class SECSectionExtractor:
             'period_of_report': filing_metadata.get('period_of_report'),
             'accession_number': filing_metadata.get('accession_number'),
             'filed_as_of_date': filing_metadata.get('filed_as_of_date'),
+            'dei': filing_metadata.get('dei'),
         }
 
         return ExtractedSection(

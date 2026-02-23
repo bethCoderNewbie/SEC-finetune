@@ -152,13 +152,17 @@ class RiskSegmenter:
         # Segment the text
         segment_texts = self.segment_risks(text_to_segment)
 
-        # Fix 6B: build chunk_id and resolve parent_subsection from node_subsections
+        # Fix 6B: build chunk_id and resolve parent_subsection from node_subsections.
+        # Fall back to the section title for preamble content that precedes the first
+        # named subsection heading (those nodes carry subsection=None in node_subsections).
         node_subsections = getattr(extracted_section, 'node_subsections', [])
+        section_title = getattr(extracted_section, 'title', None)
         segments = [
             RiskSegment(
                 chunk_id=f"1A_{i+1:03d}",
-                parent_subsection=self._resolve_subsection(
-                    text, text_to_segment, node_subsections
+                parent_subsection=(
+                    self._resolve_subsection(text, text_to_segment, node_subsections)
+                    or section_title
                 ),
                 text=text,
             )

@@ -142,6 +142,7 @@ def run_pipeline(
     save_intermediates: bool = True,
     extract_sentiment: bool = True,
     output_dir: Optional[Path] = None,
+    from_intermediates_dir: Optional[Path] = None,
 ) -> Tuple[Optional[ParsedFiling], Dict[str, Optional[SegmentedRisks]]]:
     """
     Run the full preprocessing pipeline on a single filing.
@@ -156,32 +157,17 @@ def run_pipeline(
         save_intermediates: Whether to save intermediate results
         extract_sentiment: Whether to extract sentiment features (default: True)
         output_dir: Optional directory to save outputs
+        from_intermediates_dir: Optional path to a prior run directory whose
+            extracted/ sub-directory contains pre-extracted section JSONs.
+            When set, each section is loaded from disk instead of being re-parsed
+            and re-extracted.  Sections whose JSON is absent fall back to normal
+            parse + extract.
 
     Returns:
-        Tuple of (ParsedFiling, Dict[section_id, SegmentedRisks])
+        Tuple of (ParsedFiling or None, Dict[section_id, SegmentedRisks])
     """
     print(f"Preprocessing Pipeline for: {input_file.name}")
     print("=" * 80)
-
-    # Step 1: Parse
-    print("\n[1/N] Parsing SEC filing...")
-    parser = SECFilingParser()
-    parsed_path = None
-    if save_intermediates and output_dir:
-        parsed_path = output_dir / "parsed" / (input_file.stem + OutputSuffix.PARSED)
-        parsed_path.parent.mkdir(parents=True, exist_ok=True)
-    filing = parser.parse_filing(
-        input_file,
-        form_type="10-K",
-        save_output=parsed_path if parsed_path else save_intermediates,
-    )
-    print(f"  [OK] Parsed {len(filing)} semantic elements")
-    print(f"  [OK] Found {filing.metadata['num_sections']} sections")
-    print(f"  [OK] Metadata extracted:")
-    print(f"       - CIK: {filing.metadata.get('cik', 'N/A')}")
-    print(f"       - Company: {filing.metadata.get('company_name', 'N/A')}")
-    print(f"       - SIC Code: {filing.metadata.get('sic_code', 'N/A')}")
-    print(f"       - SIC Name: {filing.metadata.get('sic_name', 'N/A')}")
 
     # Initialize shared objects (once for all sections)
     extractor = SECSectionExtractor()
@@ -191,6 +177,33 @@ def run_pipeline(
         max_length=settings.preprocessing.max_segment_length,
     )
     analyzer = SentimentAnalyzer() if extract_sentiment else None
+
+    # filing is lazy-parsed: only needed for sections not already on disk.
+    filing = None
+    parser_obj = SECFilingParser()
+
+    def _ensure_filing():
+        nonlocal filing
+        if filing is not None:
+            return filing
+        print("\n[1/N] Parsing SEC filing...")
+        parsed_path = None
+        if save_intermediates and output_dir:
+            parsed_path = output_dir / "parsed" / (input_file.stem + OutputSuffix.PARSED)
+            parsed_path.parent.mkdir(parents=True, exist_ok=True)
+        filing = parser_obj.parse_filing(
+            input_file,
+            form_type="10-K",
+            save_output=parsed_path if parsed_path else save_intermediates,
+        )
+        print(f"  [OK] Parsed {len(filing)} semantic elements")
+        print(f"  [OK] Found {filing.metadata['num_sections']} sections")
+        print(f"  [OK] Metadata extracted:")
+        print(f"       - CIK: {filing.metadata.get('cik', 'N/A')}")
+        print(f"       - Company: {filing.metadata.get('company_name', 'N/A')}")
+        print(f"       - SIC Code: {filing.metadata.get('sic_code', 'N/A')}")
+        print(f"       - SIC Name: {filing.metadata.get('sic_name', 'N/A')}")
+        return filing
 
     sections = _sections_for_form_type("10-K")
     dest_dir = output_dir if output_dir is not None else PROCESSED_DATA_DIR
@@ -203,9 +216,21 @@ def run_pipeline(
             logger.warning("Unknown section '%s', skipping", section_id)
             continue
 
-        # Step 2: Extract section (metadata flows through)
-        print(f"\n  Extracting section '{section_id}'...")
-        extracted = extractor.extract_section(filing, section_enum)
+        # Step 1+2: load pre-extracted JSON or fall back to parse + extract
+        extracted = None
+        if from_intermediates_dir:
+            ext_path = (
+                from_intermediates_dir / "extracted"
+                / (input_file.stem + OutputSuffix.section_extracted(section_id))
+            )
+            if ext_path.exists():
+                extracted = ExtractedSection.load_from_json(ext_path)
+                print(f"\n  [OK] Loaded pre-extracted '{section_id}' from {ext_path.name}")
+
+        if extracted is None:
+            # Step 2: Extract section (metadata flows through)
+            print(f"\n  Extracting section '{section_id}'...")
+            extracted = extractor.extract_section(_ensure_filing(), section_enum)
 
         if extracted is None:
             print(f"  [SKIP] Section '{section_id}' not found in filing")
@@ -227,13 +252,11 @@ def run_pipeline(
         cleaned_text = cleaner.clean_text(extracted.text, deep_clean=False)
         print(f"  [OK] Cleaned text from {len(extracted.text):,} to {len(cleaned_text):,} characters")
 
-        cleaned_section = ExtractedSection(
-            text=cleaned_text,
-            identifier=extracted.identifier,
-            title=extracted.title,
-            subsections=extracted.subsections,
-            elements=extracted.elements,
-            metadata={
+        # Use model_copy to preserve ALL fields (ADR-010/DEI: accession_number,
+        # filed_as_of_date, amendment_flag, entity_filer_category, ein, node_subsections).
+        cleaned_section = extracted.model_copy(update={
+            'text': cleaned_text,
+            'metadata': {
                 **extracted.metadata,
                 'cleaned': True,
                 'cleaning_settings': {
@@ -242,13 +265,7 @@ def run_pipeline(
                     'remove_page_numbers': settings.preprocessing.remove_page_numbers,
                 }
             },
-            sic_code=extracted.sic_code,
-            sic_name=extracted.sic_name,
-            cik=extracted.cik,
-            ticker=extracted.ticker,
-            company_name=extracted.company_name,
-            form_type=extracted.form_type,
-        )
+        })
 
         if save_intermediates:
             dest = output_dir / "extracted" if output_dir else EXTRACTED_DATA_DIR
@@ -306,67 +323,106 @@ def _build_output_data(
     extract_sentiment: bool = True
 ) -> Dict[str, Any]:
     """
-    Build the output data structure with all metadata.
+    Build the output data structure for the final _segmented.json.
+
+    Schema (v2.1):
+        version / filing_name / document_info / processing_metadata / section_metadata /
+        num_segments / sentiment_analysis_enabled / [aggregate_sentiment] / segments
+
+    document_info carries filing-level identity fields (cik, ticker, sic_code, etc.)
+    plus the Tier-2 DEI sub-dict extracted from the XBRL ix:hidden block.
 
     Args:
         input_file: Input file path
         segmented_risks: SegmentedRisks object with segments and metadata
-        sentiment_features_list: Optional list of sentiment features
+        sentiment_features_list: Optional list of sentiment features per segment
         extract_sentiment: Whether sentiment analysis was enabled
 
     Returns:
         Dictionary ready for JSON serialization
     """
+    num_tables = (
+        segmented_risks.metadata.get('element_type_counts', {}).get('TableElement', 0)
+    )
+
+    try:
+        finbert_model = settings.models.default_model  # pylint: disable=no-member
+    except Exception:  # pragma: no cover
+        finbert_model = "ProsusAI/finbert"
+
     output_data = {
-        'version': '2.0',
+        'version': '2.1',
         'filing_name': input_file.name,
-        'sic_code': segmented_risks.sic_code,
-        'sic_name': segmented_risks.sic_name,
-        'cik': segmented_risks.cik,
-        'ticker': segmented_risks.ticker or (
-            input_file.stem.split('_')[0] if '_' in input_file.stem else None
-        ),
-        'company_name': segmented_risks.company_name,
-        'form_type': segmented_risks.form_type,
-        'section_title': segmented_risks.section_title,
-        'num_segments': segmented_risks.total_segments,
-        'segmentation_settings': {
-            'min_segment_length': settings.preprocessing.min_segment_length,
-            'max_segment_length': settings.preprocessing.max_segment_length,
+        'document_info': {
+            'company_name':        segmented_risks.company_name,
+            'ticker':              segmented_risks.ticker,
+            'cik':                 segmented_risks.cik,
+            'sic_code':            segmented_risks.sic_code,
+            'sic_name':            segmented_risks.sic_name,
+            'form_type':           segmented_risks.form_type,
+            'fiscal_year':         segmented_risks.fiscal_year,
+            'accession_number':    segmented_risks.accession_number,
+            'filed_as_of_date':    segmented_risks.filed_as_of_date,
+            'amendment_flag':      segmented_risks.amendment_flag,
+            'entity_filer_category': segmented_risks.entity_filer_category,
+            'ein':                 segmented_risks.ein,
+            'dei':                 segmented_risks.metadata.get('dei') or {},
         },
+        'processing_metadata': {
+            'parser_version': '1.0',
+            'finbert_model': finbert_model,
+            'chunking_strategy': 'sentence_level',
+            'max_tokens_per_chunk': 512,
+        },
+        'section_metadata': {
+            'identifier': segmented_risks.section_identifier,
+            'title': segmented_risks.section_title,
+            'cleaning_settings': {
+                'removed_html_tags':    settings.preprocessing.remove_html_tags,
+                'normalized_whitespace': settings.preprocessing.normalize_whitespace,
+                'removed_page_numbers': settings.preprocessing.remove_page_numbers,
+                'discarded_tables':     True,
+            },
+            'stats': {
+                'total_chunks': segmented_risks.total_segments,
+                'num_tables':   num_tables,
+            },
+        },
+        'num_segments': segmented_risks.total_segments,
         'sentiment_analysis_enabled': extract_sentiment,
     }
 
     if sentiment_features_list and len(sentiment_features_list) > 0:
         n = len(sentiment_features_list)
         output_data['aggregate_sentiment'] = {
-            'avg_negative_ratio':     sum(f.negative_ratio    for f in sentiment_features_list) / n,
-            'avg_uncertainty_ratio':  sum(f.uncertainty_ratio for f in sentiment_features_list) / n,
-            'avg_positive_ratio':     sum(f.positive_ratio    for f in sentiment_features_list) / n,
+            'avg_negative_ratio':       sum(f.negative_ratio    for f in sentiment_features_list) / n,
+            'avg_uncertainty_ratio':    sum(f.uncertainty_ratio for f in sentiment_features_list) / n,
+            'avg_positive_ratio':       sum(f.positive_ratio    for f in sentiment_features_list) / n,
             'avg_sentiment_word_ratio': sum(f.sentiment_word_ratio for f in sentiment_features_list) / n,
         }
 
     output_data['segments'] = []
     for i, seg in enumerate(segmented_risks.segments):
         segment_dict = {
-            'id': seg.chunk_id,
-            'text': seg.text,
-            'length': seg.char_count,
-            'word_count': seg.word_count,
+            'id':               seg.chunk_id,
+            'parent_subsection': seg.parent_subsection,
+            'text':             seg.text,
+            'length':           seg.char_count,
+            'word_count':       seg.word_count,
         }
         if sentiment_features_list and i < len(sentiment_features_list):
             sentiment = sentiment_features_list[i]
             segment_dict['sentiment'] = {
-                'negative_count':     sentiment.negative_count,
-                'positive_count':     sentiment.positive_count,
-                'uncertainty_count':  sentiment.uncertainty_count,
-                'litigious_count':    sentiment.litigious_count,
-                'constraining_count': sentiment.constraining_count,
-                'negative_ratio':     sentiment.negative_ratio,
-                'positive_ratio':     sentiment.positive_ratio,
-                'uncertainty_ratio':  sentiment.uncertainty_ratio,
-                'litigious_ratio':    sentiment.litigious_ratio,
-                'constraining_ratio': sentiment.constraining_ratio,
+                'negative_count':        sentiment.negative_count,
+                'positive_count':        sentiment.positive_count,
+                'uncertainty_count':     sentiment.uncertainty_count,
+                'litigious_count':       sentiment.litigious_count,
+                'constraining_count':    sentiment.constraining_count,
+                'negative_ratio':        sentiment.negative_ratio,
+                'positive_ratio':        sentiment.positive_ratio,
+                'uncertainty_ratio':     sentiment.uncertainty_ratio,
+                'litigious_ratio':       sentiment.litigious_ratio,
+                'constraining_ratio':    sentiment.constraining_ratio,
                 'total_sentiment_words': sentiment.total_sentiment_words,
                 'sentiment_word_ratio':  sentiment.sentiment_word_ratio,
             }
@@ -379,7 +435,7 @@ def _build_output_data(
 # Batch worker (module-level so it can be pickled for ProcessPoolExecutor)
 # ---------------------------------------------------------------------------
 
-def process_single_file_fast(args: Tuple[Path, bool, Path]) -> Dict[str, Any]:
+def process_single_file_fast(args: Tuple) -> Dict[str, Any]:
     """
     Optimized worker function using pre-initialized global objects.
 
@@ -387,23 +443,39 @@ def process_single_file_fast(args: Tuple[Path, bool, Path]) -> Dict[str, Any]:
     wall-clock time and peak RSS memory are captured in the result dict.
 
     Args:
-        args: Tuple of (input_file, save_intermediates, output_dir)
+        args: Tuple of (input_file, save_intermediates, output_dir[, from_intermediates_dir])
             - output_dir: stamped run directory (e.g. data/processed/20260218_..._preprocessing_0b83409/)
+            - from_intermediates_dir: optional path to a prior run directory whose
+              extracted/ sub-directory contains pre-extracted JSONs.  When set the
+              worker loads ExtractedSection directly from those files and skips the
+              Parse step (and per-section Extract step) for sections already on disk.
 
     Returns:
         Dict with keys: file, input_path, output_path, status, num_segments,
         sections_extracted, sic_code, sic_name, cik, elapsed_time, file_size_mb,
         resource_usage, error
     """
-    input_file, save_intermediates, output_dir = args
+    if len(args) == 4:
+        input_file, save_intermediates, output_dir, from_intermediates_dir = args
+    else:
+        input_file, save_intermediates, output_dir = args
+        from_intermediates_dir = None
+
     input_file = Path(input_file)
     output_dir = Path(output_dir)
+    from_intermediates_dir = Path(from_intermediates_dir) if from_intermediates_dir else None
     file_size_mb = input_file.stat().st_size / (1024 * 1024) if input_file.exists() else 0
 
     tracker = ResourceTracker()
 
-    try:
-        # Step 1: Parse
+    # filing is lazy-initialised: only parsed when at least one section has no
+    # pre-extracted JSON available (or from_intermediates_dir is not set).
+    filing = None
+
+    def _ensure_filing():
+        nonlocal filing
+        if filing is not None:
+            return filing
         with tracker.track_module(PipelineStep.PARSE):
             parsed_path = None
             if save_intermediates:
@@ -414,13 +486,15 @@ def process_single_file_fast(args: Tuple[Path, bool, Path]) -> Dict[str, Any]:
                 form_type="10-K",
                 save_output=parsed_path if parsed_path else save_intermediates,
             )
+        return filing
 
+    try:
         ext_dir = output_dir / "extracted"
         sections = _sections_for_form_type("10-K")
         all_segmented: Dict[str, SegmentedRisks] = {}
         first_output_path: Optional[Path] = None
 
-        # Steps 2-4: Loop over sections
+        # Steps 1-2: Parse (lazy) + Extract — or load from intermediates
         for section_id in sections:
             try:
                 section_enum = SectionIdentifier(section_id)
@@ -428,9 +502,30 @@ def process_single_file_fast(args: Tuple[Path, bool, Path]) -> Dict[str, Any]:
                 logger.warning("Unknown section '%s', skipping", section_id)
                 continue
 
-            # Step 2: Extract
-            with tracker.track_module(PipelineStep.EXTRACT):
-                section_result = get_worker_extractor().extract_section(filing, section_enum)
+            # Step 1+2 combined: try loading from pre-extracted JSON first
+            section_result = None
+            if from_intermediates_dir:
+                ext_path = (
+                    from_intermediates_dir / "extracted"
+                    / (input_file.stem + OutputSuffix.section_extracted(section_id))
+                )
+                if ext_path.exists():
+                    with tracker.track_module(PipelineStep.EXTRACT):
+                        section_result = ExtractedSection.load_from_json(ext_path)
+                    logger.info(
+                        "Loaded pre-extracted '%s' from %s", section_id, ext_path.name
+                    )
+
+            if section_result is None:
+                # Fall back: parse HTML (lazy) then extract
+                cur_filing = _ensure_filing()
+
+            # Step 2: Extract (only when no pre-extracted JSON was loaded)
+            if section_result is None:
+                with tracker.track_module(PipelineStep.EXTRACT):
+                    section_result = get_worker_extractor().extract_section(
+                        cur_filing, section_enum
+                    )
 
             if not section_result:
                 continue
@@ -446,13 +541,12 @@ def process_single_file_fast(args: Tuple[Path, bool, Path]) -> Dict[str, Any]:
             with tracker.track_module(PipelineStep.CLEAN):
                 cleaned_text = get_worker_cleaner().clean_text(section_result.text, deep_clean=False)
 
-            cleaned_section = ExtractedSection(
-                text=cleaned_text,
-                identifier=section_result.identifier,
-                title=section_result.title,
-                subsections=section_result.subsections,
-                elements=section_result.elements,
-                metadata={
+            # Use model_copy to preserve ALL fields (including ADR-010/DEI fields:
+            # accession_number, filed_as_of_date, amendment_flag, entity_filer_category,
+            # ein, node_subsections). Manual construction would silently drop them.
+            cleaned_section = section_result.model_copy(update={
+                'text': cleaned_text,
+                'metadata': {
                     **section_result.metadata,
                     'cleaned': True,
                     'cleaning_settings': {
@@ -461,13 +555,7 @@ def process_single_file_fast(args: Tuple[Path, bool, Path]) -> Dict[str, Any]:
                         'remove_page_numbers': settings.preprocessing.remove_page_numbers,
                     }
                 },
-                sic_code=section_result.sic_code,
-                sic_name=section_result.sic_name,
-                cik=section_result.cik,
-                ticker=section_result.ticker,
-                company_name=section_result.company_name,
-                form_type=section_result.form_type,
-            )
+            })
 
             if save_intermediates:
                 ext_dir.mkdir(parents=True, exist_ok=True)
@@ -516,6 +604,9 @@ def process_single_file_fast(args: Tuple[Path, bool, Path]) -> Dict[str, Any]:
         usage = tracker.finalize()
 
         if not all_segmented:
+            # filing may be None when all sections were attempted via pre-extracted
+            # JSONs but none were found; fall back to None-safe metadata access.
+            _meta = filing.metadata if filing is not None else {}
             return {
                 'file': input_file.name,
                 'input_path': str(input_file),
@@ -523,9 +614,9 @@ def process_single_file_fast(args: Tuple[Path, bool, Path]) -> Dict[str, Any]:
                 'status': 'warning',
                 'num_segments': 0,
                 'sections_extracted': [],
-                'sic_code': filing.metadata.get('sic_code'),
-                'sic_name': filing.metadata.get('sic_name'),
-                'cik': filing.metadata.get('cik'),
+                'sic_code': _meta.get('sic_code'),
+                'sic_name': _meta.get('sic_name'),
+                'cik': _meta.get('cik'),
                 'elapsed_time': usage.elapsed_time(),
                 'file_size_mb': file_size_mb,
                 'resource_usage': usage.to_dict(),
@@ -586,6 +677,7 @@ def run_batch_pipeline(
     quiet: bool = False,
     chunk_size: Optional[int] = None,
     task_timeout: int = 1200,
+    from_intermediates_dir: Optional[Path] = None,
 ) -> List[Dict[str, Any]]:
     """
     Run the preprocessing pipeline on multiple files via ParallelProcessor.
@@ -611,6 +703,11 @@ def run_batch_pipeline(
         quiet: Suppress console output
         chunk_size: Save checkpoint + manifest every N completed files
         task_timeout: Per-file timeout floor in seconds (MemorySemaphore may raise it)
+        from_intermediates_dir: Optional path to a prior run directory.  When set,
+            workers load ExtractedSection objects directly from its extracted/ sub-
+            directory, skipping the Parse (and per-section Extract) step for each
+            section whose JSON is already present.  Sections with no JSON fall back
+            to normal parse + extract.
 
     Returns:
         List of per-file result dicts (includes any prior checkpoint data)
@@ -690,8 +787,11 @@ def run_batch_pipeline(
     except Exception as e:
         logger.warning("File classification failed, using floor timeout %ds: %s", task_timeout, e)
 
-    # --- Build task args: (file, save_intermediates, output_dir) ---
-    task_args = [(f, save_intermediates, run_dir) for f in input_files]
+    # --- Build task args: (file, save_intermediates, output_dir[, from_intermediates_dir]) ---
+    task_args = [
+        (f, save_intermediates, run_dir, from_intermediates_dir)
+        for f in input_files
+    ]
 
     # --- Tracking state (mutated inside _on_progress closure) ---
     all_results: List[Dict] = list(prior_results)
@@ -859,9 +959,26 @@ def main():
             'MemorySemaphore will raise this for batches containing large files.'
         )
     )
+    parser.add_argument(
+        '--from-intermediates', type=str, default=None, metavar='DIR',
+        help=(
+            'Path to a prior run directory that contains an extracted/ sub-directory '
+            'with pre-extracted section JSONs.  When set the pipeline loads '
+            'ExtractedSection objects directly from those files and skips the '
+            'expensive Parse step (and per-section Extract step) for each section '
+            'whose JSON already exists.  Sections with no JSON fall back to normal '
+            'parse + extract.  Useful for re-segmenting after a run where the '
+            'segmented outputs had null metadata fields.'
+        )
+    )
 
     args = parser.parse_args()
     ensure_directories()
+
+    from_intermediates_dir = Path(args.from_intermediates) if args.from_intermediates else None
+    if from_intermediates_dir and not from_intermediates_dir.exists():
+        print(f"ERROR: --from-intermediates path does not exist: {from_intermediates_dir}")
+        return
 
     # --- RunMetadata + stamped run directory (naming.py convention) ---
     run_meta = RunMetadata.gather()
@@ -901,6 +1018,7 @@ def main():
             quiet=args.quiet,
             chunk_size=args.chunk_size,
             task_timeout=args.timeout,
+            from_intermediates_dir=from_intermediates_dir,
         )
 
         end_iso = datetime.now().isoformat()
@@ -974,6 +1092,7 @@ def main():
             save_intermediates=not args.no_save,
             extract_sentiment=not args.no_sentiment,
             output_dir=run_dir,
+            from_intermediates_dir=from_intermediates_dir,
         )
 
     else:
@@ -991,6 +1110,7 @@ def main():
             save_intermediates=not args.no_save,
             extract_sentiment=not args.no_sentiment,
             output_dir=run_dir,
+            from_intermediates_dir=from_intermediates_dir,
         )
 
 
