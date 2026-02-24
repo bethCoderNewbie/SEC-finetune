@@ -629,8 +629,10 @@ class HealthCheckValidator:
     RECOMMENDED_IDENTITY_FIELDS = ["sic_code", "ticker", "form_type"]
 
     # Substance thresholds
-    MIN_SEGMENT_LENGTH = 50
-    MAX_SEGMENT_WORDS = 380  # RFC-003 Option A ceiling; ~512 tokens at 1.35 tok/word
+    MIN_SEGMENT_LENGTH = 50   # preprocessing.min_segment_length (char floor)
+    MAX_SEGMENT_CHARS = 2000  # preprocessing.max_segment_length (char ceiling)
+    MIN_SEGMENT_WORDS = 20    # classifier training quality gate (raised from 10)
+    MAX_SEGMENT_WORDS = 380   # RFC-003 Option A ceiling; ~512 tokens at 1.35 tok/word
 
     def __init__(self):
         """Initialize the validator with threshold registry."""
@@ -753,9 +755,9 @@ class HealthCheckValidator:
         if total == 0:
             return results
 
-        cik_present = sum(1 for f in file_data if f.get("cik"))
-        company_present = sum(1 for f in file_data if f.get("company_name"))
-        sic_present = sum(1 for f in file_data if f.get("sic_code"))
+        cik_present = sum(1 for f in file_data if self._get_identity_field(f, "cik"))
+        company_present = sum(1 for f in file_data if self._get_identity_field(f, "company_name"))
+        sic_present = sum(1 for f in file_data if self._get_identity_field(f, "sic_code"))
 
         # CIK rate
         threshold = self.registry.get("cik_present_rate")
@@ -784,6 +786,14 @@ class HealthCheckValidator:
     def _get_segments(data: Dict) -> List[Dict]:
         """Return segment list from either v2 schema ('chunks') or v1 ('segments')."""
         return data.get("segments", data.get("chunks", []))
+
+    @staticmethod
+    def _get_identity_field(data: Dict, field: str):
+        """Return identity field from v1 (top-level) or v2 ('document_info' sub-dict)."""
+        value = data.get(field)
+        if value is None:
+            value = data.get("document_info", {}).get(field)
+        return value
 
     def _check_cleanliness(self, file_data: List[Dict]) -> List[ValidationResult]:
         """Check for HTML and page number artifacts."""
@@ -826,17 +836,25 @@ class HealthCheckValidator:
         total_segments = 0
         empty_segments = 0
         short_segments = 0
+        over_char_segments = 0
+        under_word_segments = 0
         over_limit_segments = 0
 
         for data in file_data:
             for seg in self._get_segments(data):
                 total_segments += 1
                 length = seg.get("length", len(seg.get("text", "")))
+                word_count = seg.get("word_count", 0)
                 if length == 0:
                     empty_segments += 1
-                elif length < self.MIN_SEGMENT_LENGTH:
-                    short_segments += 1
-                if seg.get("word_count", 0) > self.MAX_SEGMENT_WORDS:
+                else:
+                    if length < self.MIN_SEGMENT_LENGTH:
+                        short_segments += 1
+                    if length > self.MAX_SEGMENT_CHARS:
+                        over_char_segments += 1
+                    if 0 < word_count < self.MIN_SEGMENT_WORDS:
+                        under_word_segments += 1
+                if word_count > self.MAX_SEGMENT_WORDS:
                     over_limit_segments += 1
 
         if total_segments == 0:
@@ -856,11 +874,25 @@ class HealthCheckValidator:
                 threshold, empty_segments / total_segments
             ))
 
-        # Short segment rate
+        # Short segment rate (char_count < 50 quality gate)
         threshold = self.registry.get("short_segment_rate")
         if threshold:
             results.append(ValidationResult.from_threshold(
                 threshold, short_segments / total_segments
+            ))
+
+        # Over-max char segment rate (char_count > 2000 quality gate)
+        threshold = self.registry.get("max_char_segment_rate")
+        if threshold:
+            results.append(ValidationResult.from_threshold(
+                threshold, over_char_segments / total_segments
+            ))
+
+        # Under-min word count rate (word_count < 20 quality gate)
+        threshold = self.registry.get("min_word_count_rate")
+        if threshold:
+            results.append(ValidationResult.from_threshold(
+                threshold, under_word_segments / total_segments
             ))
 
         # Over-limit word rate (RFC-003 Option A token-safety gate)
@@ -869,6 +901,13 @@ class HealthCheckValidator:
             results.append(ValidationResult.from_threshold(
                 threshold, over_limit_segments / total_segments
             ))
+
+        # Per-filing minimum segment count gate (≥ 1 segment required)
+        threshold = self.registry.get("min_segment_count")
+        if threshold:
+            for data in file_data:
+                seg_count = len(self._get_segments(data))
+                results.append(ValidationResult.from_threshold(threshold, seg_count))
 
         # Smart Integrity Check - File Size Validation
         for data in file_data:
@@ -998,7 +1037,7 @@ class HealthCheckValidator:
         if not threshold:
             return results
         for data in file_data:
-            af = data.get("amendment_flag")
+            af = self._get_identity_field(data, "amendment_flag")
             # None → pre-iXBRL filing, cannot determine → SKIP (actual=None)
             # False → original filing → PASS (actual=0.0)
             # True  → is an amendment → FAIL blocking (actual=1.0)

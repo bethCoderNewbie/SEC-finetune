@@ -97,14 +97,40 @@ thresholds:
       tags: [substance, blocking, health_check]
 
     short_segment_rate:
-      display_name: Short Segment Rate
+      display_name: Short Segment Rate (<50 chars)
       metric_type: rate
-      target: 0.05
+      target: 0.0
       operator: "<="
-      warn_threshold: 0.10
-      blocking: false
-      description: Max 5% segments below minimum length (50 chars)
-      tags: [substance, health_check]
+      warn_threshold: 0.02
+      blocking: true
+      description: >
+        Zero segments below the 50-char floor (preprocessing.min_segment_length).
+        Every output segment must satisfy char_count >= 50 (classifier training quality gate).
+      tags: [substance, char_count, quality_gate, blocking, health_check]
+
+    max_char_segment_rate:
+      display_name: Over-Max Char Segment Rate (>2000 chars)
+      metric_type: rate
+      target: 0.0
+      operator: "<="
+      warn_threshold: 0.02
+      blocking: true
+      description: >
+        Zero segments exceeding 2000-char ceiling (preprocessing.max_segment_length).
+        Every output segment must satisfy char_count <= 2000 (classifier training quality gate).
+      tags: [substance, char_count, quality_gate, blocking, health_check]
+
+    min_word_count_rate:
+      display_name: Under-Min Word Count Rate (<20 words)
+      metric_type: rate
+      target: 0.0
+      operator: "<="
+      warn_threshold: 0.05
+      blocking: true
+      description: >
+        Zero segments below 20-word minimum. Raised from 10 words to align with classifier
+        training quality gate. Configurable via preprocessing.min_segment_length.
+      tags: [substance, word_count, quality_gate, blocking, health_check]
 
     # Smart Integrity Check - File Size Validation
     min_file_size_kb:

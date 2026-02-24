@@ -177,7 +177,7 @@ thresholds:
       metric_type: boolean
       target: true
       blocking: true
-      description: All segments have >= 10 words
+      description: All segments have >= 20 words (raised from 10 to align with classifier training quality gate)
       tags: [segmenter, quality]
 
     non_risk_filter_precision:

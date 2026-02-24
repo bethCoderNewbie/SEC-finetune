@@ -387,10 +387,11 @@ def batch_validate_preprocessing_output(
 
     checkpoint = CheckpointManager(run_dir / "_validation_checkpoint.json")
 
-    # Find all JSON files (exclude metadata files starting with _)
+    # Find all JSON files (exclude metadata files starting with _ and the report itself)
     json_files = sorted([
         f for f in run_dir.glob("*.json")
         if not f.name.startswith("_")
+        and f != output_path
     ])
 
     if not json_files:
