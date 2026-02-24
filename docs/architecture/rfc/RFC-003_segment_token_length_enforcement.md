@@ -15,10 +15,10 @@ related_stories: docs/requirements/stories/US-015_token_aware_truncation.md
 
 ## Status
 
-**DRAFT** — one phased decision required. Phase A can be implemented immediately.
+**OPTION A ACCEPTED** (2026-02-24, git SHA `0872eb3`) — implemented in ADR-012.
 Phase B implementation is deferred until G-12 (classifier integration into
-`process_batch()`) is complete. Once both phases are agreed and implemented, write
-an ADR referencing this document.
+`process_batch()`) is complete and the Phase 2 FinBERT vs. DeBERTa model
+selection ADR is written. Write a new ADR superseding ADR-012 when Option B lands.
 
 ---
 
@@ -235,6 +235,6 @@ When migrating from Option A to Option B:
 
 | # | Question | Owner | Blocks | Status |
 |:--|:---------|:------|:-------|:-------|
-| OQ-RFC3-1 | What fraction of current corpus segments exceed 380 words? | Data Eng | Sizing Option A's impact | **ANSWERED** — 2.75% (28/1,019 segments across 11 filings). ABBV outlier at 5–9%; max segment 1,141 words. See [research doc](../../thoughts/shared/research/2026-02-20_14-20-37_oq_rfc3_1_segment_word_count_distribution.md). |
-| OQ-RFC3-2 | After Option A is deployed, re-run batch on the full corpus and measure whether >5% of segments exceed 390 words — the ModernBERT contingency trigger (PRD-002 §4.1 OQ-3). | ML Engineer | Model selection ADR | Open |
+| OQ-RFC3-1 | What fraction of current corpus segments exceed 380 words? | Data Eng | Sizing Option A's impact | **ANSWERED** — Full corpus baseline (run `20260223_182806`): **0.54%** (3,266 / 607,463 segments across 4,423 filings). p95=182 words, max=3,232. See `reports/word_count_dist.json` and ADR-012. |
+| OQ-RFC3-2 | After Option A is deployed, re-run batch on the full corpus and measure whether >5% of segments exceed 390 words — the ModernBERT contingency trigger (PRD-002 §4.1 OQ-3). | ML Engineer | Model selection ADR | **ANSWERED** — Pre-Option-A baseline is 0.54% (>380 words). ModernBERT contingency trigger not met; DeBERTa-v3-base confirmed (ADR-008, ADR-012). |
 | OQ-RFC3-3 | When migrating to Option B, which tokenizer is canonical — the fine-tune winner (FinBERT or DeBERTa) from the Phase 2 experiment? Decision deferred until ADR resolves model selection. | ML Engineer | Option B implementation | Open |

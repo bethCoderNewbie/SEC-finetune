@@ -39,6 +39,7 @@ dependencies = [
 
     # Core NLP and ML
     "transformers>=4.35.0",
+    "sentencepiece>=0.1.99",  # Required by DebertaV2TokenizerFast (token_profile.py)
     "torch>=2.0.0",
     "spacy>=3.7.0",  # For advanced text preprocessing (lemmatization, stopwords, etc.)
     "gensim>=4.0.0",  # For topic modeling (LDA)

@@ -128,40 +128,76 @@ class TestIsNonRiskContent:
 
 
 class TestSplitIntoChunks:
-    """Tests for _split_into_chunks method."""
+    """Tests for _split_into_chunks method (word-based accumulator, RFC-003 Option A)."""
 
     @pytest.fixture
     def segmenter(self) -> RiskSegmenter:
-        """Create RiskSegmenter."""
-        return RiskSegmenter(max_length=100)
+        """Segmenter with low max_words to force splitting in small test inputs."""
+        return RiskSegmenter(max_words=5)
 
     def test_splits_at_sentence_boundaries(self, segmenter: RiskSegmenter):
-        """Long text split at periods."""
-        text = "First sentence here. Second sentence here. Third sentence here."
-        chunks = segmenter._split_into_chunks(text, max_length=50)
+        """Text is split at sentence boundaries, not mid-sentence."""
+        # Each sentence is 6 words; max_words=5 so each becomes its own chunk.
+        text = "Alpha beta gamma delta epsilon zeta. Eta theta iota kappa lambda mu."
+        chunks = segmenter._split_into_chunks(text)
         assert len(chunks) >= 2
         for chunk in chunks:
-            # Each chunk should end with punctuation or be the end
             assert chunk.strip()
 
-    def test_respects_max_length(self, segmenter: RiskSegmenter):
-        """Each chunk under max_length (approximately)."""
-        text = "Sentence one here. " * 20
-        chunks = segmenter._split_into_chunks(text, max_length=100)
-        # Most chunks should be under max_length
-        # (last chunk may exceed if a sentence is too long)
-        under_limit = sum(1 for c in chunks if len(c) <= 100)
-        assert under_limit >= len(chunks) - 1
+    def test_respects_max_words(self, segmenter: RiskSegmenter):
+        """Each chunk has at most max_words words.
+
+        Sentence length must be ≤ max_words (5) — the chunker never splits
+        mid-sentence, so a sentence longer than max_words will always form its
+        own over-limit chunk.  Here each sentence is 4 words so the invariant holds.
+        """
+        # 10 × 4-word sentences = 40 words; max_words=5 forces splits at sentence boundaries.
+        text = ("Alpha beta gamma delta. " * 10).strip()
+        chunks = segmenter._split_into_chunks(text)
+        for chunk in chunks:
+            assert len(chunk.split()) <= segmenter.max_words
 
     def test_preserves_all_content(self, segmenter: RiskSegmenter):
-        """Joined chunks approximately equal original (accounting for space normalization)."""
-        text = "First. Second. Third."
-        chunks = segmenter._split_into_chunks(text, max_length=15)
-        rejoined = ''.join(chunks)
-        # Content should be preserved (may have minor whitespace differences)
+        """All words from the input appear in the joined chunks."""
+        text = "First statement ends here. Second statement ends here. Third statement ends here."
+        chunks = segmenter._split_into_chunks(text)
+        rejoined = " ".join(chunks)
         assert "First" in rejoined
         assert "Second" in rejoined
         assert "Third" in rejoined
+
+
+class TestSplitLongSegmentsWordGate:
+    """Tests for RFC-003 Option A: word-count ceiling in _split_long_segments."""
+
+    @pytest.fixture
+    def segmenter(self) -> RiskSegmenter:
+        """Segmenter with max_words=20 to keep test inputs small."""
+        return RiskSegmenter(min_length=10, max_length=999999, max_words=20)
+
+    def test_segment_under_word_limit_not_split(self, segmenter: RiskSegmenter):
+        """A segment at or below max_words passes through unchanged."""
+        # 4 sentences × 4 words = 16 words, under the 20-word ceiling.
+        text = "Risk one exists here. Risk two applies now. Risk three matters too. Risk four is real."
+        result = segmenter._split_long_segments([text])
+        assert len(result) == 1
+
+    def test_segment_over_word_limit_is_split(self, segmenter: RiskSegmenter):
+        """A segment exceeding max_words (20) is split into multiple chunks."""
+        # 6 sentences × 5 words = 30 words, over the 20-word ceiling.
+        sentence = "Market risk affects our operations."  # 5 words
+        text = (sentence + " ") * 6
+        result = segmenter._split_long_segments([text.strip()])
+        assert len(result) >= 2
+
+    def test_each_chunk_at_or_under_max_words(self, segmenter: RiskSegmenter):
+        """After splitting, every resulting chunk is ≤ max_words words."""
+        sentence = "Regulatory changes impose additional compliance costs."  # 6 words
+        text = (sentence + " ") * 6  # 36 words total
+        result = segmenter._split_long_segments([text.strip()])
+        for chunk in result:
+            wc = len(chunk.split())
+            assert wc <= segmenter.max_words, f"chunk has {wc} words, limit is {segmenter.max_words}"
 
 
 class TestSegmentRisksEdgeCases:
@@ -316,12 +352,23 @@ class TestSegmenterInit:
         segmenter = RiskSegmenter()
         assert segmenter.min_length > 0
         assert segmenter.max_length > segmenter.min_length
+        assert segmenter.max_words > 0
 
     def test_custom_lengths(self):
         """Custom min/max lengths applied."""
         segmenter = RiskSegmenter(min_length=100, max_length=1000)
         assert segmenter.min_length == 100
         assert segmenter.max_length == 1000
+
+    def test_custom_max_words(self):
+        """Custom max_words overrides config default."""
+        segmenter = RiskSegmenter(max_words=200)
+        assert segmenter.max_words == 200
+
+    def test_default_max_words_from_config(self):
+        """Default max_words comes from config (380)."""
+        segmenter = RiskSegmenter()
+        assert segmenter.max_words == 380
 
     def test_similarity_threshold(self):
         """Similarity threshold set correctly."""

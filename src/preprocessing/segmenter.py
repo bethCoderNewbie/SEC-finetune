@@ -58,6 +58,7 @@ class RiskSegmenter:
         self,
         min_length: Optional[int] = None,
         max_length: Optional[int] = None,
+        max_words: Optional[int] = None,
         semantic_model_name: str = "all-MiniLM-L6-v2",
         similarity_threshold: float = 0.5
     ):
@@ -67,6 +68,8 @@ class RiskSegmenter:
         Args:
             min_length: Minimum characters for a valid segment (default from settings)
             max_length: Maximum characters for a segment (default from settings)
+            max_words: Maximum words per segment before splitting (default from settings;
+                       RFC-003 Option A — ~512 tokens at 1.35 tok/word)
             semantic_model_name: SentenceTransformer model name for semantic segmentation
             similarity_threshold: Cosine similarity threshold to detect semantic breaks
         """
@@ -80,6 +83,10 @@ class RiskSegmenter:
             else settings.preprocessing.max_segment_length
         )
         self.min_words: int = settings.preprocessing.min_segment_words
+        self.max_words: int = (
+            max_words if max_words is not None
+            else settings.preprocessing.max_segment_words
+        )
         # pylint: enable=no-member
         self.similarity_threshold = similarity_threshold
 
@@ -410,46 +417,48 @@ class RiskSegmenter:
         result = []
 
         for segment in segments:
-            if len(segment) <= self.max_length:
+            too_long = (
+                len(segment) > self.max_length
+                or len(segment.split()) > self.max_words
+            )
+            if not too_long:
                 result.append(segment)
             else:
-                # Split long segment into chunks
-                chunks = self._split_into_chunks(segment, self.max_length)
+                chunks = self._split_into_chunks(segment)
                 result.extend(chunks)
 
         return result
 
-    def _split_into_chunks(self, text: str, max_length: int) -> List[str]:
-        """
-        Split text into chunks at sentence boundaries
+    def _split_into_chunks(self, text: str) -> List[str]:
+        """Split text into word-count-bounded chunks at sentence boundaries.
+
+        Uses self.max_words (RFC-003 Option A) as the accumulator ceiling.
+        Splits only at sentence boundaries to preserve semantic integrity.
 
         Args:
             text: Text to split
-            max_length: Maximum length for each chunk
 
         Returns:
-            List[str]: List of chunks
+            List[str]: List of chunks each with word_count <= max_words
         """
         # Fix 3A: use spaCy sentencizer (handles financial abbreviations correctly)
         sentences = self._get_sentences(text)
 
         chunks = []
-        current_chunk = []
-        current_length = 0
+        current_chunk: List[str] = []
+        current_words = 0
 
         for sentence in sentences:
-            sentence_length = len(sentence)
+            sentence_words = len(sentence.split())
 
-            if current_length + sentence_length > max_length and current_chunk:
-                # Start new chunk
+            if current_words + sentence_words > self.max_words and current_chunk:
                 chunks.append(' '.join(current_chunk).strip())
                 current_chunk = [sentence]
-                current_length = sentence_length
+                current_words = sentence_words
             else:
                 current_chunk.append(sentence)
-                current_length += sentence_length
+                current_words += sentence_words
 
-        # Add remaining text
         if current_chunk:
             chunks.append(' '.join(current_chunk).strip())
 

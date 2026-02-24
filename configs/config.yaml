@@ -47,6 +47,7 @@ preprocessing:
   min_segment_length: 50
   max_segment_length: 999999999999
   min_segment_words: 20
+  max_segment_words: 380  # ~512 tokens at 1.35 tok/word; RFC-003 Option A
 
   # Text cleaning settings
   remove_html_tags: true
