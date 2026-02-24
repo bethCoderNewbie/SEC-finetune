@@ -73,10 +73,10 @@ class TestFilterSegments:
         assert "longer segment" in result[0]
 
     def test_filters_header_only_segments(self, segmenter: RiskSegmenter):
-        """Segments with <10 words removed."""
+        """Segments with <3 words and <50 chars removed."""
         segments = [
-            "Market Volatility Warning",  # Only 3 words - filtered
-            # Must be >50 chars AND >10 words AND not trigger non-risk content filter
+            "Market Volatility Warning",  # Only 3 words, 25 chars — filtered by char floor
+            # Must be >50 chars AND not trigger non-risk content filter
             "This is a complete paragraph about market conditions that affects our business operations significantly and provides substantial detail about the challenges we face in our industry.",
         ]
         result = segmenter._filter_segments(segments)
@@ -241,6 +241,55 @@ class TestSegmentedRisksModel:
         assert segmented.sic_code is None
         assert segmented.cik is None
         assert segmented.company_name is None
+
+
+class TestMergeShortSegments:
+    """Tests for _merge_short_segments method."""
+
+    @pytest.fixture
+    def segmenter(self) -> RiskSegmenter:
+        return RiskSegmenter(min_length=50, max_length=5000)
+
+    def test_merges_short_segment_forward(self, segmenter: RiskSegmenter):
+        """A sub-threshold segment is merged into its successor."""
+        short = "Only a few words."  # 4 words < min_words (20)
+        long = ("This is a much longer risk segment that contains enough words "
+                "to independently meet the minimum word count threshold for training.")
+        result = segmenter._merge_short_segments([short, long])
+        assert len(result) == 1
+        assert "Only a few words" in result[0]
+        assert "longer risk segment" in result[0]
+
+    def test_trailing_short_segment_merges_backward(self, segmenter: RiskSegmenter):
+        """A trailing sub-threshold segment merges into its predecessor."""
+        long = ("This is a long enough segment that has plenty of words to exceed "
+                "the minimum word count threshold comfortably and stand on its own.")
+        short = "Short tail fragment."  # 3 words < min_words
+        result = segmenter._merge_short_segments([long, short])
+        assert len(result) == 1
+        assert "Short tail fragment" in result[0]
+
+    def test_long_segments_unchanged(self, segmenter: RiskSegmenter):
+        """Segments already at or above min_words (20) are not merged."""
+        # Each segment is exactly 20+ words so neither triggers a merge
+        seg_a = ("Climate change risk may adversely affect our operations and "
+                 "supply chain across multiple jurisdictions in ways that are "
+                 "difficult to predict or quantify.")   # 26 words
+        seg_b = ("Regulatory changes could impose additional compliance costs and "
+                 "administrative burdens that materially impact our financial results "
+                 "and competitive position in the market.")  # 26 words
+        result = segmenter._merge_short_segments([seg_a, seg_b])
+        assert len(result) == 2
+
+    def test_single_segment_unchanged(self, segmenter: RiskSegmenter):
+        """Single-element list returned as-is."""
+        seg = "Short."
+        result = segmenter._merge_short_segments([seg])
+        assert result == [seg]
+
+    def test_empty_list_unchanged(self, segmenter: RiskSegmenter):
+        """Empty list returned as-is."""
+        assert segmenter._merge_short_segments([]) == []
 
 
 class TestSegmentRisksConvenience:

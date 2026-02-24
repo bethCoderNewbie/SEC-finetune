@@ -46,6 +46,7 @@ preprocessing:
   # Segmentation settings
   min_segment_length: 50
   max_segment_length: 999999999999
+  min_segment_words: 20
 
   # Text cleaning settings
   remove_html_tags: true

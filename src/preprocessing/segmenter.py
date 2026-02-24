@@ -9,6 +9,15 @@ import logging
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Union
 
+# Cross-reference boilerplate pattern — these fragments never grow meaningful
+# enough to classify, so they are dropped in _is_non_risk_content.
+_CROSS_REF_DROP_PAT = re.compile(
+    r'(?i)\bsee\b.{0,40}\b(MD&A|item\s*\d|part\s*[IVX])'
+    r'|for\s+further\s+details?'
+    r'|for\s+further\s+discussion'
+    r'|for\s+additional\s+information',
+)
+
 from pydantic import BaseModel, ConfigDict
 
 from src.config import settings
@@ -70,6 +79,7 @@ class RiskSegmenter:
             max_length if max_length is not None
             else settings.preprocessing.max_segment_length
         )
+        self.min_words: int = settings.preprocessing.min_segment_words
         # pylint: enable=no-member
         self.similarity_threshold = similarity_threshold
 
@@ -128,6 +138,10 @@ class RiskSegmenter:
 
         # Split overly long segments
         segments = self._split_long_segments(segments)
+
+        # Forward-merge any sub-threshold segments produced by splitting or
+        # by the segmentation strategy itself (e.g. single-sentence bullet items)
+        segments = self._merge_short_segments(segments)
 
         return segments
 
@@ -269,8 +283,10 @@ class RiskSegmenter:
             if len(segment) < self.min_length:
                 continue
 
-            # Skip if it's just a header or title (very short sentences)
-            if len(segment.split()) < 10:
+            # Drop genuine noise: lone words, numbers, punctuation-only fragments.
+            # Sub-threshold but content-bearing segments (3–19 words) are left for
+            # _merge_short_segments to absorb rather than dropped here.
+            if len(segment.split()) < 3:
                 continue
 
             # Skip common non-risk content
@@ -280,6 +296,36 @@ class RiskSegmenter:
             filtered.append(segment)
 
         return filtered
+
+    def _merge_short_segments(self, segments: List[str]) -> List[str]:
+        """Forward-merge segments below min_words into their successor.
+
+        Walks the list and accumulates consecutive segments until the running
+        chunk reaches min_words.  If the final trailing segment is still below
+        the floor, it merges backward into the previous chunk instead of being
+        emitted as a standalone fragment.
+        """
+        if len(segments) <= 1:
+            return segments
+
+        merged: List[str] = []
+        pending = segments[0]
+
+        for seg in segments[1:]:
+            if len(pending.split()) < self.min_words:
+                pending = pending + " " + seg
+            else:
+                merged.append(pending)
+                pending = seg
+
+        # Trailing segment: merge backward if still below floor
+        if pending:
+            if merged and len(pending.split()) < self.min_words:
+                merged[-1] = merged[-1] + " " + pending
+            else:
+                merged.append(pending)
+
+        return merged
 
     def _is_non_risk_content(self, text: str) -> bool:
         """
@@ -305,6 +351,12 @@ class RiskSegmenter:
         for indicator in non_risk_indicators:
             if indicator in text_lower and len(text) < 200:
                 return True
+
+        # Cross-reference fragments ("For further details, see MD&A...").
+        # These can never accumulate to min_words via merging because they are
+        # self-contained redirects — drop them rather than polluting adjacent chunks.
+        if _CROSS_REF_DROP_PAT.search(text) and len(text.split()) < self.min_words:
+            return True
 
         return False
 

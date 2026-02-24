@@ -77,6 +77,9 @@ class PreprocessingConfig(BaseSettings):
     max_segment_length: int = Field(
         default_factory=lambda: _get_config().get('max_segment_length', 2000)
     )
+    min_segment_words: int = Field(
+        default_factory=lambda: _get_config().get('min_segment_words', 20)
+    )
     remove_html_tags: bool = Field(
         default_factory=lambda: _get_config().get('remove_html_tags', True)
     )
