@@ -191,6 +191,32 @@ TABLE_ELEMENT_TYPES = frozenset([
 ALL_CONTENT_TYPES = TEXT_ELEMENT_TYPES | TITLE_ELEMENT_TYPES | TABLE_ELEMENT_TYPES
 
 
+# ── A1: List item detection (RFC-006 Option A1, OQ-1 audit 2026-02-25) ─────
+# EDGAR does not use <li>/<ul>/<ol> tags (0/961 files, OQ-1 audit).
+# Lists are TextElement nodes whose text begins with a unicode bullet char
+# directly concatenated with the entry text (e.g. "•Supply chain risk").
+# \s* (not \s+) after bullet — EDGAR omits the space between bullet and word.
+BULLET_LIST_PAT = re.compile(
+    r'^\s*[•·▪▸►‣⁃]\s*\S'  # unicode bullet + optional space + non-ws char
+    r'|^\s*\(\d+\)\s+'       # (1) parenthetical prefix — 27.3% of corpus
+    r'|^\s*\d+\.\s+',        # 1. numbered list
+    re.UNICODE,
+)
+
+# ── A2a: Filing-invariant title level labels (RFC-006 Option A2a) ───────────
+# TitleElement.level is a CSS-style-appearance index, NOT a semantic H-label.
+# OQ-2 audit (50 filings): level=0 is a subsection heading 92.9% of the time.
+# TitleLevel anchors H1/H2 to TopSectionTitle nodes (already classified by
+# sec-parser) and maps subsection TitleElements to H3+ by relative level order.
+class TitleLevel(Enum):
+    H1   = 1   # Part-level: TopSectionTitle ("PART I", "PART II")
+    H2   = 2   # Item-level: TopSectionTitle ("ITEM 1A") or SECTION_PATTERNS match
+    H3   = 3   # First-level subsection within an Item
+    H4   = 4   # Second-level subsection
+    H5   = 5   # Third-level subsection (rare; max observed depth=5 in RFC-007 audit)
+    BODY = 99  # Non-title node (TextElement, TableElement, etc.)
+
+
 # ===========================
 # Extraction Defaults
 # ===========================

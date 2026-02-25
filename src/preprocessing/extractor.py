@@ -18,10 +18,36 @@ except ImportError:
     sp = None
 
 from .parser import ParsedFiling, SECFilingParser
-from .constants import SectionIdentifier, SECTION_PATTERNS, PAGE_HEADER_PATTERN, TOC_PATTERNS_COMPILED
+from .constants import (
+    SectionIdentifier, SECTION_PATTERNS, PAGE_HEADER_PATTERN,
+    TOC_PATTERNS_COMPILED, BULLET_LIST_PAT, TitleLevel,
+)
 from ..config import settings
 # Import data model from models package
 from .models.extraction import ExtractedSection
+
+
+def _get_node_title_level(node, level_map: dict) -> 'TitleLevel':
+    """
+    Return the TitleLevel for a content node (RFC-006 A2a structural anchoring).
+
+    TopSectionTitle  → H1  (defensive: _is_next_section stops these before collection)
+    TitleElement     → H3/H4/H5 via filing-relative level_map
+    Everything else  → BODY
+
+    Args:
+        node:      sp.TreeNode from content_nodes
+        level_map: {raw_level_int: TitleLevel} built by _build_title_level_map()
+    """
+    if sp is None:
+        return TitleLevel.BODY
+    elem = node.semantic_element
+    if isinstance(elem, sp.TopSectionTitle):
+        return TitleLevel.H1
+    if isinstance(elem, sp.TitleElement):
+        raw = getattr(elem, 'level', 0)
+        return level_map.get(raw, TitleLevel.H3)
+    return TitleLevel.BODY
 
 
 class SECSectionExtractor:
@@ -390,6 +416,20 @@ class SECSectionExtractor:
             )
         ]
 
+        # A2a: build filing-relative level → TitleLevel map for this section.
+        _level_map = self._build_title_level_map(content_nodes)
+
+        # A1 + A2a: annotate each element dict with is_list_item and title_level.
+        # content_nodes and elements are parallel arrays at this point
+        # (both passed through the same page-header filter above).
+        for _elem_dict, _node in zip(elements, content_nodes):
+            _elem_dict['is_list_item'] = bool(
+                BULLET_LIST_PAT.match(_elem_dict.get('text', ''))
+            )
+            _elem_dict['title_level'] = _get_node_title_level(
+                _node, _level_map
+            ).name  # stored as "H3", "H4", "BODY", etc. for JSON readability
+
         # Fix 6A: sequential TitleElement scan → parent_subsection map (doc order)
         current_subsection: Optional[str] = None
         node_subsections_list: List[tuple] = []
@@ -451,6 +491,34 @@ class SECSectionExtractor:
             if pattern.search(text):
                 return True
         return False
+
+    def _build_title_level_map(self, content_nodes: list) -> dict:
+        """
+        Map document-relative TitleElement.level integers to TitleLevel H-labels.
+
+        Collects all unique TitleElement.level values in content_nodes, sorts them
+        ascending, and maps: smallest → H3, next → H4, next+ → H5 (capped).
+        Non-TitleElement nodes are ignored.
+
+        This is filing-format-invariant: it uses relative ordering within the
+        section, not absolute level values (which are CSS-order indices, not
+        semantic hierarchy levels — OQ-2 audit 2026-02-25).
+
+        Returns:
+            {raw_level_int: TitleLevel}
+        """
+        if sp is None:
+            return {}
+        raw_levels = sorted({
+            getattr(n.semantic_element, 'level', 0)
+            for n in content_nodes
+            if isinstance(n.semantic_element, sp.TitleElement)
+        })
+        h_buckets = [TitleLevel.H3, TitleLevel.H4, TitleLevel.H5]
+        return {
+            raw: h_buckets[min(i, len(h_buckets) - 1)]
+            for i, raw in enumerate(raw_levels)
+        }
 
     def _extract_subsections(self, node: sp.TreeNode) -> List[str]:
         """

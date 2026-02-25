@@ -7,6 +7,7 @@ No real data dependencies - runs in <1 second.
 """
 
 import pytest
+from unittest.mock import MagicMock
 
 from src.preprocessing.extractor import SECSectionExtractor, ExtractedSection
 from src.preprocessing.constants import SECTION_PATTERNS
@@ -255,3 +256,121 @@ class TestExtractorInit:
         extractor = SECSectionExtractor()
         assert hasattr(extractor, 'SECTION_TITLES_10K')
         assert hasattr(extractor, 'SECTION_TITLES_10Q')
+
+
+class TestBulletListDetection:
+    """A1: BULLET_LIST_PAT corpus-representative test cases."""
+
+    @pytest.mark.parametrize("text,expected", [
+        # Unicode bullets — 94.1% of corpus, no space after bullet
+        ("•Supply chain disruption may impact revenue", True),
+        ("•Cybersecurity threats including ransomware", True),
+        ("• Supply chain risk with space", True),      # space variant
+        ("·middle-dot bullet entry", True),
+        ("▪square bullet entry", True),
+        # Parenthetical — 27.3% of corpus
+        ("(1) Risk of increased regulation", True),
+        ("(12) Extended parenthetical index", True),
+        # Numbered list
+        ("1. Competition from new entrants", True),
+        ("23. Numbered risk entry", True),
+        # Non-bullets — must not match
+        ("The company faces macroeconomic risks", False),
+        ("Our supply chain depends on third parties", False),
+        # Edge cases
+        ("", False),
+        ("  ", False),
+    ])
+    def test_bullet_list_pat(self, text, expected):
+        from src.preprocessing.constants import BULLET_LIST_PAT
+        result = bool(BULLET_LIST_PAT.match(text))
+        assert result == expected, f"BULLET_LIST_PAT.match({text!r}) → {result}, expected {expected}"
+
+
+class TestTitleLevel:
+    """A2a: TitleLevel enum values and completeness."""
+
+    @pytest.fixture
+    def extractor(self) -> SECSectionExtractor:
+        """Create SECSectionExtractor instance."""
+        return SECSectionExtractor()
+
+    def test_values_are_ordered(self):
+        from src.preprocessing.constants import TitleLevel
+        assert TitleLevel.H1.value < TitleLevel.H2.value < TitleLevel.H3.value
+        assert TitleLevel.H3.value < TitleLevel.H4.value < TitleLevel.H5.value
+        assert TitleLevel.H5.value < TitleLevel.BODY.value
+
+    def test_body_sentinel_value(self):
+        from src.preprocessing.constants import TitleLevel
+        assert TitleLevel.BODY.value == 99
+
+    def test_names_are_strings(self):
+        from src.preprocessing.constants import TitleLevel
+        assert TitleLevel.H3.name == "H3"
+        assert TitleLevel.BODY.name == "BODY"
+
+    def test_build_level_map_empty(self, extractor):
+        """Empty content_nodes → empty map."""
+        result = extractor._build_title_level_map([])
+        assert result == {}
+
+    def test_build_level_map_single_level(self, extractor):
+        """Single unique TitleElement level → maps to H3."""
+        # _build_title_level_map uses isinstance(elem, sp.TitleElement).
+        # If sec_parser unavailable, returns {}; skip gracefully.
+        try:
+            import sec_parser as sp
+        except ImportError:
+            pytest.skip("sec_parser not installed")
+
+        mock_elem = MagicMock(spec=sp.TitleElement)
+        mock_elem.level = 2
+        mock_node = MagicMock()
+        mock_node.semantic_element = mock_elem
+
+        from src.preprocessing.constants import TitleLevel
+        result = extractor._build_title_level_map([mock_node])
+        assert result == {2: TitleLevel.H3}
+
+    def test_build_level_map_two_levels(self, extractor):
+        """Two distinct levels → H3 for smaller, H4 for larger."""
+        try:
+            import sec_parser as sp
+        except ImportError:
+            pytest.skip("sec_parser not installed")
+
+        def make_node(lvl):
+            m_elem = MagicMock(spec=sp.TitleElement)
+            m_elem.level = lvl
+            m_node = MagicMock()
+            m_node.semantic_element = m_elem
+            return m_node
+
+        from src.preprocessing.constants import TitleLevel
+        result = extractor._build_title_level_map([make_node(0), make_node(2)])
+        assert result[0] == TitleLevel.H3
+        assert result[2] == TitleLevel.H4
+
+    def test_build_level_map_capped_at_h5(self, extractor):
+        """Four distinct levels: 4th and beyond all map to H5."""
+        try:
+            import sec_parser as sp
+        except ImportError:
+            pytest.skip("sec_parser not installed")
+
+        def make_node(lvl):
+            m = MagicMock(spec=sp.TitleElement)
+            m.level = lvl
+            n = MagicMock()
+            n.semantic_element = m
+            return n
+
+        from src.preprocessing.constants import TitleLevel
+        result = extractor._build_title_level_map(
+            [make_node(0), make_node(1), make_node(2), make_node(3)]
+        )
+        assert result[0] == TitleLevel.H3
+        assert result[1] == TitleLevel.H4
+        assert result[2] == TitleLevel.H5
+        assert result[3] == TitleLevel.H5  # capped

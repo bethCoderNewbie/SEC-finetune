@@ -1,22 +1,23 @@
 ---
 id: RFC-006
 title: Layout Analysis Model Evaluation for SEC EDGAR Filings
-status: DRAFT
+status: IMPLEMENTED
 author: beth88.career@gmail.com
 created: 2026-02-24
-last_updated: 2026-02-24
-git_sha: 997a101
+last_updated: 2026-02-25
+git_sha: 4045f92
 superseded_by: null
 related_prd: docs/requirements/PRD-002_SEC_Finetune_Pipeline_v2.md
 related_adr: docs/architecture/adr/ADR-002_sec_parser.md
 related_adr: docs/architecture/adr/ADR-010_hybrid_pre_seek_parser_corrected.md
+decision_adr: docs/architecture/adr/ADR-013_rfc006_layout_annotation_a1_a2a.md
 ---
 
 # RFC-006: Layout Analysis Model Evaluation for SEC EDGAR Filings
 
 ## Status
 
-**DRAFT** — Decision pending. See §Options and §Recommendation.
+**IMPLEMENTED** — A1 and A2a adopted. See ADR-013. A3 (paragraph boundaries) deferred.
 
 ---
 
@@ -93,15 +94,19 @@ that operates on `sec-parser`'s element list before segmentation.
 
 ### Sub-option A1: `ListItem` detection
 
+> **Updated 2026-02-25 based on OQ-1 corpus audit.** `<li>` tags are absent from all 961 corpus files (0%). The `_LIST_TAG_NAMES` branch is removed. The bullet-prefix pattern is corrected to match EDGAR's `•word` format (no space after bullet).
+
 ```python
-# extractor.py (new helper, ~50 LoC)
-_LIST_TAG_NAMES = frozenset({'li'})
-_BULLET_PREFIX_PAT = re.compile(r'^\s*[•\-–—*]\s+|^\s*\(\d+\)\s+|^\s*\d+\.\s+')
+# extractor.py (new helper, ~40 LoC)
+# NOTE: <li>/<ul>/<ol> tags have 0% corpus coverage — omitted.
+# EDGAR uses inline unicode bullet chars with NO space before the next word.
+_BULLET_PREFIX_PAT = re.compile(
+    r'^\s*[•·▪▸►‣⁃]\s*\S'   # unicode bullet + optional space + non-whitespace
+    r'|^\s*\(\d+\)\s+'        # (1) parenthetical  — 27.3% of corpus
+    r'|^\s*\d+\.\s+',         # 1. numbered list
+)
 
 def _is_list_item(node: sp.AbstractSemanticElement) -> bool:
-    tag_name = getattr(node.html_tag, 'name', '')
-    if tag_name in _LIST_TAG_NAMES:
-        return True
     return bool(_BULLET_PREFIX_PAT.match(node.text or ''))
 ```
 
@@ -109,9 +114,11 @@ Elements identified as list items receive `is_list_item: True` in the `elements`
 list of `ExtractedSection`. The segmenter can treat each list item as an implicit
 segment boundary (subject to `min_segment_words` floor).
 
-**SEC EDGAR HTML reality:** EDGAR filings use `<ul>/<li>` tags in roughly 60–70%
-of modern iXBRL filings. Legacy plain-text-derived HTML uses bullet prefix
-characters (`•`, `-`, `(1)`, `1.`). Both are detectable with zero ML overhead.
+**SEC EDGAR HTML reality (corpus audit, 2026-02-25):** EDGAR filings in this corpus do
+**not** use `<ul>/<li>` tags (0/961 files). Lists are encoded as `TextElement` nodes
+whose text begins with a unicode bullet character (`•`, `·`, `▪`) immediately followed
+by the entry text — no whitespace separator. 94.1% of filings use this format; 27.3%
+additionally use `(N)` parenthetical prefixes; 3.3% use only flowing paragraphs.
 
 ### Sub-option A2: H-label normalization
 
@@ -134,13 +141,13 @@ mechanically mapped to H-labels without a reference point. Two strategies:
   → H2. Any other `TitleElement` → H3/H4 by `level` increment. This is
   deterministic and filing-independent.
 
-- **A2b (level-threshold):** Observe the corpus empirically: Level 0 is almost
-  always a part/item heading; level 1 is almost always a subsection. Define a
-  configurable `level_to_hlabel` mapping in `configs/config.yaml`. Works for
-  the overwhelming majority of 10-K filings where EDGAR-mandated section
-  structure is uniform.
+- **A2b (level-threshold):** ~~Observe the corpus empirically: Level 0 is almost
+  always a part/item heading~~ **INVALIDATED by OQ-2 audit (2026-02-25): level=0
+  is a subsection heading in 92.9% of occurrences across 50 sampled filings.**
+  Level integers are CSS-order-appearance indices, not semantic hierarchy levels.
+  A2b is not viable for this corpus.
 
-Recommendation: **A2a** (structural anchoring) is filing-format-invariant.
+Recommendation: **A2a only** (structural anchoring). A2b is ruled out by audit.
 
 ### Sub-option A3: Paragraph boundary annotation within `TextElement`
 
@@ -153,13 +160,13 @@ This is a BS4 pass on `node.html_tag` (~30 LoC) with no new dependencies.
 
 ### Complexity and risk
 
-| Sub-option | LoC | New deps | GPU | Risk |
-|------------|-----|----------|-----|------|
-| A1 ListItem detection | ~100 | None | No | Low |
-| A2a H-label normalization | ~80 | None | No | Low |
-| A2b H-label (threshold) | ~30 | None | No | Low |
-| A3 paragraph boundaries | ~50 | None | No | Low |
-| **Total Option A** | **~260** | **None** | **No** | **Low** |
+| Sub-option | LoC | New deps | GPU | Risk | Status |
+|------------|-----|----------|-----|------|--------|
+| A1 ListItem detection | ~40 | None | No | Low | Revised — `<li>` branch removed (0% corpus), pattern corrected for `•word` format |
+| A2a H-label normalization | ~80 | None | No | Low | Confirmed viable |
+| A2b H-label (threshold) | — | — | — | — | **Ruled out** — level=0 is 92.9% non-Item headings (OQ-2 audit) |
+| A3 paragraph boundaries | ~50 | None | No | Low | Confirmed no conflict with TextElementMerger (OQ-4) |
+| **Total Option A (A1+A2a+A3)** | **~170** | **None** | **No** | **Low** | |
 
 Conflicts with existing architecture: **None.** Option A operates on the
 sec-parser output element list after Stage 2 — it does not touch HTML before
@@ -309,7 +316,7 @@ large accelerated filers. The entire processing corpus is HTML-native.
 | H1/H2/H3 normalization | ✅ Structural anchoring | ✅ Yes (if labeled) | ⚠️ Maps to coarse label |
 | Paragraph boundaries | ✅ `<p>` tag detection | ⚠️ Requires feature | ❌ Not available |
 | New dependencies | None | `transformers`, labeling tool | Headless Chrome, GPU, `detectron2` |
-| Estimated LoC | ~260 | ~400 + labeling pipeline | ~800 + rendering pipeline |
+| Estimated LoC | ~170 (A2b ruled out; A1 revised) | ~400 + labeling pipeline | ~800 + rendering pipeline |
 | GPU required | No | Optional (CPU viable) | Yes |
 | Training data needed | None | ~100 labeled filings | ~100+ labeled filings |
 | Latency impact | < 1 ms | ~50 ms/filing (CPU) | 30–120 s/filing |
@@ -361,12 +368,75 @@ This RFC covers **layout analysis of in-scope EDGAR HTML filings only**
 
 ## Open Questions
 
-| # | Question | Recommendation |
-|---|----------|---------------|
-| OQ-1 | What fraction of the 959-file corpus uses `<li>` tags vs. bullet-prefix text? | Sample 20 files; measure `<li>` tag presence via BS4 before implementing A1 |
-| OQ-2 | Are there filings where `level=0` is NOT a Part/Item heading? | Audit `TitleElement(level=0)` text across 50 filings; confirm A2a structural anchoring holds |
-| OQ-3 | Should `ListItem` be a new `AbstractSemanticElement` subtype (requiring monkey-patching sec-parser) or a flag in the `elements` dict? | Use `elements` dict flag (`is_list_item: bool`) to avoid sec-parser internal mutation |
-| OQ-4 | Does paragraph boundary annotation conflict with `TextElementMerger`? | `TextElementMerger` runs before Stage 3; A3 operates on merged outputs, so no conflict |
+> All four OQs resolved by corpus audit on 2026-02-25.
+> See `thoughts/shared/research/2026-02-24_10-00-00_ingestion_normalization_gap_analysis.md` §Step 2.
+
+| # | Question | Status | Finding |
+|---|----------|--------|---------|
+| OQ-1 | What fraction of the 959-file corpus uses `<li>` tags vs. bullet-prefix text? | **RESOLVED** | See below |
+| OQ-2 | Are there filings where `level=0` is NOT a Part/Item heading? | **RESOLVED** | See below |
+| OQ-3 | Should `ListItem` be a new `AbstractSemanticElement` subtype or a flag in the `elements` dict? | **RESOLVED** | Elements dict flag confirmed |
+| OQ-4 | Does paragraph boundary annotation conflict with `TextElementMerger`? | **RESOLVED** | No conflict confirmed |
+
+### OQ-1 — Corpus-wide bullet format audit (961 files)
+
+Full corpus scan (all 961 files via `extract_document` + regex, 2026-02-25):
+
+| Format | Files | % |
+|--------|------:|---|
+| `<li>` / `<ul>` / `<ol>` tags | **0** | **0.0%** |
+| Unicode bullet chars (`•`, `·`, `▪`, `&#8226;`) | 902 | 94.1% |
+| Parenthetical `(N)` prefix in `<p>`/`<div>` | 262 | 27.3% |
+| Dash/en-dash prefix (`-`, `–`, `—`) in tag | 215 | 22.4% |
+| None of the above (pure flowing paragraphs) | 32 | 3.3% |
+
+**Key finding: `<li>` tags do not appear in any filing in this corpus (0/961).** The RFC-006 A1 sample code's `_LIST_TAG_NAMES = frozenset({'li'})` check is a no-op for this corpus and should be removed.
+
+The dominant pattern (94.1%) is a unicode bullet character (`•`) embedded directly as the first character of a `TextElement`'s text node — with **no space** between the bullet and the word that follows (e.g., `•our future financial performance...`, `•Cybersecurity`, `•Supply chain disruption`). This means the current `_BULLET_PREFIX_PAT` in the RFC must be updated: the `\s+` after the bullet character must become `\s*` to match the corpus-actual format.
+
+**Corrected A1 pattern:**
+```python
+# Remove the <li> branch entirely — 0% corpus coverage.
+# \s* (not \s+) after bullet — EDGAR emits •word with no space.
+_BULLET_PREFIX_PAT = re.compile(
+    r'^\s*[•·▪▸►‣⁃]\s*\S'   # unicode bullet + optional space + non-whitespace
+    r'|^\s*\(\d+\)\s+'        # (1) parenthetical
+    r'|^\s*\d+\.\s+'          # 1. numbered
+)
+```
+
+### OQ-2 — `TitleElement(level=0)` audit across 50 filings
+
+Full `iter_elements` walk over `Edgar10QParser` output for 50 randomly sampled filings (2026-02-25):
+
+| Level | Node count | Item/Part match (OQ-2 check) |
+|-------|------------|-------------------------------|
+| 0 | 3,387 | 239 (7.1%) |
+| 1 | 2,907 | — |
+| 2 | 1,806 | — |
+| 3 | 1,514 | — (but `ITEM 1A. RISK FACTORS` observed at level=3 in one filing) |
+| 4–11 | 1,940 | — |
+
+**Key finding: `level=0` is NOT reliably an Item/Part heading — 92.9% of level=0 nodes are subsection headings** such as `"Overview"`, `"Competition"`, `"Results of Operations"`, `"Basis for Opinion"`. The assumption underlying RFC-006 A2b ("level 0 is almost always a part/item heading") is **empirically false**.
+
+**Consequence for A2a vs A2b:**
+
+- **A2b (level-threshold mapping) is NOT viable.** Level integers are purely order-of-CSS-appearance indices, and level=0 is the most common heading level in the corpus (~68 occurrences per filing on average), not a reliable proxy for Part/Item structure.
+- **A2a (structural anchoring via `TopSectionTitle`) remains correct.** It anchors H1/H2 to nodes already classified by sec-parser's `top_section_title_check`, which operates on EDGAR's mandated section identifiers — not on CSS order. TitleElement level integers should only be used for *relative* ordering among TitleElement siblings under the same TopSectionTitle parent, not as absolute H-labels.
+
+`ITEM 1A. RISK FACTORS` appearing at `level=3` in one audited filing further confirms that level integers cannot be used as absolute hierarchy indicators across filings.
+
+### OQ-3 — `is_list_item` flag vs. new `AbstractSemanticElement` subtype
+
+**Confirmed: elements dict flag is the correct choice** (`is_list_item: bool` in the `element_dict`). Reasons:
+
+1. Bullet detection (OQ-1) operates on `node.text` pattern matching — a post-hoc classification applied to `TextElement` output. There is no hook point in sec-parser's processing pipeline to inject a new element type without forking the library.
+2. A new subtype would need to be inserted before `TextElementMerger` (which runs during parse) — not possible without monkey-patching sec-parser internals and would break on sec-parser version upgrades (ADR-002 pin).
+3. `<li>` has 0% corpus coverage, removing the only structural signal that could cleanly justify a new type. Bullet detection is text-heuristic, not structural, making a flag the right representation.
+
+### OQ-4 — Paragraph boundary annotation vs. `TextElementMerger`
+
+**Confirmed: no conflict.** `TextElementMerger` runs during sec-parser's `parse()` call (Stage 2), assembling `<span>`-fragmented inline text into `TextElement` nodes. By the time Stage 3 (`extractor.py:_extract_section_content`) runs, the merged `TextElement` carries its `html_tag` (a BS4 tag). A3's BS4 pass on `node.html_tag` to record `<p>` boundary offsets operates entirely on the already-merged output — it does not re-enter the sec-parser processing pipeline.
 
 ---
 

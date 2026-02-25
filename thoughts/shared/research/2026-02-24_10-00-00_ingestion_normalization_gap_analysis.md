@@ -81,18 +81,18 @@ Stage 4 — segmenter.py         RiskSegmenter → SegmentedRisks (JSON chunks, 
 | Capability | Implementation | File | Quality |
 |------------|---------------|------|---------|
 | Text block classification | `sec-parser` emits: `TextElement`, `TitleElement`, `TableElement`, `TableOfContentsElement`, `PageHeaderElement` | `parser.py:90` | Rule-based, not model-based |
-| Title depth | `TitleElement.level` provides nesting depth (H1/H2/H3 equivalent) | `extractor.py:302` | Present but under-used |
-| Table detection | `TableElement` / `_is_table_node()` | `extractor.py:412` | Production-ready |
+| Title depth | `TitleElement.level` is a **CSS-style-appearance index** (0 = first unique bold style encountered in the filing), not a semantic H-label. Audit across 50 filings: level=0 is a subsection heading in 92.9% of occurrences — not Part/Item (RFC-006 OQ-2). | `extractor.py:302` | Present but not cross-filing comparable |
+| Table detection | `isinstance(node.semantic_element, sp.TableElement)` (inline) | `extractor.py:368` | Production-ready |
 | ToC detection | `TableOfContentsElement` + `TOC_PATTERNS_COMPILED` (7 patterns) | `extractor.py:445`, `constants.py` | Heuristic-quality |
 | Page header removal | `PAGE_HEADER_PATTERN` regex; Stage 3 post-filter | `extractor.py:376`, `constants.py` | Production-ready |
 | Section taxonomy | `SectionIdentifier` enum — 14 10-K sections, 8 10-Q sections | `constants.py` | Production-ready |
-| iXBRL inline tags | sec-parser's `XbrlTagCheck` validates/strips XBRL tags | `parser.py:26` (monkey-patch) | Functional |
+| iXBRL inline tags | sec-parser handles embedded `<ix:*>` tags natively; `parser.py:26` monkey-patches `get_approx_table_metrics` (NoneType/th-only table fix, unrelated to XBRL) | `parser.py:26` | Functional |
 
 ### Gaps
 
 | Gap | Severity | Detail |
 |-----|----------|--------|
-| **List Item type** | High | No `ListItemElement` type. Bulleted/numbered lists inside Risk Factors are currently parsed as generic `TextElement`. Risk entries that are lists (not headers) are not distinguished. `<li>` tags and bullet-prefix characters (`•`, `-`, `(1)`, `1.`) are present in 60–70% of modern iXBRL filings but sec-parser has no `ListClassifier` in its processing pipeline. |
+| **List Item type** | High | No `ListItemElement` type. Bulleted/numbered lists inside Risk Factors are parsed as generic `TextElement`. **Corpus audit (961 files, 2026-02-25):** `<li>`/`<ul>`/`<ol>` tags — **0% of corpus**. Unicode bullet chars (`•`, `·`, `▪`) embedded directly in TextElement text — **94.1%**. `(N)` parenthetical prefix — 27.3%. Only 3.3% of filings use pure flowing paragraphs. Detection must use text-content regex, not HTML tag inspection (RFC-006 OQ-1). |
 | **H1 / H2 / H3 explicit labels** | Medium | `TitleElement.level` is a **document-relative** integer assigned by `TitleClassifier._unique_styles_by_order` (CSS-style-appearance order within a single filing). Level 0 = first unique bold/large-font style encountered — not a canonical H1. The same section heading can be `level=0` in one filing and `level=1` in another. Not comparable across filings without normalization. |
 | **Paragraph boundary detection** | Medium | `TextElementMerger` in sec-parser reassembles `<span>`-fragmented text but does not record `<p>` tag seam positions. The segmenter splits by double newlines as a lossy proxy. |
 | **Model-based layout analysis** | Resolved/Low | **RFC-006 finding: visual layout models (LayoutLM, DocLayNet, Detectron2) are architecturally mismatched to HTML-native EDGAR filings.** These models require HTML→PDF rendering → page image → bounding box extraction before inference, adding 20–120 min rendering time per corpus run plus GPU dependency. For HTML-native documents, inline CSS signals (already extracted by `TitleClassifier`) are strictly more accurate than pixel inference. Rule-based post-processing enhancements (RFC-006 Option A) close all three gaps above without new dependencies. See `docs/architecture/rfc/RFC-006_layout_analysis_model_evaluation.md`. |
@@ -104,16 +104,58 @@ Stage 4 — segmenter.py         RiskSegmenter → SegmentedRisks (JSON chunks, 
 
 **RFC-006 Option A sub-options, in priority order:**
 
-- **A1 — List Item detection** (~100 LoC): In `extractor.py:_extract_section_content()`, check `node.html_tag.name in ('li',)` or apply `_BULLET_PREFIX_PAT` regex to `node.text`. Tag matching elements with `is_list_item: True` in the `elements` dict. No new dependencies. Allows `RiskSegmenter` to treat list item boundaries as implicit split points.
-- **A2a — H-label normalization** (~80 LoC): Anchor H1 to `TopSectionTitle` nodes (already classified by sec-parser's `top_section_title_check`). Any `TitleElement` matching `SECTION_PATTERNS` for Item-level headings → H2. Remaining `TitleElement` nodes → H3/H4 by `level` increment. Filing-format-invariant; add `TitleLevel` enum to `constants.py`.
-- **A3 — Paragraph boundary annotation** (~50 LoC): BS4 pass on `node.html_tag` to record `<p>` tag boundary offsets as `boundaries: List[int]` in the elements dict. Operates on merged `TextElement` outputs; no conflict with `TextElementMerger`.
+- **A1 — List Item detection** (~40 LoC, revised): Apply `_BULLET_PREFIX_PAT` regex to `node.text`. ~~`node.html_tag.name in ('li',)`~~ — `<li>` tags have 0% corpus coverage (OQ-1 audit). Pattern must use `\s*` (not `\s+`) after bullet char: EDGAR emits `•word` with no space. Tag matching elements with `is_list_item: True` in the `elements` dict.
+- **A2a — H-label normalization** (~80 LoC): Anchor H1/H2 to `TopSectionTitle` nodes (already classified by sec-parser). `TitleElement` level integers are filing-relative CSS indices — level=0 is a subsection heading 92.9% of the time (OQ-2 audit, 50 filings). A2b (level-threshold) is ruled out. A2a structural anchoring via `TopSectionTitle` is the only viable approach.
+- **A3 — Paragraph boundary annotation** (~50 LoC): BS4 pass on `node.html_tag` to record `<p>` tag boundary offsets as `boundaries: List[int]` in the elements dict. Operates on merged `TextElement` outputs; no conflict with `TextElementMerger` (OQ-4 confirmed).
 
-| Sub-option | LoC | New deps | GPU | Risk |
-|------------|-----|----------|-----|------|
-| A1 ListItem detection | ~100 | None | No | Low |
-| A2a H-label normalization | ~80 | None | No | Low |
-| A3 paragraph boundaries | ~50 | None | No | Low |
-| **Total Option A** | **~230** | **None** | **No** | **Low** |
+| Sub-option | LoC | New deps | GPU | Risk | Notes |
+|------------|-----|----------|-----|------|-------|
+| A1 ListItem detection | ~40 | None | No | Low | `<li>` branch removed (0% corpus); `•word` no-space pattern |
+| A2a H-label normalization | ~80 | None | No | Low | A2b ruled out by OQ-2 audit |
+| A3 paragraph boundaries | ~50 | None | No | Low | OQ-4 confirmed no conflict |
+| **Total Option A** | **~170** | **None** | **No** | **Low** | |
+
+### Project-Level Benefits by RFC-006 Sub-option
+
+> Benefits are stated in terms of downstream pipeline stages, training data quality, and unblocking dependencies — not just the local layout fix.
+
+#### A1 — ListItem detection (~40 LoC, revised after OQ-1 audit)
+
+**Corpus reality (961 files, 2026-02-25):** 94.1% of filings encode list entries as `TextElement` nodes beginning with a unicode bullet char (`•word` with no space), not `<li>` tags (0% corpus coverage). Without A1, these are split by spaCy sentence boundaries — cutting mid-list when a single bullet entry spans multiple sentences. With A1:
+
+- **Segmentation quality (Step 4 input):** Each bullet-prefixed `TextElement` becomes a natural segment boundary. `RiskSegmenter` can emit one segment per bullet entry, reducing `short_segment_rate` and orphaned-fragment artifacts. Directly improves the primary training data quality KPI.
+- **LLM extraction (Step 4):** Bullet entries are semantically self-contained risk statements. Prompting a model with one bullet per chunk (vs. a mid-sentence fragment) reduces ambiguity and hallucination risk.
+- **Validation (Step 5):** Lower `short_segment_rate` means fewer DLQ entries caused by segmentation failures (complements G-01 DLQ root-cause fix).
+
+No other pipeline stage is blocked on A1, but it raises the quality floor for all downstream work.
+
+#### A2a — H-label normalization, structural anchoring (~80 LoC)
+
+`TitleElement.level` is a CSS-style-appearance index, not a semantic H-label. **OQ-2 audit (50 filings, 2026-02-25): level=0 is a subsection heading in 92.9% of occurrences** — titles like `"Overview"`, `"Results of Operations"`, `"Basis for Opinion"`. `ITEM 1A. RISK FACTORS` was observed at level=3 in one filing. A2b (level-threshold) is definitively ruled out. With A2a (`TopSectionTitle` structural anchor → filing-invariant H1/H2/H3 mapping):
+
+- **Contextual enrichment (Step 3, RFC-007 D1/D2):** The `ancestors` breadcrumb field (RFC-007 Decision D1-B) requires title-type labels to be meaningful. Filing-invariant H-labels mean a breadcrumb like `["Item 1A", "H2: Supply Chain Risk", "H3: Procurement"]` is comparable across all filings, not just within one. **A2a is a prerequisite for RFC-007 D2 (ancestors schema) to carry useful structural information.**
+- **Corpus-level analysis:** Cross-filing aggregation of heading structure (e.g., "which filings have 3+ levels of subsection nesting in Item 1A?") becomes possible. This informs corpus curation for the annotation effort (PRD-002 G-16).
+- **LLM prompts (Step 4):** Including the H-level in the prompt context ("H2 section: Supply Chain Risk > H3 subsection: Procurement disruption") gives the LLM richer structural grounding, reducing the chance of confusing sibling sections.
+
+#### A2b — H-label normalization, level-threshold (**RULED OUT**)
+
+**Invalidated by OQ-2 corpus audit (2026-02-25).** The assumption that level=0 ≈ Part/Item heading is false: 92.9% of level=0 nodes are subsection headings. No downstream benefit can be realized from a mapping that is wrong for 93% of inputs. A2b is removed from scope.
+
+#### A3 — Paragraph boundary annotation (~50 LoC)
+
+`TextElementMerger` in sec-parser reassembles `<span>`-fragmented text but does not record `<p>` tag seam positions. The segmenter currently uses double-newline as a paragraph-boundary proxy. With A3 (`boundaries: List[int]` of `<p>` tag offsets in merged text):
+
+- **Segmentation precision (Step 4 input):** Splitting at true `<p>` boundaries instead of double-newline heuristics reduces mid-paragraph cuts for filings that use `<p>` tags without blank lines between them (common in older iXBRL HTML).
+- **Chunk coherence:** More coherent chunks → better embedding quality for downstream retrieval-augmented workflows (fine-tuning, semantic search). Also reduces the probability that a sentence-boundary split from spaCy cuts inside a parenthetical clause that spans `<p>` tags.
+- **Lowest priority of Option A:** A1 and A2a deliver higher ROI per LoC. A3 is a tertiary refinement recommended for Phase B after A1/A2a are validated in production.
+
+#### Option B — Fine-tuned text classifier (deferred)
+
+No immediate project benefit. Requires: (a) A1/A2a/A3 implemented and production failures documented, (b) labeled EDGAR element dataset (PRD-002 G-16, ≥500 examples/archetype). If eventually adopted, provides robustness to unusual CSS patterns (~5% edge case filings) where rule-based approaches misclassify. **Defer until Option A production metrics show a ceiling.**
+
+#### Option C — Visual layout models (not recommended)
+
+No project benefit for the current corpus. Would add 20–120 minutes of headless-Chrome rendering + GPU inference per corpus run, require bounding-box → HTML re-mapping (estimated 15–25% alignment error), and conflict with ADR-002 (sec-parser pin), ADR-003 (CPU-only worker pool), and ADR-010 Rule 1 (no HTML modification before sec-parser). Architecturally correct only for pre-2000 scanned/image EDGAR filings, which are out of scope for all current PRDs.
 
 ---
 
@@ -230,7 +272,7 @@ Stage 4 — segmenter.py         RiskSegmenter → SegmentedRisks (JSON chunks, 
 | Pipeline Step | Existing Coverage | Gap Severity | Implementation Effort |
 |--------------|-------------------|-------------|----------------------|
 | **1. Ingestion & Normalization** | 85% — HTML/SGML complete; XBRL indexing done | XBRL parsing, EDGAR orchestration missing | Medium (2-3 weeks) |
-| **2. Layout Analysis** | 65% — sec-parser semantic types exist; no H1/H2 labels, no ListItem | Missing list detection, paragraph boundaries, H-label normalization — all closable with rule-based post-processing (RFC-006 Option A). Visual ML models are architecturally mismatched. | Low (~230 LoC, no new deps — RFC-006) |
+| **2. Layout Analysis** | 65% — sec-parser semantic types exist; no H1/H2 labels, no ListItem | Missing list detection, paragraph boundaries, H-label normalization — all closable with rule-based post-processing (RFC-006 Option A). Visual ML models are architecturally mismatched. A2b ruled out by audit. | Low (~170 LoC, no new deps — RFC-006 OQs resolved 2026-02-25) |
 | **3. Contextual Enrichment** | 50% — 2-level hierarchy exists; no full ancestry | Full breadcrumb serialization missing | Medium (1-2 weeks) |
 | **4. LLM Extraction** | 5% — classifier planned but not wired; no extraction | Entire extraction layer absent | Very High (6-10 weeks) |
 | **5. Validation** | 70% — statistical gates strong; no semantic validation | LLM output validation, hallucination detection absent | High (3-5 weeks for LLM validation layer) |
@@ -266,7 +308,7 @@ Stage 4 — segmenter.py         RiskSegmenter → SegmentedRisks (JSON chunks, 
 ### Phase A — Immediate (Days 1-5)
 1. **Fix G-04**: Change `SegmentedRisks.save_to_json()` to support `.jsonl` output mode.
 2. **Wire EDGAR downloader**: New `src/ingestion/edgar_downloader.py` wrapping `sec-downloader`.
-3. **Layout Analysis Option A1 + A2a** (RFC-006): Add `ListItem` detection (`<li>` + bullet-prefix regex) and H-label normalization (structural anchoring via `TopSectionTitle`) in `extractor.py`. ~180 LoC, no new deps.
+3. **Layout Analysis Option A1 + A2a** (RFC-006, OQs resolved 2026-02-25): Add `ListItem` detection (unicode bullet `•word` regex — `<li>` tags absent from corpus) and H-label normalization (structural anchoring via `TopSectionTitle` — A2b ruled out by OQ-2 audit) in `extractor.py`. ~120 LoC (A1 ~40 + A2a ~80), no new deps.
 4. **Add ancestors field**: Extend `RiskSegment` and serialization with `ancestors: List[str]` from tree walk.
 
 ### Phase B — Short-Term (Weeks 2-4)
@@ -298,7 +340,7 @@ Stage 4 — segmenter.py         RiskSegmenter → SegmentedRisks (JSON chunks, 
 | TitleElement section finding (5 strategies) | `extractor.py:186` | Working |
 | Fix 6A parent subsection mapping | `extractor.py:393` | Working |
 | RFC-003 word-count ceiling | `segmenter.py:432` | Working |
-| XBRL instance document parsing | `sgml_manifest.py:manifest.xbrl_instance_offset` | **Indexed but never consumed** |
+| XBRL instance document parsing | `sgml_manifest.py:manifest.doc_xbrl_instance` (DocumentEntry) | **Indexed but never consumed** |
 | Classifier call in `process_batch()` | `pipeline.py` | **Missing — G-12 blocked** |
 | JSONL output | `segmentation.py:save_to_json()` | **Missing — G-04 blocked** |
 | SASB taxonomy files | `configs/` | **Files do not exist — G-15** |
