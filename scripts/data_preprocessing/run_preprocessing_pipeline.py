@@ -414,6 +414,7 @@ def _build_output_data(
         segment_dict = {
             'id':               seg.chunk_id,
             'parent_subsection': seg.parent_subsection,
+            'ancestors':        seg.ancestors,
             'text':             seg.text,
             'char_count':       seg.char_count,
             'word_count':       seg.word_count,

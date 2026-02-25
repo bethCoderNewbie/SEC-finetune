@@ -178,6 +178,7 @@ class RiskSegmenter:
         # named subsection heading (those nodes carry subsection=None in node_subsections).
         node_subsections = getattr(extracted_section, 'node_subsections', [])
         section_title = getattr(extracted_section, 'title', None)
+        element_ancestors = getattr(extracted_section, 'element_ancestors', {})
         segments = [
             RiskSegment(
                 chunk_id=f"1A_{i+1:03d}",
@@ -185,6 +186,7 @@ class RiskSegmenter:
                     self._resolve_subsection(text, text_to_segment, node_subsections)
                     or section_title
                 ),
+                ancestors=self._resolve_ancestors(text, text_to_segment, element_ancestors),
                 text=text,
             )
             for i, text in enumerate(segment_texts)
@@ -394,6 +396,42 @@ class RiskSegmenter:
                 continue
             if node_start <= chunk_start:
                 current = subsection
+            else:
+                break
+        return current
+
+    def _resolve_ancestors(
+        self,
+        chunk_text: str,
+        full_text: str,
+        element_ancestors: dict,
+    ) -> List[str]:
+        """
+        Resolve the ancestors breadcrumb for a chunk using doc-order position walk.
+
+        element_ancestors maps normalized node_text[:100] → List[str] ancestors,
+        populated in document order by extractor._build_ancestor_map (D1-B).
+
+        Uses the same text-position approach as _resolve_subsection (Fix 6B):
+        walks element_ancestors in insertion order, finds the latest entry whose
+        key text starts at or before the chunk's position in full_text, returns
+        its ancestors list.
+
+        Returns [] if element_ancestors is empty or no position match found.
+        """
+        if not element_ancestors:
+            return []
+        key = chunk_text[:50]
+        chunk_start = full_text.find(key)
+        if chunk_start == -1:
+            return list(element_ancestors.values())[-1]
+        current: List[str] = []
+        for node_key, ancestors in element_ancestors.items():
+            node_start = full_text.find(node_key[:50])
+            if node_start == -1:
+                continue
+            if node_start <= chunk_start:
+                current = ancestors
             else:
                 break
         return current

@@ -374,3 +374,62 @@ class TestSegmenterInit:
         """Similarity threshold set correctly."""
         segmenter = RiskSegmenter(similarity_threshold=0.7)
         assert segmenter.similarity_threshold == 0.7
+
+
+class TestResolveAncestors:
+    """D2-A: _resolve_ancestors doc-order position walk."""
+
+    @pytest.fixture
+    def segmenter(self):
+        return RiskSegmenter()
+
+    def test_empty_map_returns_empty_list(self, segmenter):
+        result = segmenter._resolve_ancestors("chunk text", "full text here", {})
+        assert result == []
+
+    def test_returns_ancestors_for_matching_node(self, segmenter):
+        full_text = "Supply chain heading\n\nBody paragraph about supply chain risk."
+        element_ancestors = {
+            "Supply chain heading": ["ITEM 1A. RISK FACTORS", "Supply Chain Risk"],
+        }
+        result = segmenter._resolve_ancestors(
+            "Body paragraph about supply chain risk.",
+            full_text,
+            element_ancestors,
+        )
+        assert result == ["ITEM 1A. RISK FACTORS", "Supply Chain Risk"]
+
+    def test_picks_most_recent_entry_before_chunk(self, segmenter):
+        full_text = (
+            "Section A heading\n\nSection A body.\n\n"
+            "Section B heading\n\nSection B body."
+        )
+        element_ancestors = {
+            "Section A heading": ["ITEM 1A. RISK FACTORS", "Section A"],
+            "Section B heading": ["ITEM 1A. RISK FACTORS", "Section B"],
+        }
+        result = segmenter._resolve_ancestors("Section B body.", full_text, element_ancestors)
+        assert result == ["ITEM 1A. RISK FACTORS", "Section B"]
+
+    def test_chunk_not_found_returns_last_entry(self, segmenter):
+        element_ancestors = {
+            "Some node text": ["ITEM 1A. RISK FACTORS", "Cyber Risk"],
+        }
+        result = segmenter._resolve_ancestors("completely unrelated", "full text", element_ancestors)
+        assert result == ["ITEM 1A. RISK FACTORS", "Cyber Risk"]
+
+
+class TestAncestorsInSegmentedOutput:
+    """D2-A: ancestors field on RiskSegment and JSON output."""
+
+    def test_risk_segment_ancestors_default_empty(self):
+        seg = RiskSegment(chunk_id="1A_001", text="Sample risk text here.")
+        assert seg.ancestors == []
+
+    def test_risk_segment_accepts_ancestors(self):
+        seg = RiskSegment(
+            chunk_id="1A_001",
+            text="Sample risk text here.",
+            ancestors=["ITEM 1A. RISK FACTORS", "Supply Chain Risk"],
+        )
+        assert seg.ancestors == ["ITEM 1A. RISK FACTORS", "Supply Chain Risk"]

@@ -27,6 +27,17 @@ from ..config import settings
 from .models.extraction import ExtractedSection
 
 
+def _normalize_ancestor_text(raw: str) -> str:
+    """Normalize EDGAR heading text for ancestor storage.
+
+    Replaces non-breaking spaces (ubiquitous in EDGAR titles), collapses
+    whitespace, and caps at 120 chars to guard against pathological lengths.
+    """
+    text = raw.strip().replace('\xa0', ' ')
+    text = re.sub(r'\s+', ' ', text)
+    return text[:120]
+
+
 def _get_node_title_level(node, level_map: dict) -> 'TitleLevel':
     """
     Return the TitleLevel for a content node (RFC-006 A2a structural anchoring).
@@ -123,7 +134,7 @@ class SECSectionExtractor:
         # Extract content
         # NOTE: sec-parser creates a FLAT tree structure for sub-items
         # Content is in SIBLINGS, not DESCENDANTS
-        text, subsections, elements, node_subs = self._extract_section_content(
+        text, subsections, elements, node_subs, element_ancestors = self._extract_section_content(
             filing.tree, section_node, filing.form_type.value
         )
         title = self._get_section_title(section_id, filing.form_type.value)
@@ -154,6 +165,7 @@ class SECSectionExtractor:
             elements=elements,
             metadata=metadata,
             node_subsections=node_subs,
+            element_ancestors=element_ancestors,
             # Filing-level metadata
             sic_code=filing_metadata.get('sic_code'),
             sic_name=filing_metadata.get('sic_name'),
@@ -330,7 +342,7 @@ class SECSectionExtractor:
         tree: sp.TreeNode,
         section_node: sp.TreeNode,
         _form_type: str
-    ) -> tuple[str, List[str], List[Dict], List[tuple]]:
+    ) -> tuple[str, List[str], List[Dict], List[tuple], Dict[str, List[str]]]:
         """
         Extract content from section node and its siblings (FLAT structure)
 
@@ -357,7 +369,7 @@ class SECSectionExtractor:
             # Fallback to old method if node not in list
             subsections = self._extract_subsections(section_node)
             elements = self._extract_elements(section_node)
-            return section_node.text, subsections, elements, []
+            return section_node.text, subsections, elements, [], {}
 
         # Collect content nodes
         content_nodes = []
@@ -430,6 +442,14 @@ class SECSectionExtractor:
                 _node, _level_map
             ).name  # stored as "H3", "H4", "BODY", etc. for JSON readability
 
+        # D1-B: build ancestor map from filtered content_nodes using heading-level stack.
+        # Must run after page-header filter and _level_map are both ready.
+        _ancestor_map = self._build_ancestor_map(content_nodes, section_node, _level_map)
+        element_ancestors: Dict[str, List[str]] = {
+            _normalize_ancestor_text(_node.text)[:100]: _ancestor_map.get(id(_node), [])
+            for _node in content_nodes
+        }
+
         # Fix 6A: sequential TitleElement scan → parent_subsection map (doc order)
         current_subsection: Optional[str] = None
         node_subsections_list: List[tuple] = []
@@ -457,7 +477,7 @@ class SECSectionExtractor:
         if section_node.text:
             full_text = section_node.text + "\n\n" + full_text
 
-        return full_text, subsections, elements, node_subsections_list
+        return full_text, subsections, elements, node_subsections_list, element_ancestors
 
     def _is_next_section(self, node: sp.TreeNode) -> bool:
         """
@@ -519,6 +539,48 @@ class SECSectionExtractor:
             raw: h_buckets[min(i, len(h_buckets) - 1)]
             for i, raw in enumerate(raw_levels)
         }
+
+    def _build_ancestor_map(
+        self,
+        content_nodes: list,
+        section_node: sp.TreeNode,
+        level_map: dict,
+    ) -> dict:
+        """
+        Build ancestor map for content nodes using a linear heading-stack walk.
+
+        sec-parser places subsection TitleElements as siblings of the section
+        node (same TopSectionTitle parent), not as descendants.  node.children
+        recursion therefore never reaches content nodes; this method walks
+        content_nodes in document order instead.
+
+        Stack is seeded with the section title so ancestors[0] is always the
+        containing section name (e.g. "ITEM 1A. RISK FACTORS") — Invariant 5.
+        TitleElement nodes record the stack *before* appending themselves, so
+        their ancestors list reflects what contains them, not themselves.
+
+        Returns {id(node): [outermost_title, ..., immediate_parent_title]}.
+        Depth capped at 6 for JSON safety — Invariant 2.
+        """
+        if sp is None:
+            return {}
+
+        _H_IDX = {TitleLevel.H3: 0, TitleLevel.H4: 1, TitleLevel.H5: 2}
+        heading_stack: list = [_normalize_ancestor_text(section_node.text)]
+        result: dict = {}
+
+        for node in content_nodes:
+            if isinstance(node.semantic_element, sp.TitleElement):
+                level = _get_node_title_level(node, level_map)
+                level_idx = _H_IDX.get(level, 0)
+                # Record ancestors BEFORE appending self — title is not its own ancestor
+                result[id(node)] = heading_stack[:6]
+                del heading_stack[1 + level_idx:]
+                heading_stack.append(_normalize_ancestor_text(node.text))
+            else:
+                result[id(node)] = heading_stack[:6]
+
+        return result
 
     def _extract_subsections(self, node: sp.TreeNode) -> List[str]:
         """

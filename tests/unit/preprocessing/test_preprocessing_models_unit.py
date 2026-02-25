@@ -363,3 +363,53 @@ class TestParsedFilingSaveLoad:
         pkl_path = tmp_path / "filing.pkl"
         data = ParsedFiling.load_from_pickle(pkl_path)
         assert isinstance(data, dict)
+
+
+# ---------------------------------------------------------------------------
+# D2-A: ancestors field round-trip
+# ---------------------------------------------------------------------------
+
+class TestAncestorsRoundTrip:
+    def test_ancestors_survive_save_load(self, tmp_path):
+        """ancestors field survives save_to_json / load_from_json round-trip."""
+        seg = RiskSegment(
+            chunk_id="1A_001",
+            text="Our supply chain depends on third parties.",
+            ancestors=["ITEM 1A. RISK FACTORS", "Supply Chain Risk"],
+        )
+        sr = SegmentedRisks(segments=[seg], company_name="ACME", form_type="10-K")
+        out = sr.save_to_json(tmp_path / "test.json", overwrite=True)
+        loaded = SegmentedRisks.load_from_json(out)
+        assert loaded.segments[0].ancestors == ["ITEM 1A. RISK FACTORS", "Supply Chain Risk"]
+
+    def test_ancestors_present_in_raw_json(self, tmp_path):
+        """ancestors key written to every chunk in the JSON file."""
+        seg = RiskSegment(
+            chunk_id="1A_001",
+            text="Risk text.",
+            ancestors=["ITEM 1A. RISK FACTORS"],
+        )
+        sr = SegmentedRisks(segments=[seg], company_name="ACME", form_type="10-K")
+        out = sr.save_to_json(tmp_path / "test.json", overwrite=True)
+        data = json.loads(out.read_text())
+        assert "ancestors" in data["chunks"][0]
+        assert data["chunks"][0]["ancestors"] == ["ITEM 1A. RISK FACTORS"]
+
+    def test_ancestors_backward_compat_old_json(self, tmp_path):
+        """Old JSON files without ancestors key load with default []."""
+        old_data = {
+            "version": "1.0",
+            "document_info": {"company_name": "ACME"},
+            "section_metadata": {
+                "title": "Risk Factors",
+                "identifier": "part1item1a",
+                "stats": {},
+            },
+            "chunks": [
+                {"chunk_id": "1A_001", "text": "Some risk.", "word_count": 2, "char_count": 9}
+            ],
+        }
+        path = tmp_path / "old.json"
+        path.write_text(json.dumps(old_data))
+        loaded = SegmentedRisks.load_from_json(path)
+        assert loaded.segments[0].ancestors == []

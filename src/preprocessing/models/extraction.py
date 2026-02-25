@@ -42,6 +42,10 @@ class ExtractedSection(BaseModel):
     metadata: Dict[str, Any]
     # Fix 6A: ordered list of (node_text, subsection_title) for parent_subsection mapping
     node_subsections: List[Tuple[str, Optional[str]]] = []
+    # D1-B: in-memory ancestor map (normalized node_text[:100] → ancestors list).
+    # Populated by extractor._build_ancestor_map; consumed by segmenter._resolve_ancestors.
+    # Not persisted to JSON (excluded from model_dump in save_to_json).
+    element_ancestors: Dict[str, List[str]] = {}
     # Filing-level metadata (preserved through pipeline)
     sic_code: Optional[str] = None
     sic_name: Optional[str] = None
@@ -111,7 +115,7 @@ class ExtractedSection(BaseModel):
         # Convert to serializable dict using Pydantic V2
         data = {
             'version': '1.0',  # Format version for future compatibility
-            **self.model_dump(),
+            **self.model_dump(exclude={'element_ancestors'}),
             'stats': {
                 'text_length': len(self.text),
                 'num_subsections': len(self.subsections),

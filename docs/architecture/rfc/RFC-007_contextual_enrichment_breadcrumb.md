@@ -1,16 +1,18 @@
 ---
 id: RFC-007
 title: Contextual Enrichment — Full Breadcrumb Serialization and Cross-Section Linking
-status: DRAFT
+status: PARTIALLY_IMPLEMENTED
 author: beth88.career@gmail.com
 created: 2026-02-24
-last_updated: 2026-02-24
-git_sha: 997a101
+last_updated: 2026-02-25
+git_sha: 1c24d6e
 superseded_by: null
 related_prd: docs/requirements/PRD-002_SEC_Finetune_Pipeline_v2.md
+decision_adr: docs/architecture/adr/ADR-014_rfc007_ancestors_field.md
 related_adr:
   - docs/architecture/adr/ADR-010_hybrid_pre_seek_parser_corrected.md
   - docs/architecture/adr/ADR-011_preseeker_single_section_constraint.md
+  - docs/architecture/adr/ADR-014_rfc007_ancestors_field.md
 related_rfc:
   - docs/architecture/rfc/RFC-005_multi_section_full_document_dispatch.md
 ---
@@ -19,7 +21,9 @@ related_rfc:
 
 ## Status
 
-**DRAFT** — Three open decisions. See §Options per decision.
+**PARTIALLY IMPLEMENTED** — D1-B + D2-A implemented 2026-02-25 (ADR-014).
+D3-B (explicit cross-ref extraction) and D3-C (embedding cross-section
+similarity) remain deferred.
 
 ---
 

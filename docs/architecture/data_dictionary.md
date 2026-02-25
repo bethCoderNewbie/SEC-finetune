@@ -112,6 +112,7 @@ Each element of the `segments` array.
 |:------|:-----|:------------|:---------------|:------------|
 | `id` | `str` | Chunk identifier. Format: `{SECTION_PREFIX}_{NNN}`. E.g., `"1A_001"`. | `RiskSegment.chunk_id` | Unique per file |
 | `parent_subsection` | `str` | Text of the nearest preceding `TitleElement` heading within this section. `null` if the segment precedes all headings. | `RiskSegmenter._resolve_subsection()` — resolved against `ExtractedSection.node_subsections` | Yes |
+| `ancestors` | `List[str]` | Ordered outermost→innermost heading breadcrumb. `ancestors[0]` is the section title; `ancestors[-1]` semantically corresponds to `parent_subsection`. `[]` for cover-page nodes in full-doc fallback. Normalized: `\xa0` → space, whitespace collapsed, max 120 chars per entry, max 6 entries. | `SECSectionExtractor._build_ancestor_map()` → `RiskSegmenter._resolve_ancestors()` | No (empty list default) |
 | `text` | `str` | Cleaned segment text. HTML tags removed; Unicode normalised. | `TextCleaner.clean_text()` → `RiskSegmenter` | Must be > 50 chars (QA rule) |
 | `length` | `int` | Character count of `text`. | `RiskSegment.char_count` | ≥ 0 |
 | `word_count` | `int` | Whitespace-delimited token count of `text`. | `RiskSegment.word_count` | ≥ 0 |

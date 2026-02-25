@@ -17,6 +17,7 @@ class RiskSegment(BaseModel):
 
     chunk_id: str                           # "1A_001", "1A_002", … (was: index: int)
     parent_subsection: Optional[str] = None  # nearest preceding TitleElement text
+    ancestors: List[str] = []               # D2-A: outermost→innermost title breadcrumb
     text: str
     word_count: int = 0
     char_count: int = 0
@@ -153,11 +154,12 @@ class SegmentedRisks(BaseModel):
             },
             'chunks': [
                 {
-                    'chunk_id': seg.chunk_id,
+                    'chunk_id':          seg.chunk_id,
                     'parent_subsection': seg.parent_subsection,
-                    'text': seg.text,
-                    'word_count': seg.word_count,
-                    'char_count': seg.char_count,
+                    'ancestors':         seg.ancestors,
+                    'text':              seg.text,
+                    'word_count':        seg.word_count,
+                    'char_count':        seg.char_count,
                 }
                 for seg in self.segments
             ],
@@ -192,6 +194,7 @@ class SegmentedRisks(BaseModel):
                 RiskSegment(
                     chunk_id=c.get('chunk_id', f"1A_{i+1:03d}"),
                     parent_subsection=c.get('parent_subsection'),
+                    ancestors=c.get('ancestors', []),
                     text=c.get('text', ''),
                     word_count=c.get('word_count', 0),
                     char_count=c.get('char_count', 0),

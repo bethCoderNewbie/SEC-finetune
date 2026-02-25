@@ -9,7 +9,7 @@ No real data dependencies - runs in <1 second.
 import pytest
 from unittest.mock import MagicMock
 
-from src.preprocessing.extractor import SECSectionExtractor, ExtractedSection
+from src.preprocessing.extractor import SECSectionExtractor, ExtractedSection, _normalize_ancestor_text
 from src.preprocessing.constants import SECTION_PATTERNS
 
 
@@ -374,3 +374,94 @@ class TestTitleLevel:
         assert result[1] == TitleLevel.H4
         assert result[2] == TitleLevel.H5
         assert result[3] == TitleLevel.H5  # capped
+
+
+class TestBuildAncestorMap:
+    """D1-B: _build_ancestor_map linear heading-stack walk."""
+
+    @pytest.fixture
+    def extractor(self):
+        return SECSectionExtractor()
+
+    @pytest.fixture
+    def section_node(self):
+        node = MagicMock()
+        node.text = "ITEM 1A. RISK FACTORS"
+        return node
+
+    def test_empty_content_returns_empty(self, extractor, section_node):
+        result = extractor._build_ancestor_map([], section_node, {})
+        assert result == {}
+
+    def test_body_node_before_any_title_gets_section_only(self, extractor, section_node):
+        try:
+            import sec_parser as sp
+        except ImportError:
+            pytest.skip("sec_parser not installed")
+
+        body = MagicMock()
+        body.semantic_element = MagicMock(spec=sp.TextElement)
+        body.text = "Preamble risk text."
+
+        result = extractor._build_ancestor_map([body], section_node, {})
+        assert result[id(body)] == ["ITEM 1A. RISK FACTORS"]
+
+    def test_title_then_body_assigns_correct_ancestors(self, extractor, section_node):
+        try:
+            import sec_parser as sp
+        except ImportError:
+            pytest.skip("sec_parser not installed")
+        from src.preprocessing.constants import TitleLevel
+
+        title = MagicMock()
+        title.semantic_element = MagicMock(spec=sp.TitleElement)
+        title.semantic_element.level = 0
+        title.text = "Supply Chain Risk"
+
+        body = MagicMock()
+        body.semantic_element = MagicMock(spec=sp.TextElement)
+        body.text = "Our reliance on suppliers exposes us to disruption."
+
+        level_map = {0: TitleLevel.H3}
+        result = extractor._build_ancestor_map([title, body], section_node, level_map)
+
+        # Title records stack before appending itself
+        assert result[id(title)] == ["ITEM 1A. RISK FACTORS"]
+        assert result[id(body)] == ["ITEM 1A. RISK FACTORS", "Supply Chain Risk"]
+
+    def test_second_h3_replaces_first_in_stack(self, extractor, section_node):
+        try:
+            import sec_parser as sp
+        except ImportError:
+            pytest.skip("sec_parser not installed")
+        from src.preprocessing.constants import TitleLevel
+
+        def make_title(text):
+            n = MagicMock()
+            n.semantic_element = MagicMock(spec=sp.TitleElement)
+            n.semantic_element.level = 0
+            n.text = text
+            return n
+
+        def make_body(text):
+            n = MagicMock()
+            n.semantic_element = MagicMock(spec=sp.TextElement)
+            n.text = text
+            return n
+
+        t1, b1, t2, b2 = make_title("Section A"), make_body("A body."), make_title("Section B"), make_body("B body.")
+        level_map = {0: TitleLevel.H3}
+        result = extractor._build_ancestor_map([t1, b1, t2, b2], section_node, level_map)
+
+        assert result[id(b1)] == ["ITEM 1A. RISK FACTORS", "Section A"]
+        assert result[id(b2)] == ["ITEM 1A. RISK FACTORS", "Section B"]
+
+    def test_normalize_ancestor_text_strips_xa0(self):
+        assert _normalize_ancestor_text("ITEM\xa01A.\xa0RISK FACTORS") == "ITEM 1A. RISK FACTORS"
+
+    def test_normalize_ancestor_text_collapses_whitespace(self):
+        assert _normalize_ancestor_text("Supply  Chain   Risk") == "Supply Chain Risk"
+
+    def test_normalize_ancestor_text_caps_at_120(self):
+        long_text = "A" * 200
+        assert len(_normalize_ancestor_text(long_text)) == 120

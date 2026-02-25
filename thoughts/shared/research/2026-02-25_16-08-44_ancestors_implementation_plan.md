@@ -89,7 +89,7 @@ These must hold after implementation:
 
 | File | Change | ~LoC |
 |:-----|:-------|-----:|
-| `src/preprocessing/extractor.py` | Add `_normalize_ancestor_text()` + `_build_ancestor_map()`; call in `_extract_section_content`; populate `ExtractedSection.element_ancestors` | ~65 |
+| `src/preprocessing/extractor.py` | Add module-level `_normalize_ancestor_text()`; add method `_build_ancestor_map(content_nodes, section_node, level_map)`; call in `_extract_section_content`; populate `ExtractedSection.element_ancestors` | ~65 |
 | `src/preprocessing/models/extraction.py` | Add `element_ancestors: Dict[str, List[str]] = {}` field to `ExtractedSection` | ~5 |
 | `src/preprocessing/models/segmentation.py` | Add `ancestors: List[str] = []` to `RiskSegment`; update `save_to_json` + `load_from_json` | ~25 |
 | `src/preprocessing/segmenter.py` | Add `_resolve_ancestors()` helper; call in `segment_extracted_section()` | ~35 |
@@ -118,87 +118,101 @@ in-memory intermediate and is excluded by the existing `k not in ('version', 'st
 filter in `load_from_json`. Add it to that exclusion set to be explicit.
 
 **Wait — Pydantic V2 `model_dump()` is called in `save_to_json` which will
-include `element_ancestors` in the dict.** Add `exclude={'element_ancestors'}`
-to the `model_dump()` call in `save_to_json`, or simply keep the current
-hand-crafted dict approach which already omits it.
+include `element_ancestors` in the dict.** Use `model_dump(exclude={'element_ancestors'})`
+in `save_to_json`.
 
-Looking at `save_to_json:112–122` — it uses a hand-crafted dict plus
-`**self.model_dump()`. This means `element_ancestors` would be serialized.
-Two options:
-- **(Recommended)** Use `model_dump(exclude={'element_ancestors', 'node_subsections'})`
-  in `save_to_json`. `node_subsections` is already not in the hand-crafted dict;
-  confirm it is also excluded by checking what's currently serialized.
-- Alternatively, annotate with `exclude=True` in the Pydantic field.
-
-Use `model_dump(exclude={'element_ancestors', 'node_subsections'})` — explicit
-and clear.
+`save_to_json:112–122` uses `**self.model_dump()` which serializes ALL fields.
+`node_subsections` is already serialized and must remain so — removing it would
+break any load-then-segment workflow since `load_from_json` round-trips it via
+`model_validate`. Only `element_ancestors` (in-memory intermediate) is excluded.
 
 ### 1b. `extractor.py` — add helpers and wire into `_extract_section_content`
 
-Insert two helpers **at module level** (after `_get_node_title_level`):
+**Architecture note (verified 2026-02-25):** sec-parser places subsection
+`TitleElement` nodes as **siblings** of the Item 1A node (both children of the
+same `TopSectionTitle`), not as descendants of it. `node.children` recursion
+from Item 1A never reaches content nodes. The original RFC-007 OQ-2 assumption
+(shared node objects across children and flat traversal) is correct *in
+principle*, but the ancestor map must be built from the **flat `content_nodes`
+list** using a heading-level stack, not a recursive descent.
+
+Insert one helper **at module level** (after `_get_node_title_level`):
 
 ```python
-import re as _re
-
 def _normalize_ancestor_text(raw: str) -> str:
     """Normalize EDGAR title text for ancestor storage.
     \xa0 is ubiquitous in EDGAR heading text (confirmed all 10 audited filings).
     Cap at 120 chars to prevent pathological title lengths in JSON.
     """
     text = raw.strip().replace('\xa0', ' ')
-    text = _re.sub(r'\s+', ' ', text)
+    text = re.sub(r'\s+', ' ', text)   # re already imported at module level
     return text[:120]
+```
 
+Insert one helper as a **method on `SECSectionExtractor`** (after
+`_build_title_level_map`):
 
-def _build_ancestor_map(tree) -> dict:
+```python
+def _build_ancestor_map(
+    self,
+    content_nodes: list,
+    section_node,
+    level_map: dict,
+) -> dict:
     """
-    Pre-traverse the full sec-parser tree to record title ancestor texts
-    for every node before the flat iteration in _extract_section_content.
+    Build ancestor map for content nodes using a linear heading-stack walk.
+
+    sec-parser places subsection TitleElements as siblings of the section
+    node (not descendants), so node.children recursion never reaches them.
+    This method walks content_nodes in document order, maintains a heading
+    stack, and records the current stack for each node.
 
     Returns {id(node): [outermost_title, ..., immediate_parent_title]}.
-    id(node) is stable — no tree mutation occurs between this pass and
-    flat iteration (RFC-007 OQ-2 confirmed across 10 filings).
+    Stack is seeded with the section title (e.g. "ITEM 1A. RISK FACTORS")
+    so ancestors[0] always names the containing section (Invariant 5).
 
-    Observed max depth = 5; capped at [:6] for JSON safety (RFC-007 §Invariant 2).
+    Observed max depth = 5; capped at [:6] for JSON safety (Invariant 2).
     """
     if sp is None:
         return {}
+
+    # Level index: H3=0 (shallowest subsection), H4=1, H5=2 (deepest)
+    _H_IDX = {TitleLevel.H3: 0, TitleLevel.H4: 1, TitleLevel.H5: 2}
+
+    section_title = _normalize_ancestor_text(section_node.text)
+    heading_stack: list = [section_title]   # index 0 — never popped
     result: dict = {}
 
-    def _recurse(node, path: list) -> None:
-        result[id(node)] = path[:6]
-        elem = node.semantic_element
-        current_path = path.copy()
-        if isinstance(elem, (sp.TitleElement, sp.TopSectionTitle)):
-            current_path.append(_normalize_ancestor_text(node.text))
-        for child in node.children:
-            _recurse(child, current_path)
+    for node in content_nodes:
+        if isinstance(node.semantic_element, sp.TitleElement):
+            level = _get_node_title_level(node, level_map)
+            level_idx = _H_IDX.get(level, 0)
+            # Trim stack: keep section title + all headings shallower than this one
+            del heading_stack[1 + level_idx:]
+            heading_stack.append(_normalize_ancestor_text(node.text))
+        result[id(node)] = heading_stack[:6]
 
-    for root in tree:
-        _recurse(root, [])
     return result
 ```
 
-**Wire into `_extract_section_content`** — insert before the flat `all_nodes`
-iteration (before line 325, `all_nodes = list(tree.nodes)`):
+**Wire into `_extract_section_content`** — insert after `_level_map` and the
+A1/A2a annotation block (after line ~431, the `zip(elements, content_nodes)`
+loop) and before the Fix 6A sequential scan:
 
 ```python
-# D1-B: build filing-relative ancestor map before flat iteration.
-# Must run while tree is still hierarchical (parent chain intact).
-_ancestor_map = _build_ancestor_map(tree)
+# D1-B: build ancestor map from flat content_nodes using heading-level stack.
+# Must run after page-header filter and _level_map are ready.
+_ancestor_map = self._build_ancestor_map(content_nodes, section_node, _level_map)
 ```
 
-Then, after the page-header filter and A1/A2a annotation block (currently at
-line ~407), add:
+Then build `element_ancestors` immediately after (before the Fix 6A scan):
 
 ```python
-# D1-B: populate ExtractedSection.element_ancestors from ancestor map.
-# Keyed by normalized node.text[:100] for JSON-safe storage.
-# Parallel to content_nodes (same page-header filter applied above).
-element_ancestors: Dict[str, List[str]] = {}
-for _node in content_nodes:
-    _key = _normalize_ancestor_text(_node.text)[:100]
-    element_ancestors[_key] = _ancestor_map.get(id(_node), [])
+# D1-B: key by normalized node.text[:100] for segmenter lookup.
+element_ancestors: Dict[str, List[str]] = {
+    _normalize_ancestor_text(_node.text)[:100]: _ancestor_map.get(id(_node), [])
+    for _node in content_nodes
+}
 ```
 
 Return `element_ancestors` from `_extract_section_content` by adding it to
@@ -207,6 +221,20 @@ New: `(str, List[str], List[Dict], List[tuple], Dict[str, List[str]])`.
 
 Update `extract_section()` (line 100) to unpack the fifth element and pass it
 to `ExtractedSection(element_ancestors=element_ancestors, ...)`.
+
+**Also update the fallback early return** at `extractor.py:358–360` — this path
+fires when `section_node` is not found in `all_nodes`. It currently returns a
+4-tuple and must be updated to match the new arity:
+
+```python
+# extractor.py ~line 358-360 — fallback path
+subsections = self._extract_subsections(section_node)
+elements = self._extract_elements(section_node)
+return section_node.text, subsections, elements, [], {}  # added trailing {}
+```
+
+Omitting this update causes `ValueError: not enough values to unpack` at the
+call site whenever the fallback fires.
 
 ---
 
@@ -337,51 +365,67 @@ existing JSON files that predate this change. No migration needed.
 
 ### `test_extractor_unit.py` — `TestBuildAncestorMap`
 
+`_build_ancestor_map` is now a method on `SECSectionExtractor`. Tests pass a
+flat `content_nodes` list (reflecting actual sec-parser sibling structure) plus
+a mock `section_node` and a `level_map`.
+
 ```python
 class TestBuildAncestorMap:
-    """D1-B: _build_ancestor_map pre-traversal."""
+    """D1-B: _build_ancestor_map linear heading-stack walk."""
 
     @pytest.fixture
     def extractor(self):
         return SECSectionExtractor()
 
-    def test_empty_tree_returns_empty(self, extractor):
-        # _build_ancestor_map with no nodes returns {}
-        from src.preprocessing.extractor import _build_ancestor_map
-        result = _build_ancestor_map([])   # empty iterable for root
+    @pytest.fixture
+    def section_node(self):
+        node = MagicMock()
+        node.text = "ITEM 1A. RISK FACTORS"
+        return node
+
+    def test_empty_content_returns_empty(self, extractor, section_node):
+        result = extractor._build_ancestor_map([], section_node, {})
         assert result == {}
 
-    def test_title_element_becomes_ancestor_of_children(self, extractor):
+    def test_body_node_before_any_title_gets_section_only(self, extractor, section_node):
         try:
             import sec_parser as sp
         except ImportError:
             pytest.skip("sec_parser not installed")
-        from src.preprocessing.extractor import _build_ancestor_map
 
-        # Build mock 2-level tree: TitleElement → TextElement
-        text_node = MagicMock(); text_node.semantic_element = MagicMock(spec=sp.TextElement)
-        text_node.text = "Body text here"; text_node.children = []
-        title_node = MagicMock(); title_node.semantic_element = MagicMock(spec=sp.TitleElement)
-        title_node.text = "Supply Chain Risk"; title_node.children = [text_node]
+        body = MagicMock()
+        body.semantic_element = MagicMock(spec=sp.TextElement)
+        body.text = "Preamble text."
 
-        result = _build_ancestor_map([title_node])
-        assert result[id(title_node)] == []               # title has no ancestors above it
-        assert result[id(text_node)] == ["Supply Chain Risk"]  # text is child of title
+        result = extractor._build_ancestor_map([body], section_node, {})
+        assert result[id(body)] == ["ITEM 1A. RISK FACTORS"]
 
-    def test_ancestor_normalization_strips_xa0(self, extractor):
+    def test_title_then_body_assigns_correct_ancestors(self, extractor, section_node):
         try:
             import sec_parser as sp
         except ImportError:
             pytest.skip("sec_parser not installed")
-        from src.preprocessing.extractor import _build_ancestor_map
+        from src.preprocessing.constants import TitleLevel
 
-        child = MagicMock(); child.semantic_element = MagicMock(spec=sp.TextElement)
-        child.text = "Body"; child.children = []
-        parent = MagicMock(); parent.semantic_element = MagicMock(spec=sp.TitleElement)
-        parent.text = "ITEM\xa01A.\xa0RISK FACTORS"; parent.children = [child]
+        title = MagicMock()
+        title.semantic_element = MagicMock(spec=sp.TitleElement)
+        title.text = "Supply Chain Risk"
 
-        result = _build_ancestor_map([parent])
-        assert result[id(child)] == ["ITEM 1A. RISK FACTORS"]
+        body = MagicMock()
+        body.semantic_element = MagicMock(spec=sp.TextElement)
+        body.text = "Our reliance on suppliers..."
+
+        level_map = {getattr(title.semantic_element, 'level', 0): TitleLevel.H3}
+        result = extractor._build_ancestor_map([title, body], section_node, level_map)
+
+        assert result[id(title)] == ["ITEM 1A. RISK FACTORS"]          # title records stack BEFORE appending itself
+        assert result[id(body)] == ["ITEM 1A. RISK FACTORS", "Supply Chain Risk"]
+
+    def test_normalization_strips_xa0(self, extractor):
+        node = MagicMock()
+        node.text = "ITEM\xa01A.\xa0RISK FACTORS"
+        from src.preprocessing.extractor import _normalize_ancestor_text
+        assert _normalize_ancestor_text(node.text) == "ITEM 1A. RISK FACTORS"
 ```
 
 ### `test_segmenter_unit.py` — `TestResolveAncestors`
@@ -582,7 +626,8 @@ for f in old_files:
 
 | Risk | Mitigation |
 |:-----|:-----------|
-| `id(node)` collision between build pass and content iteration | RFC-007 OQ-2 confirmed no collisions across 10 filings; no tree mutation occurs |
+| `id(node)` collision between stack build and element_ancestors lookup | `id(node)` is stable within a single parse — no tree mutation between `_build_ancestor_map` and the `element_ancestors` dict comprehension that follows immediately after |
+| `node.children` recursion (original RFC-007 OQ-2 design) | **Invalidated 2026-02-25.** sec-parser places subsection TitleElements as siblings of Item 1A, not descendants. Parent of "Macroeconomic and Industry Risks" is `TopSectionTitle`, not `TitleElement`. Replaced with linear heading-stack walk over `content_nodes`. |
 | Text-key collision in `element_ancestors` (two nodes with identical first 100 chars) | Rare in practice; last-write wins (same doc-order) — acceptable for lookup |
 | `extract_section()` return tuple arity change breaks callers | Only one internal caller (`extract_section → _extract_section_content`); update both in same commit |
 | Token budget: breadcrumb adds ~20–30 tokens to BERT input | Document in ADR-014; downstream consumers must account for it; do not enforce here |
