@@ -357,10 +357,12 @@ class SECSectionExtractor:
                     subsections.append(title_text)
 
             # Track all elements
+            _elem_text = node.text if hasattr(node, 'text') else ''
             element_dict = {
-                'type': node.semantic_element.__class__.__name__,
-                'text': node.text if hasattr(node, 'text') else '',
-                'level': getattr(node, 'level', 0),
+                'type':       node.semantic_element.__class__.__name__,
+                'text':       _elem_text,
+                'char_count': len(_elem_text),
+                'level':      getattr(node, 'level', 0),
             }
 
             if isinstance(node.semantic_element, sp.TableElement):

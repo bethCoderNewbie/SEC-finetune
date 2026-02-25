@@ -249,8 +249,10 @@ def run_pipeline(
             print(f"  [OK] Saved extracted to: {output_path}")
 
         # Step 3: Clean text
+        raw_chars    = len(extracted.text)
         cleaned_text = cleaner.clean_text(extracted.text, deep_clean=False)
-        print(f"  [OK] Cleaned text from {len(extracted.text):,} to {len(cleaned_text):,} characters")
+        cleaned_chars = len(cleaned_text)
+        print(f"  [OK] Cleaned text from {raw_chars:,} to {cleaned_chars:,} characters")
 
         # Use model_copy to preserve ALL fields (ADR-010/DEI: accession_number,
         # filed_as_of_date, amendment_flag, entity_filer_category, ein, node_subsections).
@@ -297,6 +299,8 @@ def run_pipeline(
                 segmented_risks=segmented_risks,
                 sentiment_features_list=sentiment_features_list,
                 extract_sentiment=extract_sentiment,
+                raw_section_char_count=raw_chars,
+                cleaned_section_char_count=cleaned_chars,
             )
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(output_data, f, indent=2, ensure_ascii=False)
@@ -320,7 +324,9 @@ def _build_output_data(
     input_file: Path,
     segmented_risks: SegmentedRisks,
     sentiment_features_list: Optional[List] = None,
-    extract_sentiment: bool = True
+    extract_sentiment: bool = True,
+    raw_section_char_count: Optional[int] = None,
+    cleaned_section_char_count: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Build the output data structure for the final _segmented.json.
@@ -386,6 +392,8 @@ def _build_output_data(
             'stats': {
                 'total_chunks': segmented_risks.total_segments,
                 'num_tables':   num_tables,
+                'raw_section_char_count':     raw_section_char_count,
+                'cleaned_section_char_count': cleaned_section_char_count,
             },
         },
         'num_segments': segmented_risks.total_segments,
@@ -407,7 +415,7 @@ def _build_output_data(
             'id':               seg.chunk_id,
             'parent_subsection': seg.parent_subsection,
             'text':             seg.text,
-            'length':           seg.char_count,
+            'char_count':       seg.char_count,
             'word_count':       seg.word_count,
         }
         if sentiment_features_list and i < len(sentiment_features_list):
@@ -538,8 +546,10 @@ def process_single_file_fast(args: Tuple) -> Dict[str, Any]:
                 )
 
             # Step 3: Clean
+            raw_chars = len(section_result.text)
             with tracker.track_module(PipelineStep.CLEAN):
                 cleaned_text = get_worker_cleaner().clean_text(section_result.text, deep_clean=False)
+            cleaned_chars = len(cleaned_text)
 
             # Use model_copy to preserve ALL fields (including ADR-010/DEI fields:
             # accession_number, filed_as_of_date, amendment_flag, entity_filer_category,
@@ -593,6 +603,8 @@ def process_single_file_fast(args: Tuple) -> Dict[str, Any]:
                     segmented_risks=segmented_risks,
                     sentiment_features_list=sentiment_features_list,
                     extract_sentiment=(_worker_analyzer is not None),
+                    raw_section_char_count=raw_chars,
+                    cleaned_section_char_count=cleaned_chars,
                 )
                 with open(section_output_path, 'w', encoding='utf-8') as f:
                     json.dump(output_data, f, indent=2, ensure_ascii=False)

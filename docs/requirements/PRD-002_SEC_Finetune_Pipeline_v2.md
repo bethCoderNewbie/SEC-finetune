@@ -4,11 +4,11 @@ title: SEC 10-K Risk Factor Analyzer — Pipeline v2 (Current State)
 status: DRAFT
 author: beth88.career@gmail.com
 created: 2026-02-18
-last_updated: 2026-02-20
-last_revised: 2026-02-20
-version: 0.2.1
+last_updated: 2026-02-24
+last_revised: 2026-02-24
+version: 0.4.0
 supersedes: PRD-001
-git_sha: 5476f84
+git_sha: 96801e6
 ---
 
 # PRD-002: SEC 10-K Risk Factor Analyzer — Pipeline v2
@@ -55,7 +55,7 @@ archetypes) and SASB-grounded specificity (via material topics) in a single outp
 - Stamped run output directories with git SHA and timestamps
 - State manifest for cross-run hash tracking (`data/processed/.manifest.json`)
 - QA validation and quarantine pattern implemented
-- Test suite grown from 186 → 660 collected tests
+- Test suite grown from 186 → 715 collected tests
 
 ### What changed since initial PRD-002 (2026-02-19 taxonomy revision)
 
@@ -67,6 +67,72 @@ archetypes) and SASB-grounded specificity (via material topics) in a single outp
 - **OQ-3 resolved:** truncation strategy defined (512 tokens DeBERTa; 8,192 ModernBERT contingency)
 - **OQ-4 resolved:** JSONL output confirmed as target format with full schema defined
 - **`transformers` version floor raised** from `>=4.35.0` to `>=4.48.0` (ModernBERT requirement)
+
+### What changed 2026-02-24 (Phase A corpus quality / section contamination)
+
+- **RFC-003 Option A DEPLOYED** (`max_segment_words: 380`, commit `0872eb3`): G-03 token
+  safety gap is closed. `_split_long_segments` + `_split_into_chunks` enforce the 380-word
+  ceiling. ADR-012 documents the decision. US-015 is now **implemented**.
+- **Full-corpus token profile measured** (607,463 segments, run `20260223_182806`):
+  p50=58 tokens · p95=**226 tokens** · p99=399 tokens · max=3,886 tokens.
+  p95 ≤ 400 gate: **PASS**. Over-512 (silent truncation): 2,713 segments (0.45%).
+  Danger zone 360–512 tokens: 5,736 (0.94%). ModernBERT contingency NOT triggered.
+  See `reports/token_profile.json`.
+- **Section contamination finding (OQ-PRD-1):** Phase A diagnostic analysis of run
+  `20260223_182806` reveals **81.5% of 607,463 segments (495,290) are non-target-section
+  content**. The pipeline dispatches across 7 section types; only `part1item1a` (112,173
+  segments, 18.5%) is Item 1A Risk Factors. The remaining 81.5% are MD&A (`part2item7`,
+  142,142), Financial Statements + Auditor Reports (`part2item8`, 198,860), Business
+  Description (`part1item1`, 108,056), and others. See `reports/short_segment_analysis.json`
+  and `thoughts/shared/research/2026-02-23_18-30-00_segment_strategy_classifier_input.md` §5 S5.
+- **Boilerplate frame shift (OQ-PRD-1 revised, 2026-02-24):** `analyse_short_segments.py`
+  shows the 52.7% text-preview duplication rate in the ≤100-word population has **two
+  distinct causes**: (a) **dispatch contamination** — non-`part1item1a` sections should not
+  be in the run (fix: dispatch config filter); and (b) **within-Item-1A boilerplate** —
+  `_is_non_risk_content` (`segmenter.py:337-368`) only filters 5 surface patterns and misses
+  auditor opinion language (655 repeats), "Table of Contents" navigation, financial statement
+  headers ("Notes to Consolidated Financial Statements", 73-93 repeats/variant), and
+  "REPORT OF MANAGEMENT RESPONSIBILITIES" (5,241 segments, 13.3% unique). Both causes must
+  be addressed independently. Problem frame revised: the S1–S4 short-segment length strategy
+  is obsolete (0.01% of corpus is sub-20-word at full scale); the operative problem is
+  **boilerplate content contamination**.
+- **Diagnostic scripts added:** `scripts/validation/data_quality/diagnose_short_segments.py`
+  (Tasks 1, 2, 3: bracket sampling, fill rate, section contamination),
+  `scripts/validation/data_quality/token_profile.py` (DeBERTa token profiling),
+  `scripts/validation/data_quality/analyse_short_segments.py` (dedup / pattern / subsection
+  analysis). `sentencepiece>=0.1.99` added to `pyproject.toml` (required by
+  `DebertaV2TokenizerFast`).
+- **`parent_subsection` fill rate:** 100% across all 607,463 segments. OQ-S3 (from
+  segment strategy research) closed; S3 context prefix injection is viable for the full corpus.
+
+### What changed 2026-02-24 (`char_count` alias fix + G-02 loss measurement)
+
+- **`segments[].char_count` key corrected** — `_build_output_data` was emitting `'length'`
+  (wrong key); now emits `'char_count'` (matching the field name in `RiskSegment`).
+  `load_from_json` old-schema fallback extended to read `char_count or length` so all
+  v2.1 files already on disk load with correct values (not 0).
+  `HealthCheckValidator._check_substance` updated from `seg.get("length", …)` to
+  `seg.get("char_count", …)` (3-file change: `run_preprocessing_pipeline.py`,
+  `segmentation.py`, `qa_validation.py`).
+- **G-02 loss formula now self-contained in `*_segmented.json`** — two new fields added
+  to `section_metadata.stats`: `raw_section_char_count` (len of extracted text
+  pre-TextCleaner) and `cleaned_section_char_count` (len post-TextCleaner). Previously
+  the G-02 denominator required joining to the `extracted/` directory;
+  it is now computable from the segmented file alone:
+  `pipeline_loss = (raw − Σ segment.char_count) / raw`. Implemented in all three
+  serialisation paths: `pipeline.py` (worker), single-file CLI path, batch CLI path,
+  plus `save_to_json` / `load_from_json` round-trip in `segmentation.py`.
+  Measured on AAPL 10-K 2021 part1item1a: `raw=66,278`, `cleaned=66,278`,
+  `Σ segment.char_count=66,085`, `pipeline_loss=0.29%` — well below the 5% gate.
+- **`metadata.text_char_count` added to `_parsed.json`** — sum of element text chars
+  after `sec-parser` strips HTML markup. AAPL 2021: `text_char_count=211,751` vs
+  `html_size=2,051,191` (89.7% was markup). Enables detection of filings where
+  sec-parser under-extracted.
+- **`char_count` added to each element in `_extracted.json` / `_cleaned.json`** — one
+  new field per element dict in the extractor serialisation loop (`extractor.py`).
+  Enables per-element cleaning impact measurement and outlier-length detection without
+  re-reading the `text` field. All 66 elements in AAPL 2021 part1item1a verified
+  correct (`char_count == len(text)` for every element).
 
 ### What changed 2026-02-20 (token safety / RFC-003)
 
@@ -94,9 +160,9 @@ archetypes) and SASB-grounded specificity (via material topics) in a single outp
 
 | ID | Priority | Since | Goal | Status | Stories |
 |:---|:---------|:------|:-----|:-------|:--------|
-| G-01 | P0 | PRD-001 | Parse ≥95% of EDGAR HTML 10-K/10-Q filings — success rate `(total_submitted − dlq_size) / total_submitted ≥ 0.95` reported in `RUN_REPORT.md` and `batch_summary_{run_id}.json`, on a stratified random sample of ≥30 filings spanning ≥5 SIC sectors and filing years 2019–2024 | ⚠️ DLQ implemented; ≥95% KPI not yet measured — requires corpus of ≥30 filings | US-005 |
-| G-02 | P0 | PRD-001 | Extract Item 1A with < 5% character loss — `(raw_item1a_char_count − Σ segment.char_count) / raw_item1a_char_count < 0.05`, using `RiskSegment.char_count` fields in output JSON, on the same ≥30-filing stratified sample as G-01 | ❌ Not validated — tested on AAPL_10K_2021 only | — |
-| G-03 | P1 | PRD-001 | Segment risk text into atomic, classifiable statements — every output segment must satisfy `50 ≤ char_count ≤ 2000` and `word_count ≥ 20` (configurable via `preprocessing.min/max_segment_length`; raised from 10 to align with classifier training quality gate); every processed filing must produce ≥ 1 segment | ⚠️ `RiskSegmenter` bounds enforced; **token-safety gap open** — 2.75% of corpus segments exceed 380 words (OQ-RFC3-1); RFC-003 Option A (`max_segment_words: 380`) is the fix spec for US-015; gatekeeper `over_limit_word_rate` check live | US-015 |
+| G-01 | P0 | PRD-001 | Parse ≥95% of EDGAR HTML 10-K/10-Q filings — success rate `(total_submitted − dlq_size) / total_submitted ≥ 0.95` reported in `RUN_REPORT.md` and `batch_summary_{run_id}.json`, on a stratified random sample of ≥30 filings spanning ≥5 SIC sectors and filing years 2019–2024 | ❌ **Measured (run `20260223_182806`, 959 filings, 88 SIC codes): (816+45)/959 = 89.8% — BELOW ≥95% KPI gate.** Breakdown: success=816, warning=45, error=98 (DLQ). Run report states 85.1% (816/959 strict). Scale and sector requirements met (959 >> 30 filings; 88 SIC codes >> 5 required). Root cause: 98 DLQ failures all tagged "unknown" — concentrated in CAH, COP, C tickers. OQ-7-adjacent: DLQ drain + root-cause investigation needed before KPI can be cleared. | US-005 |
+| G-02 | P0 | PRD-001 | Extract Item 1A with < 5% character loss — `(raw_section_char_count − Σ segment.char_count) / raw_section_char_count < 0.05`, using `RiskSegment.char_count` fields in `*_segmented.json`, on the same ≥30-filing stratified sample as G-01 | ✅ **Measured (run `20260223_182806`, 783 `part1item1a` filings): 100% pass. Median=0.44% · P95=1.62% · max=3.59% (GD tickers) — all below 5% gate.** Schema gap CLOSED (2026-02-24): `segments[].char_count` key corrected (was `length`); `raw_section_char_count` / `cleaned_section_char_count` added to `section_metadata.stats` — G-02 formula computable from `*_segmented.json` directly, no join to `extracted/` required. | — |
+| G-03 | P1 | PRD-001 | Segment risk text into atomic, classifiable statements — every output segment must satisfy `50 ≤ char_count ≤ 2000` and `word_count ≥ 20` (configurable via `preprocessing.min/max_segment_length`; raised from 10 to align with classifier training quality gate); every processed filing must produce ≥ 1 segment | ✅ **RFC-003 Option A deployed** (commit `0872eb3`, ADR-012): `max_segment_words: 380` enforced in `_split_long_segments`; `over_limit_word_rate` gate live. Full-corpus token p95=226 (§9.3 gate PASS). **Remaining gap: 81.5% of corpus is non-target-section content** (see OQ-PRD-1) — training data must be filtered to `part1item1a` before annotation | US-015 |
 | G-04 | P0 | PRD-001 | Output JSONL compatible with HuggingFace `datasets.load_dataset("json", ...)` — each record must have `text` (str, column name exact) and `label` (int 0–8); full schema defined in §2.1.2 | ❌ Currently outputs JSON, not JSONL; column is named `text` in schema but pipeline emits nested `segments[].text` — conversion not yet implemented | US-001 |
 | G-05 | P0 | PRD-001 | Pipeline must be resumable — crashed runs continue from checkpoint | ✅ `CheckpointManager` + `ResumeFilter` + `--resume` flag | US-002 |
 | G-06 | P1 | PRD-001 | Batch CLI: 10,000 filings < 2 hours on 32-core node | ❌ Not benchmarked | — |
@@ -264,10 +330,10 @@ Define success mathematically. "Make it better" is not an acceptance criterion.
   FinBERT's `do_lower_case=true` lowercases acronyms like `GDPR` and `EBITDA`; record results
   against DeBERTa before deciding on the production default). Contingency model:
   `answerdotai/ModernBERT-base` (max 8,192 tokens) if >5% of corpus segments exceed 390 words
-  after Option A deployment (OQ-RFC3-2); requires `transformers>=4.48.0`. **Pre-Option-A
-  baseline measured 2026-02-20: 2.75% of segments exceed 380 words (OQ-RFC3-1) — well below
-  the 5% ModernBERT trigger, but Option A must be deployed before corpus freeze.** Runs on
-  local GPU or cloud node (not yet specified).
+  after Option A deployment; requires `transformers>=4.48.0`. **Option A deployed 2026-02-24
+  (commit `0872eb3`, ADR-012). Full-corpus token profile (607K segments): p95=226 tokens —
+  ModernBERT contingency NOT triggered. DeBERTa-v3-base confirmed as production model.**
+  Runs on local GPU or cloud node (not yet specified).
 - **Orchestration:** [Airflow / Dagster — not yet selected]. Scheduled nightly retraining
   triggered when new EDGAR filings are available. No experiments run without scheduling.
 - **Experiment Tracking:** [MLflow / Weights & Biases — not yet selected]. All training runs
@@ -296,7 +362,7 @@ Define success mathematically. "Make it better" is not an acceptance criterion.
 | **Concept drift** | Output `risk_label` class distribution changes > 15% week-over-week | [TBD] |
 | **Parse failure rate** | DLQ size > 5% of input batch | `RUN_REPORT.md` surfaced today; alerting not wired |
 | **System health** | RAM usage (`ResourceTracker`), worker timeout rate, DLQ drain count | Per-run: `batch_summary_{run_id}.json` |
-| **Test regression** | Any of 660 collected tests fail in CI | [CI not yet configured] |
+| **Test regression** | Any of 715 collected tests fail in CI | [CI not yet configured] |
 
 ---
 
@@ -308,7 +374,7 @@ We do not proceed to the next phase without meeting the Exit Criteria.
 
 **Focus:** EDA, data cleaning, baseline modeling, pipeline infrastructure.
 
-**Deliverables:** `src/preprocessing/` pipeline, 660-test suite, `RUN_REPORT.md`, `StateManager`.
+**Deliverables:** `src/preprocessing/` pipeline, 715-test suite, `RUN_REPORT.md`, `StateManager`.
 
 **Exit Criteria:**
 
@@ -349,7 +415,7 @@ We do not proceed to the next phase without meeting the Exit Criteria.
 **Pipeline & Quality (G-13, testing)**
 - [ ] `--sic` / `--ticker` CLI filter flag implemented (G-13 / US-004)
 - [ ] Throughput benchmark: ≥ 100 filings processed end-to-end; < 2s/filing confirmed
-- [ ] Fix 2 test collection errors (`test_pipeline_global_workers.py`, `test_validator_fix.py`); all 660 tests pass
+- [ ] Fix 2 test collection errors (`test_pipeline_global_workers.py`, `test_validator_fix.py`); all 715 tests pass
 - [ ] Code unit-tested at > 80% line coverage
 
 - [ ] GO / NO-GO Decision: [Eng Lead]
@@ -386,7 +452,7 @@ We do not proceed to the next phase without meeting the Exit Criteria.
 | US-007 | **P1** | ML Engineer | Configure all pipeline settings via YAML + env vars | I can deploy to different environments | ✅ 16-module config system; Pydantic V2 + env-prefix | — | [→](stories/US-007_yaml_config.md) |
 | US-008 | **P0** | Data Scientist | Get sentiment, readability, and topic features **inline in the primary JSONL record** | Load one file and train immediately without complex joins | ❌ Features exist in separate scripts; not unified | G-14 | [→](stories/US-008_nlp_features.md) |
 | US-013 | **P1** | Data Scientist | See a class distribution report after every annotation run showing example counts per archetype | Know which archetypes are below the ≥ 500 minimum before training begins | ❌ Not implemented | G-16 | [→](stories/US-013_class_balance_reporting.md) |
-| US-015 | **P1** | Data Scientist | Have long segments split at natural sentence breaks to fit within the model token limit | No segment is silently truncated mid-sentence by the tokenizer | ❌ Not implemented — RFC-003 Option A is the implementation spec; 2.75% of corpus currently exceeds the 380-word ceiling | G-03 | [→](stories/US-015_token_aware_truncation.md) |
+| US-015 | **P1** | Data Scientist | Have long segments split at natural sentence breaks to fit within the model token limit | No segment is silently truncated mid-sentence by the tokenizer | ✅ **Implemented** (commit `0872eb3`): `max_segment_words: 380` in `_split_long_segments` + `_split_into_chunks`; full-corpus token p95=226; over-512 rate=0.45% (2,713 segments). ADR-012 documents the decision. | G-03 | [→](stories/US-015_token_aware_truncation.md) |
 | US-016 | **P1** | Data Scientist | Get a deterministic train / validation / test split that keeps each company entirely in one set | The model never sees the same company in both training and evaluation | ❌ Not implemented | G-16 | [→](stories/US-016_reproducible_splitting.md) |
 | US-028 | **P0** | Domain Expert | Review zero-shot predictions and save corrected labels to the annotation JSONL | The annotation corpus has human-verified labels before training begins | ❌ Not implemented (sourced from PRD-004; required by G-16 quality gate / QR-01) | G-16 | [→](stories/US-028_annotation_labeler_ui.md) |
 | US-029 | **P0** | ML Engineer | Have `process_batch()` emit `risk_label`, `sasb_topic`, `sasb_industry`, `confidence`, and `label_source` on every segment using a SASB-aware classifier | Every filing in the batch is labeled with industry-specific SASB context, not just a generic category | ❌ Not implemented | G-12 | [→](stories/US-029_sasb_aware_classifier_integration.md) |
@@ -509,32 +575,72 @@ Two distinct datasets flow through this pipeline. See §2.1 for full specificati
 
 The annotation corpus does not yet exist (G-16). The raw EDGAR corpus is present and processable today.
 
-### Batch Pipeline Output — Current (v1.0)
+### Batch Pipeline Output — Current (v2.1)
 
-What `process_batch()` actually emits today (one JSON file per filing):
+What `_build_output_data()` actually emits today (one JSON file per section per filing,
+written to `{run_dir}/{stem}_{section}_segmented.json`):
 
 ```json
 {
-  "version": "1.0",
-  "filing_name": "AAPL_10K_2021",
-  "sic_code": "3571",
-  "sic_name": "ELECTRONIC COMPUTERS",
-  "cik": "0000320193",
-  "ticker": "AAPL",
-  "company_name": "APPLE INC",
-  "form_type": "10-K",
-  "section_title": "Item 1A. Risk Factors",
-  "total_segments": 45,
+  "version": "2.1",
+  "filing_name": "AAPL_10K_2021.html",
+  "document_info": {
+    "company_name": "Apple Inc.",
+    "ticker": "AAPL",
+    "cik": "0000320193",
+    "sic_code": "3571",
+    "sic_name": "ELECTRONIC COMPUTERS",
+    "form_type": "10-K",
+    "fiscal_year": "2021",
+    "accession_number": "0000320193-21-000105",
+    "filed_as_of_date": "20211029",
+    "amendment_flag": false,
+    "entity_filer_category": "Large Accelerated Filer",
+    "ein": "94-2404110",
+    "dei": {}
+  },
+  "processing_metadata": {
+    "parser_version": "1.0",
+    "finbert_model": "ProsusAI/finbert",
+    "chunking_strategy": "sentence_level",
+    "max_tokens_per_chunk": 512
+  },
+  "section_metadata": {
+    "identifier": "part1item1a",
+    "title": "Item 1A. Risk Factors",
+    "cleaning_settings": {
+      "removed_html_tags": true,
+      "normalized_whitespace": true,
+      "removed_page_numbers": true,
+      "discarded_tables": true
+    },
+    "stats": {
+      "total_chunks": 118,
+      "num_tables": 0,
+      "raw_section_char_count": 66278,
+      "cleaned_section_char_count": 66278
+    }
+  },
+  "num_segments": 118,
+  "sentiment_analysis_enabled": false,
   "segments": [
-    {"index": 0, "text": "...", "word_count": 150, "char_count": 890}
-  ],
-  "metadata": {},
-  "num_segments": 45
+    {
+      "id": "1A_001",
+      "parent_subsection": "Macroeconomic and Industry Risks",
+      "text": "...",
+      "char_count": 499,
+      "word_count": 85
+    }
+  ]
 }
 ```
 
-> **Gap vs PRD-001:** PRD-001 specified `"version": "2.0"` and flat JSONL output.
-> Actual code emits `"version": "1.0"` nested JSON. Flat JSONL conversion not yet implemented (G-04 / US-001).
+> **Gap vs PRD-001:** PRD-001 specified flat JSONL output. Actual code emits nested JSON
+> (`version: "2.1"`). Flat JSONL conversion not yet implemented (G-04 / US-001).
+>
+> **OQ-8:** The `save_to_json()` path in `SegmentedRisks` emits `"version": "1.0"` in a
+> different nested schema (`document_info / chunks`). Both serialisers write correct
+> `char_count` as of 2026-02-24; schema version alignment is tracked in §11 Group 3 item 11.
 
 ### Batch Pipeline Output — Phase 2 Target (per-segment inference JSONL)
 
@@ -621,7 +727,7 @@ Stored as integer `label` (0–8) in training JSONL. Stored as string `risk_labe
 | **Security** | No secrets in plaintext; `.env` only | ✅ `.env.example` provided |
 | **Config** | YAML + env vars; Pydantic V2 validation | ✅ 16-module config system |
 | **Memory** | Memory-aware worker pool; adaptive timeout | ✅ `MemorySemaphore` |
-| **Testability** | ≥ 660 unit tests; 2 collection errors | ⚠️ Fix 2 collection errors |
+| **Testability** | ≥ 715 unit tests; 2 collection errors | ⚠️ Fix 2 collection errors |
 | **Provenance** | Stamped run dirs with git SHA | ✅ `{YYYYMMDD_HHMMSS}_preprocessing_{sha}/` |
 
 ### Runtime Dependencies
@@ -629,7 +735,8 @@ Stored as integer `label` (0–8) in training JSONL. Stored as string `risk_labe
 ```toml
 sec-parser==0.54.0              # PINNED — semantic filing parser
 sec-downloader>=0.10.0
-transformers>=4.48.0            # ModernBERT contingency requires >=4.48.0; also safe for DeBERTa-v3-base
+transformers>=4.35.0            # DeBERTa-v3-base; >=4.48.0 if ModernBERT contingency triggered
+sentencepiece>=0.1.99           # Required by DebertaV2TokenizerFast (token_profile.py)
 torch>=2.0.0
 sentence-transformers>=2.0.0    # all-MiniLM-L6-v2 for semantic segmentation
 spacy>=3.7.0                    # + en_core_web_sm download required
@@ -648,11 +755,11 @@ streamlit>=1.28.0
 |---|----------|-------|--------|
 | OQ-1 | Should HTML tables be extracted as markdown or discarded? | Data Eng | **Resolved** — PRD-003 Fixes 2A and 2B strip all `TableElement` and `TableOfContentsElement` nodes before segmentation. Tables are discarded; no table text reaches the classifier. See PRD-003 §4. |
 | OQ-2 | Acceptable text-loss threshold for inline XBRL filings? | Data Scientist | **Resolved** — G-02 sets the threshold at < 5% character loss: `(raw_item1a_char_count − Σ segment.char_count) / raw_item1a_char_count < 0.05`. `sec-parser==0.54.0` handles inline XBRL variants; the same threshold applies. |
-| OQ-3 | Fine-tuning: full segment text or truncate to 512 tokens? | ML Engineer | **Resolved** — truncate to 512 for FinBERT / DeBERTa-v3-base default; use ModernBERT-base (8,192 max) if > 5% of corpus segments exceed 390 words post-Option-A (OQ-RFC3-2). **Measured 2026-02-20 (OQ-RFC3-1): 2.75% pre-Option-A baseline — ModernBERT contingency not triggered; deploy RFC-003 Option A before re-measuring.** See research `2026-02-19_14-22-00_huggingface_classifier_input_formats.md` §2.3 and `2026-02-20_14-20-37_oq_rfc3_1_segment_word_count_distribution.md`. |
+| OQ-3 | Fine-tuning: full segment text or truncate to 512 tokens? | ML Engineer | **Resolved** — truncate to 512 for FinBERT / DeBERTa-v3-base. RFC-003 Option A deployed (ADR-012). **Full-corpus measurement 2026-02-24 (607,463 segments, run `20260223_182806`):** p50=58 · p95=**226** · p99=399 · max=3,886 tokens. Over-512: 2,713 (0.45%). Danger zone 360–512: 5,736 (0.94%). ModernBERT contingency NOT triggered (p95 ≪ 400 gate). `reports/token_profile.json`. See also `2026-02-20_14-20-37_oq_rfc3_1_segment_word_count_distribution.md`. |
 | OQ-4 | Output format: convert to JSONL for HuggingFace `datasets`? | ML Engineer | **Resolved** — JSONL confirmed; full schema (`text`, `label`, `sasb_topic`, `sasb_industry`, `label_source`, etc.) defined in §2.1.2 and §8. Tracked as G-04 / US-001. |
 | OQ-5 | Batch throughput: is 10K filings / 2 hrs achievable with transformer inference active? | ML Engineer | Open — cannot measure until classifier is wired in (G-12). Tracked in §11 Group 4 item 13 (throughput benchmark on ≥ 100 filings). Phase 3 hard requirement (G-06). |
 | OQ-6 | Integrate zero-shot / fine-tuned classifier into batch pipeline? | ML Engineer | **Resolved** — tracked as G-12 / US-029. Integration point is `scripts/feature_engineering/auto_label.py` (SASB-aware zero-shot, Stage A); fine-tuned model swap is Stage B (PRD-004). See §11 Group 2 item 9. |
-| OQ-7 | Fix 2 test collection errors (`test_pipeline_global_workers.py`, `test_validator_fix.py`) | Eng | Open — `ZeroDivisionError` in `test_pipeline_global_workers.py`; import error in `test_validator_fix.py`. Tracked in §11 Group 4 item 14. Blocking the "660 tests pass" coverage claim. |
+| OQ-7 | Fix 2 test collection errors (`test_pipeline_global_workers.py`, `test_validator_fix.py`) | Eng | Open — `ZeroDivisionError` in `test_pipeline_global_workers.py`; import error in `test_validator_fix.py`. Tracked in §11 Group 4 item 14. Blocking the "715 tests pass" coverage claim. |
 | OQ-8 | Schema version: align code output (`"version": "1.0"`) with CHANGELOG claim (`"2.0"`). | Eng | Open — tracked in §11 Group 3 item 11. Resolve before Phase 2 exit. |
 | OQ-9 | Which experiment tracking system: MLflow or W&B? | ML Engineer | Open — blocks Phase 2 exit gate (model checkpoint logging required). Decision needed before first fine-tune training run. |
 | OQ-10 | Which orchestration system: Airflow or Dagster for scheduled retraining? | Eng Lead | Open — blocks Phase 3. Not required for Phase 2. |
@@ -663,6 +770,7 @@ streamlit>=1.28.0
 | OQ-T2 | Should `sasb_topic` in the output record be a single string or a list? | ML Engineer | **Resolved** — single `str`. The `archetype_to_sasb.yaml` crosswalk returns the most specific SASB topic for the `(archetype, sasb_industry)` pair; first match wins. Defined in §8 Phase 2 target schema. |
 | OQ-T3 | The `macro` archetype (interest rates, FX, inflation) has no single clean SASB topic. Should `sasb_topic` be `"Other_General_Risk"` or `null` for `macro`? | Data Scientist | Open — blocks `archetype_to_sasb.yaml` default entry for `macro`. Recommendation: use `"Macro_Environment"` as a project-defined label (not official SASB) rather than `null`, to prevent downstream null-handling complexity. Decision needed in US-030. |
 | OQ-T4 | Should the annotation UI (US-028) present only the industry's SASB topics as label options, or also allow `"Other_General_Risk"` as a fallback? | Product | Open — blocks annotation UI design in US-028. Suggested: show industry SASB topics + `"other"` archetype as escape hatch; do not expose `"Other_General_Risk"` as a separate choice to avoid label proliferation. |
+| OQ-PRD-1 | **Section contamination + within-Item-1A boilerplate (two-cause problem).** Phase A (2026-02-24) found two distinct boilerplate causes in the ≤100-word population (52.7% duplicate rate): **(a) Dispatch contamination** — 81.5% of corpus is non-`part1item1a` content: `part2item8` (198,860 segs), `part2item7` (142,142), `part1item1` (108,056), `part2item7a` (37,957), `part1item1c` (5,296), `part1item1b` (2,979). Fix: dispatch config filter to `part1item1a` only. **(b) Within-Item-1A boilerplate** — `_is_non_risk_content` (`segmenter.py:337-368`) has only 5 surface patterns and misses auditor opinion text (655 repeats), ToC navigation, financial statement headers, and "REPORT OF MANAGEMENT RESPONSIBILITIES" (5,241 segs, 13.3% unique). Fix: strengthen `_is_non_risk_content` heuristics or add upstream boundary correction. **Decision needed for (a):** configurable dispatch list vs. single-section enforcement for annotation runs. Both (a) and (b) must be addressed before annotation corpus construction. S1–S4 length-based strategies are obsolete (sub-20-word segments = 0.01% of full corpus). See `reports/short_segment_analysis.json`, `reports/short_segment_patterns.tsv`, and segment strategy research §5 S5. | Data Eng / Eng Lead |
 
 ---
 
@@ -679,7 +787,24 @@ Items are ordered by dependency — each group unblocks the next.
 
 3. **`archetype_to_sasb.yaml`** (G-15) — create `src/analysis/taxonomies/archetype_to_sasb.yaml` with per-industry mappings and a `default` entry for every archetype. Resolve OQ-T3 (`macro` archetype mapping) before finalising. Schema defined in research §4.2.
 
-4. **Segmenter word-count floor** (G-03) — update `preprocessing.min_segment_length` config from 10 → 20 words in `configs/preprocessing.yaml`. After updating, re-run the batch pipeline on the full corpus to produce segments that satisfy the new floor. The test split (item 6) must be drawn from this re-run — not from existing output produced with the old floor.
+4. **Section contamination fix — filter to `part1item1a` only** (OQ-PRD-1, new prerequisite)
+   — the current run `20260223_182806` contains 81.5% non-target-section content (MD&A,
+   Financial Statements, Business Description). Before items 5–8 can proceed, a clean
+   `part1item1a`-only corpus must be produced. Two implementation options:
+   - **(a) Config-level dispatch filter** — add a `section_filter: [part1item1a]` option to
+     the pipeline dispatch config so future runs only process Item 1A files. Re-run the batch.
+   - **(b) Post-hoc filter script** — add a script that copies only `*_part1item1a_segmented.json`
+     files from the existing run into a new target directory. Faster but doesn't fix the
+     pipeline for future runs.
+   Option (a) is preferred; the re-run must complete before item 5 (materiality audit).
+   **True Item 1A corpus: 112,173 segments across 4,423 filings** (from run `20260223_182806`
+   `part1item1a` files). This is the baseline for all annotation corpus sizing calculations.
+
+4a. **Segmenter word-count floor** (G-03) — `min_segment_words` is already present in
+   `PreprocessingConfig` and `_merge_short_segments` is live. RFC-003 Option A
+   (`max_segment_words: 380`) is **deployed** (commit `0872eb3`, ADR-012). No additional
+   floor config changes needed. After the item 4 section filter re-run, verify
+   `over_limit_word_rate = 0.0` via `check_word_count_distribution.py --fail-above 0.0`.
 
 5. **Materiality retention audit** — run a "Keyword Survival" check confirming that critical risk terms (e.g., "Default", "Litigation", "GDPR", "Ransomware") survive `TextCleaner` in the fresh batch output from item 4. If any term is silently stripped, fix `TextCleaner` and re-run before proceeding. **Must complete before item 6** — contaminated segments in the test split cannot be recovered after freezing.
 
@@ -707,19 +832,16 @@ Items are ordered by dependency — each group unblocks the next.
 
 12. **CLI filter flag** (G-13) — implement `--sic` / `--ticker` filter on `run_preprocessing_pipeline.py` for sector-specific dataset builds (US-004).
 
-12a. **Token safety — RFC-003 Option A** (G-03 / US-015) — implement `max_segment_words: 380`
-   word-count ceiling in `RiskSegmenter._split_long_segments` and `_split_into_chunks` per
-   RFC-003 Option A spec (`docs/architecture/rfc/RFC-003_segment_token_length_enforcement.md`).
-   **Must land before item 6 (test split freeze)**: RFC-003 §Consequences warns that any
-   corpus produced under Option A may resplit at different boundaries under Option B; the
-   annotation test split must be derived from the final segmentation strategy. After deploying,
-   re-run `check_word_count_distribution.py --fail-above 0.0` to confirm the gatekeeper passes,
-   then re-run OQ-RFC3-2 (verify < 5% exceed 390 words on the full corpus, confirming
-   ModernBERT contingency is not needed).
+12a. ~~**Token safety — RFC-003 Option A**~~ ✅ **DONE** (commit `0872eb3`, ADR-012):
+   `max_segment_words: 380` implemented in `_split_long_segments` + `_split_into_chunks`.
+   Full-corpus token profile: p95=226 · p99=399 · over-512=0.45%. ModernBERT contingency
+   not triggered. `check_word_count_distribution.py --fail-above 0.0` should pass on a
+   fresh `part1item1a`-only run (pending item 4 section filter). No further action on
+   RFC-003 Option A required.
 
 13. **Throughput benchmark** — run end-to-end on ≥ 100 filings with Stage A classifier active; confirm < 2s/filing. Required before Phase 3 (G-06 / 10K filings in < 2 hrs).
 
-14. **Fix 2 test collection errors** — resolve `ZeroDivisionError` in `test_pipeline_global_workers.py` and import error in `test_validator_fix.py`; all 660 tests pass.
+14. **Fix 2 test collection errors** — resolve `ZeroDivisionError` in `test_pipeline_global_workers.py` and import error in `test_validator_fix.py`; all 715 tests pass.
 
 15. **Line coverage** — unit test coverage > 80%; new taxonomy, annotation pipeline, and classifier integration code included.
 

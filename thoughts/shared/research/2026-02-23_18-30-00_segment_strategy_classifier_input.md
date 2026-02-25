@@ -5,10 +5,11 @@ time: "18:30:00"
 author: beth
 git_commit: cd7dc5a
 branch: main
-status: UPPER_BOUND_IMPLEMENTED
+status: PHASE_A_COMPLETE_FRAME_SHIFT
 last_updated: 2026-02-24
 update_git_commit: 0872eb3
 phase_a_complete: true
+frame_shift: boilerplate_contamination_not_length
 related_research:
   - 2026-02-19_14-22-00_huggingface_classifier_input_formats.md
   - 2026-02-23_17-35_data_quality_validation.md
@@ -24,13 +25,15 @@ and documented in ADR-012. `max_segment_words: 380` is now the active ceiling in
 `RiskSegmenter._split_long_segments`; the char gate (`max_segment_length`) remains
 dormant at `999999999999`. See §2 for corrected full-corpus numbers.
 
-**Lower-bound problem (<20 words, S1–S4 strategies) — Phase A COMPLETE (2026-02-24).**
+**Lower-bound problem — Phase A COMPLETE; problem frame revised (2026-02-24).**
 Phase A root-cause profiling executed on full corpus (607,463 segments / 4,423 filings,
-run `20260223_182806`). Key findings: the 10-19 word bracket contains only 39 segments
-(0.01%) at full scale — the original 22.5% rate was an artefact of the 1,468-segment
-sample. The meaningful lower-bound population is ≤100 words (499,089 segments, 82.2%).
-Parent_subsection fill rate: 100%. Token p95: 226 (§9.3 gate PASS). See §7 Phase A
-results for full detail. Phases B and C are not yet executed. RQ-2 through RQ-5 remain open.
+run `20260223_182806`). The original S1–S4 framing (merge/filter sub-20-word segments) is
+**obsolete**: sub-20-word segments number only 39 (0.01%) at full scale; `_merge_short_segments`
+already handles them. The real problem is **boilerplate content contamination**: 52.7% of
+≤100-word segments (499,089 total, 82.2% of corpus) are duplicate non-risk-factor text —
+auditor language, financial statement headers, cross-section navigation — leaking through
+an under-powered `_is_non_risk_content` filter. The §5 strategies and §6 rubric have been
+revised accordingly. See §7 Phase A results and §2 Key Observation 5 for detail.
 
 **Implementation note — S2 already exists:** `RiskSegmenter._merge_short_segments`
 (added in commit `3ef72af`, `src/preprocessing/segmenter.py:300–328`) is already a
@@ -116,10 +119,10 @@ Over-limit (>380 words): **3,266 / 607,463 = 0.54%**. Gate now active: `max_segm
 
 ### Key observations
 
-1. **The short-segment problem dominates** (confirmed): In the small-sample run,
-   22.5% of segments fail the 20-word gate. This pattern is expected to hold at full
-   scale (full-corpus bucket resolution is too coarse to confirm exact %, but `min=6`
-   confirms sub-10-word segments exist). Lower-bound work (S1–S4) is still the priority.
+1. ~~**The short-segment problem dominates**~~ **REVISED (2026-02-24):** The 22.5%
+   sub-20-word rate was a small-sample artefact. At full corpus scale the sub-20-word
+   population is **39 segments (0.01%)**. `_merge_short_segments` already handles these.
+   The length-based S1–S4 strategy frame is obsolete; see Observation 5.
 
 2. ~~**The 512-token ceiling is not yet a practical problem**~~
    **CORRECTED (2026-02-24):** At full corpus scale, **3,266 segments (0.54%) exceed
@@ -133,6 +136,23 @@ Over-limit (>380 words): **3,266 / 607,463 = 0.54%**. Gate now active: `max_segm
 4. **ModernBERT's 8,192-token window adds no practical benefit**: p95=182 words
    at full scale; 0.54% exceed 380 words, well below the 5% contingency trigger
    (PRD-002 §4.1 OQ-3). DeBERTa-v3-base confirmed (ADR-008, ADR-012).
+
+5. **NEW (2026-02-24) — The real problem is boilerplate contamination, not segment
+   length.** Phase A descriptive analysis (`reports/short_segment_analysis.json`,
+   `reports/short_segment_patterns.tsv`) shows:
+   - **52.7% duplicate rate** in the ≤100-word population (263,064 / 499,089 rows share
+     a text preview with at least one other segment)
+   - Uniqueness *rises* with word count: 26.8% unique at 1-10 words → 53.7% at 76-100
+     words — shorter segments are disproportionately boilerplate
+   - Top contamination sources: auditor opinion language ("projections of any evaluation
+     of effectiveness…", 655 repeats), "Table of Contents" navigation text, financial
+     statement headers ("Notes to Consolidated Financial Statements", 73–93 repeats per
+     variant), and **"REPORT OF MANAGEMENT RESPONSIBILITIES"** (5,241 segments, 13.3% unique)
+   - `_is_non_risk_content` (`segmenter.py:337-368`) filters only 5 surface patterns
+     and misses all of the above
+   - The contamination suggests section boundary over-capture upstream (Stage 3 section
+     extractor pulling adjacent non-Item-1A content); the segmenter cannot distinguish
+     these without either stronger heuristics or upstream boundary correction
 
 ---
 
@@ -255,65 +275,79 @@ minimum is higher (25-30 words) or lower (15 words for highly specific risk lang
 
 ## 5. Strategies to Evaluate
 
-Four candidate strategies, evaluated against a shared rubric in §6:
+> **2026-02-24 Frame Revision:** S1 and S2 were designed for a sub-20-word length problem
+> that does not exist at full corpus scale (0.01%). S2 is already implemented and working.
+> The operative problem is **boilerplate content contamination** in the ≤100-word population.
+> Strategies are re-assessed below in light of Phase A findings. A new strategy (S5) is
+> added to address the actual problem. S3 remains valid as a signal enrichment mechanism.
 
-### Strategy S1 — Filter + hard merge (simplest)
-1. Remove segments where `word_count < 20` (drop or quarantine)
-2. If removal produces a filing with 0 segments → FAIL
-3. Accept the corpus reduction
+### ~~Strategy S1 — Filter + hard merge~~ (DEPRIORITISED)
+> **Status:** Near-vacuous at full scale. Affects only 39 segments (0.01%). The word-count
+> floor gate already exists in `health_check.yaml`. No implementation work needed.
 
-**Pros:** Zero implementation risk; existing gates enforce it
-**Cons:** Loses 22.5% of corpus (331 segments); may drop genuinely valuable brief statements;
-reduces training data below PRD-004's per-class minimums
+### ~~Strategy S2 — Greedy forward-merge~~ (ALREADY IMPLEMENTED)
+> **Status:** `RiskSegmenter._merge_short_segments` (`segmenter.py:307-335`, commit `3ef72af`)
+> implements S2 exactly. It is running in production and handling the 39 sub-20-word
+> segments. No further S2 work is needed. Evaluation of its behaviour is complete.
 
-### Strategy S2 — Greedy forward-merge (recommended to investigate first)
-1. Scan segments in order within each filing/subsection boundary
-2. Accumulate a "buffer" until combined `word_count ≥ 20`
-3. Emit merged segment; reset buffer
-4. At subsection boundary, emit whatever is in the buffer regardless of length
-
-**Pros:** Preserves all text; deterministic; respects subsection context
-**Cons:** Merged segments may be multi-topic (reduces label purity); increases average
-segment length, shifting the distribution toward the 50-99 word bracket
-
-### Strategy S3 — Context prefix injection (non-destructive)
-1. Keep all segments as-is (including 10-19 word segments)
+### Strategy S3 — Context prefix injection (still valid; scope narrowed)
+1. Keep all segments as-is
 2. Prepend `[{parent_subsection}]` to each segment text at tokenization time
-3. Lower the effective word-count gate for segments with strong subsection context:
-   subsection-prefixed 10-word segment may be equivalent to a bare 15-word segment
 
-**Pros:** Non-destructive; no corpus reshaping; subsection titles add
-free classification signal
-**Cons:** Requires tokenizer changes; subsection titles not always available
-(`parent_subsection` is `Optional[str]` in `RiskSegment`); doesn't resolve the
-fundamental brevity problem for segments without a subsection parent
+**Revised scope:** S3 is no longer needed to rescue short segments (S2 handles them).
+Its remaining value is **classifier signal enrichment** for segments in the 20-50 word
+range where the subsection title adds meaningful topical context. `parent_subsection`
+fill rate = 100%, so the "not always available" con is eliminated.
 
-### Strategy S4 — Hybrid: filter headers + merge orphans + prefix body
-1. Identify segments that are subsection headers (node_type=`TitleElement`, length<40 chars)
-   → repurpose as context, do NOT include in training data
-2. Merge remaining sub-20-word segments with forward neighbour using S2 greedy logic
-3. Prepend subsection title prefix to all segments with a known `parent_subsection`
+**Pros:** Non-destructive; free classification signal; fill rate obstacle removed
+**Cons:** Adds tokens (typically 4-8) to every segment; requires tokenizer-time injection;
+does not address boilerplate contamination
 
-**Pros:** Addresses root causes differently per segment type; likely best data quality
-**Cons:** Most complex; requires node-type metadata to survive into the output schema
-(currently not persisted in `RiskSegment`)
+### ~~Strategy S4 — Hybrid filter + merge + prefix~~ (PARTIALLY SUPERSEDED)
+> **Status:** The merge and prefix components are covered by S2 (done) and S3 (narrowed).
+> The header-filter component (step 1) is the only novel element, and it requires
+> `node_type` metadata that is not persisted in `RiskSegment`. This is now subsumed by S5.
+
+### Strategy S5 — Boilerplate content filter (NEW — addresses actual problem)
+1. Expand `_is_non_risk_content` (`segmenter.py:337-368`) with pattern-based detection
+   informed by `reports/short_segment_patterns.tsv` (top-500 repeated patterns)
+2. Target contamination classes identified in Phase A:
+   - Auditor opinion fragments ("projections of any evaluation of effectiveness…")
+   - Financial statement navigation ("Table of Contents…Notes to Consolidated…")
+   - Adjacent-section headers ("REPORT OF MANAGEMENT RESPONSIBILITIES", Item 1B boilerplate)
+   - Cross-reference-only sentences ("See Part II, Item 8")
+3. Investigate upstream source: determine which `section_identifier` values in the
+   processed JSON files produce the contaminated segments — if the over-capture is in
+   Stage 3 (section extractor), fix belongs there rather than in the segmenter
+
+**Pros:** Addresses root cause directly; pattern list is data-driven from Phase A;
+does not require schema changes; reduces corpus duplication rate
+**Cons:** Pattern matching may have false positives (genuine risk statements that happen
+to use auditor-adjacent phrasing); upstream fix in Stage 3 is cleaner but requires
+separate investigation (OQ-6)
 
 ---
 
 ## 6. Evaluation Rubric
 
+> **2026-02-24 Revision:** Rubric updated to reflect the Phase A frame shift from
+> length-based to content-quality-based criteria. Struck-through rows are obsolete.
+
 Each strategy must be measured against these criteria. Investigation should produce
 a table for each strategy:
 
-| Criterion | Target | Measurement |
-|-----------|--------|-------------|
-| Segments remaining after strategy | ≥ 80% retention | count |
-| min_word_count_rate post-strategy | 0.0 | `HealthCheckValidator.check_run()` |
-| Per-class example count ≥ 500 (PRD-004 gate) | all 9 classes | post-annotation label counts |
-| Merged segment multi-topic rate | < 5% | manual spot-check of 50 random merged segments |
-| 95th pct token count under DeBERTa tokenizer | ≤ 400 tokens | actual tokenization |
-| QR-03 routing rate on short segments (FinBERT zero-shot) | < 10% routed to `other` for known-label segments | inference sweep |
-| `parent_subsection` coverage | ≥ 90% segments with known subsection | schema check |
+| Criterion | Target | Measurement | Status |
+|-----------|--------|-------------|--------|
+| Segments remaining after boilerplate filter | ≥ 60% of pre-filter count | count post-S5 | pending |
+| min_word_count_rate post-strategy | 0.0 | `HealthCheckValidator.check_run()` | S2 live; 0.0 expected |
+| Per-class example count ≥ 500 (PRD-004 gate) | all 9 classes | post-annotation label counts | pending annotation |
+| ~~Merged segment multi-topic rate < 5%~~ | ~~< 5%~~ | ~~manual spot-check of 50 merged~~ | **DROPPED** — merging affects 0.01% of corpus; criterion is vacuous |
+| **Boilerplate leak rate** | < 5% of surviving segments | match against `short_segment_patterns.tsv` top-100 patterns | pending S5 |
+| **Text deduplication rate** | < 30% duplicate `text_preview` across corpus | rerun `analyse_short_segments.py` post-S5 | currently 52.7% — needs reduction |
+| **Section source validation** | 0% of segments with `parent_subsection` matching non-Item-1A titles | group by `parent_subsection` in processed JSON | pending OQ-6 investigation |
+| 95th pct token count under DeBERTa tokenizer | ≤ 400 tokens | `reports/token_profile.json` | **PASS — p95 = 226 tokens** |
+| QR-03 routing rate on short segments (FinBERT zero-shot) | < 10% routed to `other` | inference sweep | pending Phase C |
+| ~~`parent_subsection` coverage ≥ 90%~~ | ~~≥ 90%~~ | ~~schema check~~ | **MET** — 100% fill rate; criterion retired |
 
 ---
 
@@ -372,35 +406,53 @@ a table for each strategy:
 **Actual output:** Token histogram delivered. The 3-row manual categorisation table requires
 human review of `reports/short_segment_sample.tsv` (fill `category` column).
 
-### Phase B — Strategy prototyping (1-2 sessions)
+### Phase B — Boilerplate contamination investigation + S5 filter (1-2 sessions)
 
-> **2026-02-24 update — two pre-conditions are already met:**
->
-> 1. **S2 greedy merge already implemented.** `RiskSegmenter._merge_short_segments`
->    (`segmenter.py:300–328`, commit `3ef72af`) is a forward greedy merge that matches
->    Strategy S2 exactly. It runs inside the segmenter pipeline, not as a separate
->    post-segmentation transform. The `segment_transform.py` approach below is now
->    **superseded** for S2; evaluation should use the existing implementation.
->
-> 2. **`min_segment_words` already in `PreprocessingConfig`.** The field was present
->    before this session (`src/config/preprocessing.py:80–82`). `max_segment_words: 380`
->    was also added (commit `0872eb3`, ADR-012).
->
-> Phase B focus should shift to: (a) confirming S2's behavior against the Phase A root
-> cause findings (OQ-1/OQ-2/OQ-3), and (b) prototyping S3 (`InjectSubsectionPrefix`)
-> and S4 (header-filter + prefix) which are NOT yet implemented.
+> **2026-02-24 full reframe:** Phase B is no longer about S3/S4 prototyping for
+> sub-20-word segments. S2 is implemented and working. S3 is a valid follow-on for
+> signal enrichment but is not blocking. The Phase B priority is now diagnosing and
+> filtering the boilerplate contamination identified in Phase A.
 
-**Revised target:** Evaluate existing S2 (`_merge_short_segments`) against the Phase A
-findings; prototype S3 and S4 as new transforms only if S2 is insufficient.
+**Task B1 — Section source diagnosis (OQ-6)**
 
-**If new transforms are needed:**
-- New file: `src/preprocessing/segment_transform.py` — `InjectSubsectionPrefix` (S3)
-  and hybrid header-filter logic (S4 step 1)
-- `RiskSegment` model — adding node_type to the schema is a separate ADR (out of scope here)
+Determine which `section_identifier` values in the processed batch produce the
+contaminated segments. The hypothesis is that non-Item-1A section identifiers
+(`part1item1b`, `part2item7`, `part2item8`, etc.) are being included in runs that
+should only process Item 1A risk factors, or that Item 1A extraction boundaries
+are drifting into adjacent sections.
+
+```bash
+# Group segments by section_identifier via filing filename stem
+# e.g. WFC_10K_2025_part1item1b_segmented.json → section = part1item1b
+# Count and dedupe-rate per section type
+```
+
+If contamination is concentrated in specific `section_identifier` values → fix belongs
+in the pipeline dispatch config (which section types are included in a given run),
+not in `_is_non_risk_content`.
+
+If contamination cuts across all section types → fix belongs in `_is_non_risk_content`.
+
+**Task B2 — Expand `_is_non_risk_content` (S5, if B1 confirms in-segmenter fix)**
+
+Extend `segmenter.py:337-368` with pattern-based detection against Phase A findings:
+- Auditor opinion fragments (`reports/short_segment_patterns.tsv` rows 1–10)
+- Financial statement navigation ("Table of Contents", "Notes to Consolidated")
+- Adjacent-section headers whose text matches known non-risk titles
+- Cross-reference-only fragments (existing `_CROSS_REF_DROP_PAT` — extend similarly)
+
+Patterns must be length-gated (e.g. `len(text.split()) < N`) to avoid false positives
+on genuine risk paragraphs that happen to reference auditor standards.
+
+**Task B3 — S3 context prefix injection (signal enrichment, lower priority)**
+
+If B1/B2 raise corpus quality to acceptable dedup rate (<30%), prototype
+`InjectSubsectionPrefix` as a tokenizer-time wrapper. `parent_subsection` = 100%
+filled so no no-op cases. This is not blocking for Phase C.
 
 **Do NOT modify:**
-- `src/preprocessing/segmenter.py` — S2 runs here; evaluate it as-is before changing it
-- `RiskSegment` model (node_type requires ADR and schema migration)
+- `RiskSegment` model (node_type requires ADR and schema migration — out of scope)
+- `_merge_short_segments` (S2 — working correctly, do not touch)
 
 ### Phase C — Validation sweep (1 session)
 
@@ -432,17 +484,22 @@ findings; prototype S3 and S4 as new transforms only if S2 is insufficient.
 ## 9. Success Criteria
 
 The winning strategy is selected when all of the following hold on the
-`20260223_172129` run (or a fresh equivalent run):
+`20260223_182806` run (or a fresh equivalent run post-S5):
 
-1. `min_word_count_rate = 0.0` on all section files (blocking gate passes)
-2. Segment retention ≥ 80% (i.e., ≤ 294 of the 331 short segments are merged,
-   not dropped)
-3. 95th percentile token count ≤ 400 under `DebertaV2TokenizerFast`
-4. Manual review of 50 post-merge segments: multi-topic rate < 5%
-5. No new `over_limit_word_rate` violations introduced by merging — **now enforced
-   automatically**: `max_segment_words: 380` in `_split_long_segments` (RFC-003 Option A,
-   ADR-012) splits any merged segment that exceeds 380 words. This criterion becomes a
-   post-run check that over_limit_word_rate = 0.0 in the health check output.
+1. `min_word_count_rate = 0.0` on all section files — **already met** (S2 running)
+2. ~~Segment retention ≥ 80% of 331 short segments~~ **REVISED:** Corpus retention
+   ≥ 60% of pre-filter segment count after S5 boilerplate filtering. Framed as
+   retention of valid content, not preservation of short segments.
+3. 95th percentile token count ≤ 400 under `DebertaV2TokenizerFast` — **already met**
+   (p95 = 226 tokens, `reports/token_profile.json`)
+4. ~~Manual review of 50 post-merge segments: multi-topic rate < 5%~~ **DROPPED.**
+   Merging affects 0.01% of corpus. Replaced by: boilerplate leak rate < 5% on a
+   random sample of 100 post-S5 segments (manual spot-check against Phase A pattern list)
+5. `over_limit_word_rate = 0.0` in health check — enforced automatically by
+   `max_segment_words: 380` in `_split_long_segments` (RFC-003 Option A, ADR-012)
+6. **NEW:** Text deduplication rate < 30% in the post-S5 ≤100-word population
+   (currently 52.7%; target requires removing the auditor / navigation boilerplate
+   classes identified in Phase A)
 
 ---
 
@@ -451,7 +508,9 @@ The winning strategy is selected when all of the following hold on the
 | ID | Question | Blocker for |
 |----|----------|-------------|
 | ~~OQ-1~~ | ~~What fraction of 10-19 word segments have `parent_subsection = None`?~~ **CLOSED 2026-02-24**: fill rate = **100%** across all 607,463 segments. S3/S4 context injection is viable for the entire corpus. | ~~S3, S4~~ |
-| OQ-2 | Does greedy forward-merge respect filing order correctly in multi-section output files (which aggregate across many filings)? Merge must not cross filing boundaries. | S2, S4 |
-| OQ-3 | Is `chunk_id` format ("1A_001") stable enough to reconstruct filing provenance post-merge? A merged segment needs a composite `chunk_id` to remain traceable. | S2, S4 |
+| ~~OQ-2~~ | ~~Does greedy forward-merge respect filing order correctly?~~ **CLOSED 2026-02-24**: S2 is implemented and running in production. Each JSON file is a single filing; merge cannot cross filing boundaries by construction. | ~~S2~~ |
+| ~~OQ-3~~ | ~~Is `chunk_id` format stable enough post-merge?~~ **DEPRIORITISED**: S2 merges within the segmenter before `chunk_id` is assigned (`segment_extracted_section` assigns IDs after `segment_risks` returns). Merged segments receive a single sequential ID; no composite ID is needed. | ~~S2~~ |
 | OQ-4 | Are the 6 over-char (≥2000) segments structural artefacts (table cells, footnotes) or genuine long risk paragraphs that should be split? At full corpus scale, max word count is 3,232 — confirming the long tail is real. `max_segment_words: 380` will split these; the char gate remains dormant. | All strategies |
-| OQ-5 | At what word count does FinBERT zero-shot confidence reliably exceed 0.70 for known-topic segments? This empirically sets the actual minimum, which may differ from the theoretical 20-word gate. | S1 (sets the filter threshold) |
+| OQ-5 | At what word count does FinBERT zero-shot confidence reliably exceed 0.70 for known-topic segments? This empirically sets the actual minimum, which may differ from the theoretical 20-word gate. | Phase C |
+| OQ-6 | **NEW** — Which `section_identifier` values are the primary source of boilerplate contamination? Is the over-capture happening in Stage 3 section extraction (wrong section boundaries) or in the run dispatch config (wrong sections included)? The answer determines whether S5 fix belongs in `_is_non_risk_content` or upstream. | S5, Phase B |
+| OQ-7 | **NEW** — After applying S5 boilerplate filter, does the per-class example count still meet PRD-004's ≥500 target for all 9 risk categories? Filtering 52.7% of the ≤100-word population could reduce annotation-eligible segments significantly. | S5 retention gate |

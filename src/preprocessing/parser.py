@@ -440,6 +440,9 @@ class SECFilingParser:
             'element_types': element_types,
             'html_size': len(html_content),
             'file_size_bytes': len(html_content),  # Alias for health check validation
+            'text_char_count': sum(
+                len(str(e.text)) if hasattr(e, 'text') else 0 for e in elements
+            ),
             'sic_code': sic_code,
             'sic_name': sic_name,
             'company_name': company_name,

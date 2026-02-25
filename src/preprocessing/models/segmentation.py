@@ -59,6 +59,9 @@ class SegmentedRisks(BaseModel):
     amendment_flag: Optional[bool] = None
     entity_filer_category: Optional[str] = None
     ein: Optional[str] = None
+    # Section-level char counts for G-02 loss measurement
+    raw_section_char_count: Optional[int] = None      # len(extracted.text) pre-TextCleaner
+    cleaned_section_char_count: Optional[int] = None  # len(cleaned_text) post-TextCleaner
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -144,6 +147,8 @@ class SegmentedRisks(BaseModel):
                 'stats': {
                     'total_chunks': self.total_segments,
                     'num_tables': num_tables,
+                    'raw_section_char_count':     self.raw_section_char_count,
+                    'cleaned_section_char_count': self.cleaned_section_char_count,
                 },
             },
             'chunks': [
@@ -208,6 +213,8 @@ class SegmentedRisks(BaseModel):
                 section_title=sm.get('title'),
                 section_identifier=sm.get('identifier'),
                 total_segments=stats.get('total_chunks', len(segments)),
+                raw_section_char_count=stats.get('raw_section_char_count'),
+                cleaned_section_char_count=stats.get('cleaned_section_char_count'),
                 # Restore dei from document_info so metadata.get('dei') works
                 # after a save→load round-trip (dei is not in processing_metadata).
                 metadata={'dei': di.get('dei', {})},
@@ -227,7 +234,7 @@ class SegmentedRisks(BaseModel):
                 parent_subsection=s.get('parent_subsection'),
                 text=s.get('text', ''),
                 word_count=s.get('word_count', 0),
-                char_count=s.get('char_count', 0),
+                char_count=s.get('char_count') or s.get('length', 0),
             ))
         data['segments'] = segments
         return SegmentedRisks.model_validate(data)

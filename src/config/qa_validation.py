@@ -843,7 +843,7 @@ class HealthCheckValidator:
         for data in file_data:
             for seg in self._get_segments(data):
                 total_segments += 1
-                length = seg.get("length", len(seg.get("text", "")))
+                length = seg.get("char_count", len(seg.get("text", "")))
                 word_count = seg.get("word_count", 0)
                 if length == 0:
                     empty_segments += 1

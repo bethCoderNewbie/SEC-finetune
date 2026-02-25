@@ -234,6 +234,8 @@ def _process_filing_with_global_workers(
                 deep_clean=config.deep_clean
             )
         logger.info("Cleaned text: %d chars", len(cleaned_text))
+        raw_chars     = len(extracted.text)
+        cleaned_chars = len(cleaned_text)
 
         if intermediates_dir and ext_dir is not None:
             cleaned_section = extracted.model_copy(update={
@@ -253,6 +255,8 @@ def _process_filing_with_global_workers(
                 cleaned_text=cleaned_text
             )
         logger.info("Section '%s': created %d segments", section_id, len(result))
+        result.raw_section_char_count     = raw_chars
+        result.cleaned_section_char_count = cleaned_chars
 
         # Save segmented output
         if output_dir:
