@@ -3,6 +3,7 @@ Segmenter module for SEC 10-K Risk Factors
 Splits the Risk Factors section into individual risk segments
 """
 
+import bisect
 import re
 import json
 import logging
@@ -93,7 +94,15 @@ class RiskSegmenter:
         self.semantic_model = None
         if SENTENCE_TRANSFORMERS_AVAILABLE:
             try:
-                self.semantic_model = SentenceTransformer(semantic_model_name)
+                import multiprocessing
+                import torch
+                # Use CUDA only in the main process (sequential / --workers 1 mode).
+                # Worker subprocesses share the same physical GPU concurrently, which
+                # causes cudaErrorLaunchFailure. CPU is safe for parallel workers.
+                _in_worker = multiprocessing.current_process().name != 'MainProcess'
+                _device = "cuda" if (torch.cuda.is_available() and not _in_worker) else "cpu"
+                logger.debug("SentenceTransformer device: %s (worker=%s)", _device, _in_worker)
+                self.semantic_model = SentenceTransformer(semantic_model_name, device=_device)
             except (OSError, ValueError, RuntimeError) as e:
                 logger.warning(
                     "Could not load SentenceTransformer model '%s'. "
@@ -179,14 +188,29 @@ class RiskSegmenter:
         node_subsections = getattr(extracted_section, 'node_subsections', [])
         section_title = getattr(extracted_section, 'title', None)
         element_ancestors = getattr(extracted_section, 'element_ancestors', {})
+
+        # Pre-build position indices once per document — O(M·N) — rather than
+        # repeating full_text.find() inside per-segment loops — O(S·M·N).
+        # For large filings (DELL: ~2 000 segs) this cut a 63× regression.
+        _sub_pos, _sub_val = self._build_pos_index(text_to_segment, node_subsections)
+        _anc_pos, _anc_val = self._build_pos_index(
+            text_to_segment, element_ancestors.items()
+        )
+        _sub_fallback = node_subsections[-1][1] if node_subsections else None
+        _anc_fallback = list(element_ancestors.values())[-1] if element_ancestors else []
+        chunk_starts = [text_to_segment.find(t[:50]) for t in segment_texts]
+
         segments = [
             RiskSegment(
                 chunk_id=f"1A_{i+1:03d}",
                 parent_subsection=(
-                    self._resolve_subsection(text, text_to_segment, node_subsections)
-                    or section_title
+                    self._pos_lookup(
+                        chunk_starts[i], _sub_pos, _sub_val, None, _sub_fallback
+                    ) or section_title
                 ),
-                ancestors=self._resolve_ancestors(text, text_to_segment, element_ancestors),
+                ancestors=self._pos_lookup(
+                    chunk_starts[i], _anc_pos, _anc_val, [], _anc_fallback
+                ),
                 text=text,
             )
             for i, text in enumerate(segment_texts)
@@ -368,6 +392,41 @@ class RiskSegmenter:
             return True
 
         return False
+
+    @staticmethod
+    def _build_pos_index(full_text: str, pairs) -> tuple:
+        """Pre-compute a position-sorted index for doc-order lookup.
+
+        Calls full_text.find() once per entry instead of once per (entry × chunk).
+        Returns (positions, values) — parallel lists sorted by ascending position,
+        with entries whose key text is not found in full_text omitted.
+        """
+        items = []
+        for key_text, value in pairs:
+            pos = full_text.find(key_text[:50])
+            if pos != -1:
+                items.append((pos, value))
+        items.sort(key=lambda x: x[0])
+        return [p for p, _ in items], [v for _, v in items]
+
+    @staticmethod
+    def _pos_lookup(chunk_start: int, positions: list, values: list,
+                    before_first, not_found):
+        """Return the value of the last indexed entry with pos <= chunk_start.
+
+        Args:
+            chunk_start:  Position of chunk in full_text (-1 when not found).
+            positions:    Sorted positions from _build_pos_index.
+            values:       Parallel values from _build_pos_index.
+            before_first: Returned when chunk precedes all indexed entries.
+            not_found:    Returned when chunk_start == -1.
+        """
+        if chunk_start == -1:
+            return not_found
+        if not positions:
+            return before_first
+        i = bisect.bisect_right(positions, chunk_start)
+        return values[i - 1] if i > 0 else before_first
 
     def _resolve_subsection(
         self,

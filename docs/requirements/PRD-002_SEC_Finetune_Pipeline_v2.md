@@ -4,11 +4,11 @@ title: SEC 10-K Risk Factor Analyzer — Pipeline v2 (Current State)
 status: DRAFT
 author: beth88.career@gmail.com
 created: 2026-02-18
-last_updated: 2026-02-24
-last_revised: 2026-02-24
-version: 0.4.0
+last_updated: 2026-02-25
+last_revised: 2026-02-25
+version: 0.5.0
 supersedes: PRD-001
-git_sha: 96801e6
+git_sha: 51eb8b8
 ---
 
 # PRD-002: SEC 10-K Risk Factor Analyzer — Pipeline v2
@@ -134,6 +134,36 @@ archetypes) and SASB-grounded specificity (via material topics) in a single outp
   re-reading the `text` field. All 66 elements in AAPL 2021 part1item1a verified
   correct (`char_count == len(text)` for every element).
 
+### What changed 2026-02-25 (`ancestors` field + RFC-006/RFC-007)
+
+- **`ancestors` field added to `RiskSegment`** (RFC-007 D1-B + D2-A, ADR-014, commit `51eb8b8`):
+  every segment in `*_segmented_risks.json` now carries an ordered `List[str]` breadcrumb of
+  heading titles from outermost (`ancestors[0]` = section title, e.g. `"ITEM 1A. RISK FACTORS"`)
+  to innermost. Rules: depth capped at 6; each title normalized (`\xa0` → space, whitespace
+  collapsed, max 120 chars); default `[]` for cover-page nodes. Backward compatible — old JSON
+  files without `"ancestors"` load with `[]`. `parent_subsection` is NOT deprecated or removed.
+  99% of segments across 10 audited filings carry non-empty ancestors.
+- **Three downstream uses of `ancestors`:**
+  1. **Weak labeling** — `ancestors[-1]` maps directly to the 9-archetype taxonomy for ~40–60%
+     of segments, cutting cold-start annotation cost.
+  2. **Boilerplate filter** — `len(ancestors) == 1` (preamble before first subsection) is a
+     deterministic filter requiring no model inference.
+  3. **BERT A/B input format** — `[CLS] ancestors_text [SEP] segment_text [SEP]` uses BERT's
+     paired-input pre-training alignment.
+- **Implementation**: `_normalize_ancestor_text` + `_build_ancestor_map` added to
+  `SECSectionExtractor`; `ExtractedSection.element_ancestors` added as in-memory intermediate
+  (excluded from `save_to_json`); `_resolve_ancestors` added to `RiskSegmenter`. See
+  `extractor.py`, `models/extraction.py`, `models/segmentation.py`, `segmenter.py`.
+- **ADR-013** (commit `4045f92`): RFC-006 layout analysis evaluation resolved — rule-based
+  post-processing enhancements chosen over model-based (LayoutLM / PDF-Miner) approach. Three
+  identified layout weaknesses (heading classification, preamble boundary, multi-column tables)
+  addressed via deterministic rule layers with no new runtime dependencies.
+- **RFC-006** (`docs/architecture/rfc/RFC-006_layout_analysis_model_evaluation.md`) — evaluation
+  of layout analysis models for SEC EDGAR filings; proposes rule-based enhancements as preferred
+  solution for all three identified gaps.
+- **Test suite grown to 751 collected tests** (up from 715). 2 collection errors remain
+  (`test_pipeline_global_workers.py`, `test_validator_fix.py`).
+
 ### What changed 2026-02-20 (token safety / RFC-003)
 
 - **OQ-RFC3-1 answered:** 2.75% of current corpus segments (28 / 1,019) exceed the 380-word
@@ -160,12 +190,12 @@ archetypes) and SASB-grounded specificity (via material topics) in a single outp
 
 | ID | Priority | Since | Goal | Status | Stories |
 |:---|:---------|:------|:-----|:-------|:--------|
-| G-01 | P0 | PRD-001 | Parse ≥95% of EDGAR HTML 10-K/10-Q filings — success rate `(total_submitted − dlq_size) / total_submitted ≥ 0.95` reported in `RUN_REPORT.md` and `batch_summary_{run_id}.json`, on a stratified random sample of ≥30 filings spanning ≥5 SIC sectors and filing years 2019–2024 | ❌ **Measured (run `20260223_182806`, 959 filings, 88 SIC codes): (816+45)/959 = 89.8% — BELOW ≥95% KPI gate.** Breakdown: success=816, warning=45, error=98 (DLQ). Run report states 85.1% (816/959 strict). Scale and sector requirements met (959 >> 30 filings; 88 SIC codes >> 5 required). Root cause: 98 DLQ failures all tagged "unknown" — concentrated in CAH, COP, C tickers. OQ-7-adjacent: DLQ drain + root-cause investigation needed before KPI can be cleared. | US-005 |
+| G-01 | P0 | PRD-001 | Parse ≥95% of EDGAR HTML 10-K/10-Q filings — success rate `(total_submitted − dlq_size) / total_submitted ≥ 0.95` reported in `RUN_REPORT.md` and `batch_summary_{run_id}.json`, on a stratified random sample of ≥30 filings spanning ≥5 SIC sectors and filing years 2019–2024 | ❌ **Measured (run `20260223_182806`, 959 filings, 88 SIC codes): (816+45)/959 = 89.8% — BELOW ≥95% KPI gate.** Breakdown: success=816, warning=45, error=98 (DLQ). Root-cause investigation (2026-02-25) identified **two independent failure modes:** **(A) 98 DLQ failures = `CUDA error: unspecified launch failure`** — RTX 3090 VRAM contention from 24 concurrent workers all calling `sentence_transformers.encode(convert_to_tensor=True)` on the shared GPU. Failures are stochastic, peak in middle of run (files 301–700 when all workers are active), and span 60+ standard S&P 500 tickers (MSFT, GOOGL, GILD, PFE, etc.) — NOT concentrated in specific companies. Fix: pin `SentenceTransformer` to `device='cpu'` in worker init. **(B) 45 warnings = `No sections extracted from filing`** — 9 company families (CAH, C, GE, HON, ILMN, INTC, MCD, MS, SYF; all years of each) use non-standard section headings with no "ITEM 1A" text; sec-parser produces 0 `TopSectionTitle` and 0 ITEM-numbered `TitleElement` nodes. CAH example: 10-K uses "Introduction", "Management's Discussion and Analysis" (fiscal year ends June 30). **KPI path to PASS:** Fix (A) alone brings rate to (816+98)/959 = 95.3% ≥ 95% gate. Fix (B) is a separate §11 item for the annotation corpus quality goal (non-blocking for KPI). PRD note: run report's "85.1%" uses strict-success-only denominator; (816+45)/959 = 89.8% is the correct KPI formula. | US-005 |
 | G-02 | P0 | PRD-001 | Extract Item 1A with < 5% character loss — `(raw_section_char_count − Σ segment.char_count) / raw_section_char_count < 0.05`, using `RiskSegment.char_count` fields in `*_segmented.json`, on the same ≥30-filing stratified sample as G-01 | ✅ **Measured (run `20260223_182806`, 783 `part1item1a` filings): 100% pass. Median=0.44% · P95=1.62% · max=3.59% (GD tickers) — all below 5% gate.** Schema gap CLOSED (2026-02-24): `segments[].char_count` key corrected (was `length`); `raw_section_char_count` / `cleaned_section_char_count` added to `section_metadata.stats` — G-02 formula computable from `*_segmented.json` directly, no join to `extracted/` required. | — |
 | G-03 | P1 | PRD-001 | Segment risk text into atomic, classifiable statements — every output segment must satisfy `50 ≤ char_count ≤ 2000` and `word_count ≥ 20` (configurable via `preprocessing.min/max_segment_length`; raised from 10 to align with classifier training quality gate); every processed filing must produce ≥ 1 segment | ✅ **RFC-003 Option A deployed** (commit `0872eb3`, ADR-012): `max_segment_words: 380` enforced in `_split_long_segments`; `over_limit_word_rate` gate live. Full-corpus token p95=226 (§9.3 gate PASS). **Remaining gap: 81.5% of corpus is non-target-section content** (see OQ-PRD-1) — training data must be filtered to `part1item1a` before annotation | US-015 |
 | G-04 | P0 | PRD-001 | Output JSONL compatible with HuggingFace `datasets.load_dataset("json", ...)` — each record must have `text` (str, column name exact) and `label` (int 0–8); full schema defined in §2.1.2 | ❌ Currently outputs JSON, not JSONL; column is named `text` in schema but pipeline emits nested `segments[].text` — conversion not yet implemented | US-001 |
 | G-05 | P0 | PRD-001 | Pipeline must be resumable — crashed runs continue from checkpoint | ✅ `CheckpointManager` + `ResumeFilter` + `--resume` flag | US-002 |
-| G-06 | P1 | PRD-001 | Batch CLI: 10,000 filings < 2 hours on 32-core node | ❌ Not benchmarked | — |
+| G-06 | P1 | PRD-001 | Batch CLI: 10,000 filings < 2 hours on 32-core node | ⚠️ **Preprocessing-only baseline measured** (run `20260223_182806`, 959 files, 24-core machine, no classifier): **300.8s total · avg 0.3s/file wall-clock · 11,476 files/hr**. Extrapolated: 10,000 files ≈ 52 min on 24 cores; ≈ 39 min on 32 cores (linear scaling). **Preprocessing gate: PASS.** Classifier inference (G-12) not yet integrated — per-segment inference latency will add time; gate cannot be fully cleared until G-12 is wired into `process_batch()`. Re-benchmark after Stage A integration. | — |
 | G-08 | P1 | PRD-002 | Memory-aware adaptive timeout per file size category | ✅ `MemorySemaphore` + `FileCategory` (Small/Medium/Large) | — |
 | G-09 | P0 | PRD-002 | Dead Letter Queue for malformed filings with drain on final run | ✅ `DeadLetterQueue` | US-003 |
 | G-10 | P2 | PRD-002 | Stamped run directories with full provenance | ✅ `{YYYYMMDD_HHMMSS}_preprocessing_{git_sha}/` | — |
@@ -287,6 +317,7 @@ Before model training begins, these features must be present in every output rec
 | `confidence` | `float` [0, 1] | Classifier confidence score. Segments below threshold 0.7 are labeled `"other"` and flagged `"label_source": "heuristic"`. **Not yet in batch output — blocks Phase 2.** | ✅ Blocking |
 | `word_count` | `int` | Segment word count. Present in `RiskSegment` today. | ✅ Blocking |
 | `char_count` | `int` | Segment char count. Present in `RiskSegment` today. | ✅ Blocking |
+| `ancestors` | `List[str]` | Ordered outermost → innermost heading breadcrumb. `ancestors[0]` = section title (e.g. `"ITEM 1A. RISK FACTORS"`); `ancestors[-1]` ≈ `parent_subsection`. Depth ≤ 6; `[]` for cover-page nodes. Present in `RiskSegment` as of commit `51eb8b8` (ADR-014). | ❌ Non-blocking |
 | `ticker` | `str` | Company ticker symbol. Present in `SegmentedRisks` today. | ✅ Blocking |
 | `cik` | `str` | EDGAR Central Index Key. Present in `SegmentedRisks` today. | ✅ Blocking |
 
@@ -362,7 +393,7 @@ Define success mathematically. "Make it better" is not an acceptance criterion.
 | **Concept drift** | Output `risk_label` class distribution changes > 15% week-over-week | [TBD] |
 | **Parse failure rate** | DLQ size > 5% of input batch | `RUN_REPORT.md` surfaced today; alerting not wired |
 | **System health** | RAM usage (`ResourceTracker`), worker timeout rate, DLQ drain count | Per-run: `batch_summary_{run_id}.json` |
-| **Test regression** | Any of 715 collected tests fail in CI | [CI not yet configured] |
+| **Test regression** | Any of 751 collected tests fail in CI | [CI not yet configured] |
 
 ---
 
@@ -374,7 +405,7 @@ We do not proceed to the next phase without meeting the Exit Criteria.
 
 **Focus:** EDA, data cleaning, baseline modeling, pipeline infrastructure.
 
-**Deliverables:** `src/preprocessing/` pipeline, 715-test suite, `RUN_REPORT.md`, `StateManager`.
+**Deliverables:** `src/preprocessing/` pipeline, 751-test suite, `RUN_REPORT.md`, `StateManager`.
 
 **Exit Criteria:**
 
@@ -415,7 +446,7 @@ We do not proceed to the next phase without meeting the Exit Criteria.
 **Pipeline & Quality (G-13, testing)**
 - [ ] `--sic` / `--ticker` CLI filter flag implemented (G-13 / US-004)
 - [ ] Throughput benchmark: ≥ 100 filings processed end-to-end; < 2s/filing confirmed
-- [ ] Fix 2 test collection errors (`test_pipeline_global_workers.py`, `test_validator_fix.py`); all 715 tests pass
+- [ ] Fix 2 test collection errors (`test_pipeline_global_workers.py`, `test_validator_fix.py`); all 751 tests pass
 - [ ] Code unit-tested at > 80% line coverage
 
 - [ ] GO / NO-GO Decision: [Eng Lead]
@@ -627,6 +658,7 @@ written to `{run_dir}/{stem}_{section}_segmented.json`):
     {
       "id": "1A_001",
       "parent_subsection": "Macroeconomic and Industry Risks",
+      "ancestors": ["ITEM 1A. RISK FACTORS", "Macroeconomic and Industry Risks"],
       "text": "...",
       "char_count": 499,
       "word_count": 85
@@ -720,14 +752,14 @@ Stored as integer `label` (0–8) in training JSONL. Stored as string `risk_labe
 
 | Category | Requirement | Status |
 |----------|-------------|--------|
-| **Scalability** | 10,000 filings < 2 hrs on 32-core node | ❌ Not benchmarked |
+| **Scalability** | 10,000 filings < 2 hrs on 32-core node | ⚠️ Preprocessing baseline: 959 files / 300.8s = 0.3s/file on 24 cores; extrapolates to ~39 min on 32 cores. Classifier not yet included (G-12). |
 | **Reliability** | No crash on malformed HTML; DLQ for failures | ✅ DLQ integrated |
 | **Resumability** | Checkpoint + ResumeFilter; `--resume` flag | ✅ Implemented |
 | **Reproducibility** | `sec-parser==0.54.0` pinned; `RANDOM_SEED=42`; Python ≥ 3.10 | ✅ |
 | **Security** | No secrets in plaintext; `.env` only | ✅ `.env.example` provided |
 | **Config** | YAML + env vars; Pydantic V2 validation | ✅ 16-module config system |
 | **Memory** | Memory-aware worker pool; adaptive timeout | ✅ `MemorySemaphore` |
-| **Testability** | ≥ 715 unit tests; 2 collection errors | ⚠️ Fix 2 collection errors |
+| **Testability** | ≥ 751 unit tests; 2 collection errors | ⚠️ Fix 2 collection errors |
 | **Provenance** | Stamped run dirs with git SHA | ✅ `{YYYYMMDD_HHMMSS}_preprocessing_{sha}/` |
 
 ### Runtime Dependencies
@@ -759,7 +791,7 @@ streamlit>=1.28.0
 | OQ-4 | Output format: convert to JSONL for HuggingFace `datasets`? | ML Engineer | **Resolved** — JSONL confirmed; full schema (`text`, `label`, `sasb_topic`, `sasb_industry`, `label_source`, etc.) defined in §2.1.2 and §8. Tracked as G-04 / US-001. |
 | OQ-5 | Batch throughput: is 10K filings / 2 hrs achievable with transformer inference active? | ML Engineer | Open — cannot measure until classifier is wired in (G-12). Tracked in §11 Group 4 item 13 (throughput benchmark on ≥ 100 filings). Phase 3 hard requirement (G-06). |
 | OQ-6 | Integrate zero-shot / fine-tuned classifier into batch pipeline? | ML Engineer | **Resolved** — tracked as G-12 / US-029. Integration point is `scripts/feature_engineering/auto_label.py` (SASB-aware zero-shot, Stage A); fine-tuned model swap is Stage B (PRD-004). See §11 Group 2 item 9. |
-| OQ-7 | Fix 2 test collection errors (`test_pipeline_global_workers.py`, `test_validator_fix.py`) | Eng | Open — `ZeroDivisionError` in `test_pipeline_global_workers.py`; import error in `test_validator_fix.py`. Tracked in §11 Group 4 item 14. Blocking the "715 tests pass" coverage claim. |
+| OQ-7 | Fix 2 test collection errors (`test_pipeline_global_workers.py`, `test_validator_fix.py`) | Eng | Open — `ZeroDivisionError` in `test_pipeline_global_workers.py`; import error in `test_validator_fix.py`. Tracked in §11 Group 4 item 14. Blocking the "751 tests pass" coverage claim. |
 | OQ-8 | Schema version: align code output (`"version": "1.0"`) with CHANGELOG claim (`"2.0"`). | Eng | Open — tracked in §11 Group 3 item 11. Resolve before Phase 2 exit. |
 | OQ-9 | Which experiment tracking system: MLflow or W&B? | ML Engineer | Open — blocks Phase 2 exit gate (model checkpoint logging required). Decision needed before first fine-tune training run. |
 | OQ-10 | Which orchestration system: Airflow or Dagster for scheduled retraining? | Eng Lead | Open — blocks Phase 3. Not required for Phase 2. |
@@ -770,6 +802,8 @@ streamlit>=1.28.0
 | OQ-T2 | Should `sasb_topic` in the output record be a single string or a list? | ML Engineer | **Resolved** — single `str`. The `archetype_to_sasb.yaml` crosswalk returns the most specific SASB topic for the `(archetype, sasb_industry)` pair; first match wins. Defined in §8 Phase 2 target schema. |
 | OQ-T3 | The `macro` archetype (interest rates, FX, inflation) has no single clean SASB topic. Should `sasb_topic` be `"Other_General_Risk"` or `null` for `macro`? | Data Scientist | Open — blocks `archetype_to_sasb.yaml` default entry for `macro`. Recommendation: use `"Macro_Environment"` as a project-defined label (not official SASB) rather than `null`, to prevent downstream null-handling complexity. Decision needed in US-030. |
 | OQ-T4 | Should the annotation UI (US-028) present only the industry's SASB topics as label options, or also allow `"Other_General_Risk"` as a fallback? | Product | Open — blocks annotation UI design in US-028. Suggested: show industry SASB topics + `"other"` archetype as escape hatch; do not expose `"Other_General_Risk"` as a separate choice to avoid label proliferation. |
+| OQ-G01-A | **CUDA contention fix (G-01 blocker A):** Pin `SentenceTransformer` to `device='cpu'` in `segmenter.py` worker init (line 96: `self.semantic_model = SentenceTransformer(semantic_model_name, device='cpu')`). With 24 workers sharing an RTX 3090, `encode(convert_to_tensor=True)` on GPU causes intermittent `CUDA error: unspecified launch failure` in the middle of large runs. CPU inference is slower per-file but eliminates stochastic CUDA failures entirely. After fix, re-run the 98 DLQ files and verify G-01 rate ≥ 95.3%. Alternative: GPU semaphore (`asyncio.Semaphore(1)` or `threading.Lock()`) to serialize GPU access across workers — preserves GPU speed but adds complexity. | Eng | Open |
+| OQ-G01-B | **Non-standard section headings fix (G-01 blocker B, annotation quality):** 9 company families (CAH, C, GE, HON, ILMN, INTC, MCD, MS, SYF; all years) produce 0 segments — their 10-K filings use non-ITEM-numbered headings (e.g., CAH uses "Introduction", "Management's Discussion and Analysis"). Options: (a) add custom section pattern matchers for known non-standard filers; (b) use full-document text search for risk-factor content regardless of heading; (c) exclude these tickers from the annotation corpus (45 files / 959 = 4.7% of corpus — acceptable to exclude). Option (c) is fastest path; option (b) is preferred for production. Does NOT block G-01 KPI (fixing OQ-G01-A alone achieves 95.3%); does reduce annotation corpus by ~5%. | Data Eng | Open |
 | OQ-PRD-1 | **Section contamination + within-Item-1A boilerplate (two-cause problem).** Phase A (2026-02-24) found two distinct boilerplate causes in the ≤100-word population (52.7% duplicate rate): **(a) Dispatch contamination** — 81.5% of corpus is non-`part1item1a` content: `part2item8` (198,860 segs), `part2item7` (142,142), `part1item1` (108,056), `part2item7a` (37,957), `part1item1c` (5,296), `part1item1b` (2,979). Fix: dispatch config filter to `part1item1a` only. **(b) Within-Item-1A boilerplate** — `_is_non_risk_content` (`segmenter.py:337-368`) has only 5 surface patterns and misses auditor opinion text (655 repeats), ToC navigation, financial statement headers, and "REPORT OF MANAGEMENT RESPONSIBILITIES" (5,241 segs, 13.3% unique). Fix: strengthen `_is_non_risk_content` heuristics or add upstream boundary correction. **Decision needed for (a):** configurable dispatch list vs. single-section enforcement for annotation runs. Both (a) and (b) must be addressed before annotation corpus construction. S1–S4 length-based strategies are obsolete (sub-20-word segments = 0.01% of full corpus). See `reports/short_segment_analysis.json`, `reports/short_segment_patterns.tsv`, and segment strategy research §5 S5. | Data Eng / Eng Lead |
 
 ---
@@ -839,7 +873,7 @@ Items are ordered by dependency — each group unblocks the next.
    fresh `part1item1a`-only run (pending item 4 section filter). No further action on
    RFC-003 Option A required.
 
-13. **Throughput benchmark** — run end-to-end on ≥ 100 filings with Stage A classifier active; confirm < 2s/filing. Required before Phase 3 (G-06 / 10K filings in < 2 hrs).
+13. **Throughput benchmark** — preprocessing-only baseline already measured (run `20260223_182806`): 959 files / 300.8s = avg **0.3s/filing** wall-clock on 24 cores; extrapolates to ~39 min for 10K filings on 32 cores. Re-run with Stage A classifier active (G-12) and confirm total pipeline still < 2s/filing. Required before Phase 3 (G-06 / 10K filings in < 2 hrs).
 
 14. **Fix 2 test collection errors** — resolve `ZeroDivisionError` in `test_pipeline_global_workers.py` and import error in `test_validator_fix.py`; all 715 tests pass.
 
