@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from src.utils.dead_letter_queue import DeadLetterQueue
+from src.utils.error_classifier import classify_worker_exception, RETRY_GUIDANCE
 
 logger = logging.getLogger(__name__)
 
@@ -190,20 +191,25 @@ class ParallelProcessor:
                         'error': f'Processing timeout ({self.task_timeout}s)',
                         'error_type': 'timeout'
                     }
-                    failed_items.append(item)
+                    failed_items.append((item, 'timeout'))
                     # Cancel the future to free resources
                     future.cancel()
 
                 except Exception as e:
-                    # Task raised an exception
-                    logger.error(f"Task failed with exception: {item} - {e}")
+                    error_type = classify_worker_exception(e)
+                    guidance = RETRY_GUIDANCE.get(error_type, "")
+                    logger.error(
+                        "Task failed [%s]: %s — %s%s",
+                        error_type, item, e,
+                        f" | {guidance}" if guidance else "",
+                    )
                     result = {
                         'status': 'error',
                         'file': str(item),
                         'error': str(e),
-                        'error_type': 'exception'
+                        'error_type': error_type,
                     }
-                    failed_items.append(item)
+                    failed_items.append((item, error_type))
 
                 results.append(result)
 
@@ -223,9 +229,13 @@ class ParallelProcessor:
         if not verbose:
             print()  # New line after progress
 
-        # Write failed items to dead letter queue
+        # Write failed items to dead letter queue, grouped by error type
         if failed_items:
             dlq = DeadLetterQueue()
-            dlq.add_failures(failed_items, script_name="ParallelProcessor")
+            by_type: Dict[str, list] = {}
+            for failed_item, error_type in failed_items:
+                by_type.setdefault(error_type, []).append(failed_item)
+            for error_type, dlq_items in by_type.items():
+                dlq.add_failures(dlq_items, script_name="ParallelProcessor", reason=error_type)
 
         return results
