@@ -1,9 +1,10 @@
 """Parallel processing utilities for batch validation."""
 
 import logging
+import multiprocessing as mp
 import os
+import sys
 from concurrent.futures import ProcessPoolExecutor, TimeoutError, as_completed
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from src.utils.dead_letter_queue import DeadLetterQueue
@@ -60,9 +61,28 @@ class ParallelProcessor:
             max_workers: Number of parallel workers (default: auto-determine)
             initializer: Optional initialization function for workers
             initargs: Arguments tuple passed to initializer (default: empty)
-            max_tasks_per_child: Restart workers after N tasks (default: 50)
+            max_tasks_per_child: Restart workers after N tasks (default: 50).
+                Essential for bounding RSS growth (CUDA memory fragmentation,
+                BeautifulSoup DOM residue). On Python 3.12+, CPython defaults to
+                'spawn' when max_tasks_per_child is set, which reloads all models
+                per recycle cycle (~130s). We use 'forkserver' instead: the server
+                process is already initialised, so overhead is ~7s per cycle.
             task_timeout: Timeout per task in seconds (default: 1200 = 20 minutes)
         """
+        # On Python 3.12+, ProcessPoolExecutor silently switches to 'spawn' when
+        # max_tasks_per_child is non-None and no mp_context is supplied.  'spawn'
+        # forces a full model-reload on every worker recycle (~130s overhead).
+        # 'forkserver' avoids this: workers are forked from a pre-initialised
+        # server process, keeping recycle overhead to ~7s.
+        if max_tasks_per_child is not None and sys.version_info >= (3, 12):
+            self._mp_context = mp.get_context("forkserver")
+            logger.debug(
+                "Python %d.%d: using 'forkserver' mp_context with max_tasks_per_child=%d",
+                sys.version_info.major, sys.version_info.minor, max_tasks_per_child,
+            )
+        else:
+            self._mp_context = None  # default (fork on Linux < 3.12)
+
         self.max_workers = max_workers
         self.initializer = initializer
         self.initargs = initargs or ()
@@ -155,9 +175,10 @@ class ParallelProcessor:
 
         with ProcessPoolExecutor(
             max_workers=max_workers,
+            mp_context=self._mp_context,
             initializer=self.initializer,
             initargs=self.initargs,
-            max_tasks_per_child=self.max_tasks_per_child
+            max_tasks_per_child=self.max_tasks_per_child,
         ) as executor:
             # Submit all tasks
             future_to_item = {

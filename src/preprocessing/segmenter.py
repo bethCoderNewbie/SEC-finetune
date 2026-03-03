@@ -94,14 +94,9 @@ class RiskSegmenter:
         self.semantic_model = None
         if SENTENCE_TRANSFORMERS_AVAILABLE:
             try:
-                import multiprocessing
                 import torch
-                # Use CUDA only in the main process (sequential / --workers 1 mode).
-                # Worker subprocesses share the same physical GPU concurrently, which
-                # causes cudaErrorLaunchFailure. CPU is safe for parallel workers.
-                _in_worker = multiprocessing.current_process().name != 'MainProcess'
-                _device = "cuda" if (torch.cuda.is_available() and not _in_worker) else "cpu"
-                logger.debug("SentenceTransformer device: %s (worker=%s)", _device, _in_worker)
+                _device = "cuda" if torch.cuda.is_available() else "cpu"
+                logger.debug("SentenceTransformer device: %s", _device)
                 self.semantic_model = SentenceTransformer(semantic_model_name, device=_device)
             except (OSError, ValueError, RuntimeError) as e:
                 logger.warning(
