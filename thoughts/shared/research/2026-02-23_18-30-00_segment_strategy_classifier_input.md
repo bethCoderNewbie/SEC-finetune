@@ -6,8 +6,8 @@ author: beth
 git_commit: cd7dc5a
 branch: main
 status: PHASE_A_COMPLETE_FRAME_SHIFT
-last_updated: 2026-02-24
-update_git_commit: 0872eb3
+last_updated: 2026-03-03
+update_git_commit: 3bc89d7
 phase_a_complete: true
 frame_shift: boilerplate_contamination_not_length
 related_research:
@@ -116,6 +116,33 @@ Source: `reports/word_count_dist.json`, timestamp `2026-02-24T14:41:15`.
 | >500 words | 1,193 | 0.20% | |
 
 Over-limit (>380 words): **3,266 / 607,463 = 0.54%**. Gate now active: `max_segment_words: 380` (ADR-012).
+
+### Latest run (run `20260303_160207_preprocessing_3bc89d7`, 606,947 segments / 4,345 filings)
+
+Source: `check_word_count_distribution.py --verbose`, timestamp `2026-03-03T17:11:03`.
+
+**Descriptive statistics:** mean=68.0 · median=48 · p95=**185** · max=3,232
+
+| Bucket | Count | % | Note |
+|--------|-------|---|------|
+| ≤100 | 497,745 | 82.0% | |
+| 101–200 | 84,784 | 14.0% | |
+| 201–300 | 17,372 | 2.9% | |
+| 301–380 | 6,376 | 1.1% | ← Option A ceiling |
+| 381–420 | 276 | 0.0% | |
+| 421–500 | 164 | 0.0% | |
+| >500 | 230 | 0.0% | |
+
+**Threshold summary:**
+
+| Threshold | Count | Rate | Status |
+|-----------|-------|------|--------|
+| >350 words | 3,185 | 0.52% | |
+| **>380 words** | **670** | **0.11%** | **WARN — Option A active but residual remains** |
+| >420 words | 394 | 0.06% | |
+| >500 words | 230 | 0.04% | |
+
+Over-limit (>380 words): **670 / 606,947 = 0.11%**. Option A reduced over-limit by ~80% vs the pre-deployment baseline (3,266 → 670), but the 0.0% target (success criterion §9.5) is **not yet met**. The 670 residual segments (276 in 381–420, 164 in 421–500, 230 in >500) imply a code path that bypasses `_split_long_segments` — likely segments produced via a route that does not call the splitter, or a run config that does not apply `max_segment_words` uniformly across all section types. Investigation needed before closing §9.5.
 
 ### Key observations
 
@@ -344,7 +371,7 @@ a table for each strategy:
 | ~~Merged segment multi-topic rate < 5%~~ | ~~< 5%~~ | ~~manual spot-check of 50 merged~~ | **DROPPED** — merging affects 0.01% of corpus; criterion is vacuous |
 | **Boilerplate leak rate** | < 5% of surviving segments | match against `short_segment_patterns.tsv` top-100 patterns | pending S5 |
 | **Text deduplication rate** | < 30% duplicate `text_preview` across corpus | rerun `analyse_short_segments.py` post-S5 | currently 52.7% — needs reduction |
-| **Section source validation** | 0% of segments with `parent_subsection` matching non-Item-1A titles | group by `parent_subsection` in processed JSON | pending OQ-6 investigation |
+| **Section source validation** | 0% of segments from `part2item8`, `part1item1`, `part1item1b` (confirmed exclude-list); `part2item7a` and `part1item1c` permitted; `part2item7` only via subsection-level filter | group by `section_identifier` in processed JSON; verify subsection filter on `part2item7` | pending OQ-6 revised dispatch config |
 | 95th pct token count under DeBERTa tokenizer | ≤ 400 tokens | `reports/token_profile.json` | **PASS — p95 = 226 tokens** |
 | QR-03 routing rate on short segments (FinBERT zero-shot) | < 10% routed to `other` | inference sweep | pending Phase C |
 | ~~`parent_subsection` coverage ≥ 90%~~ | ~~≥ 90%~~ | ~~schema check~~ | **MET** — 100% fill rate; criterion retired |
@@ -413,25 +440,33 @@ human review of `reports/short_segment_sample.tsv` (fill `category` column).
 > signal enrichment but is not blocking. The Phase B priority is now diagnosing and
 > filtering the boilerplate contamination identified in Phase A.
 
-**Task B1 — Section source diagnosis (OQ-6)**
+**Task B1 — Section source diagnosis (OQ-6) ⚠️ PARTIALLY COMPLETE (2026-03-03) — REOPENED (2026-03-03)**
 
-Determine which `section_identifier` values in the processed batch produce the
-contaminated segments. The hypothesis is that non-Item-1A section identifiers
-(`part1item1b`, `part2item7`, `part2item8`, etc.) are being included in runs that
-should only process Item 1A risk factors, or that Item 1A extraction boundaries
-are drifting into adjacent sections.
+~~Determine which `section_identifier` values in the processed batch produce the
+contaminated segments.~~ **MEASURED** — `diagnose_short_segments.py --run-dir data/processed/20260303_160207_preprocessing_3bc89d7` Task 3 output:
 
-```bash
-# Group segments by section_identifier via filing filename stem
-# e.g. WFC_10K_2025_part1item1b_segmented.json → section = part1item1b
-# Count and dedupe-rate per section type
-```
+| Section ID | Segments | % of corpus | Boilerplate diagnosis | Training-data verdict |
+|------------|----------|-------------|-----------------------|-----------------------|
+| part2item8 | 197,734 | 32.6% | Financial statements + auditor reports; 48.7% dup; near-pure boilerplate | ❌ Exclude |
+| part2item7 | 144,192 | 23.8% | MD&A; 41.0% dup; heterogeneous — high-signal subsections exist (Liquidity, Critical Accounting Estimates) | ⚠️ Selective — subsection-level filter required |
+| **part1item1a** | **112,177** | **18.5%** | Risk Factors; 53.5% dup | ✅ Primary target |
+| part1item1 | 105,674 | 17.4% | Business description; 46.5% dup; describes operations, not risks | ❌ Exclude |
+| part2item7a | 39,516 | 6.5% | Quantitative + Qualitative Disclosures About Market Risk; 49.6% dup; explicit risk disclosure | ✅ Include — direct training signal for `financial`, `market`, `macro` archetypes |
+| part1item1c | 5,074 | 0.8% | SEC-mandated Cybersecurity Risk Management (post-2023 Rule 33-11216); 35.9% dup | ✅ Include — direct training signal for `cybersecurity` archetype |
+| part1item1b | 2,580 | 0.4% | Unresolved Staff Comments; near-universal "None" or empty response | ❌ Exclude |
 
-If contamination is concentrated in specific `section_identifier` values → fix belongs
-in the pipeline dispatch config (which section types are included in a given run),
-not in `_is_non_risk_content`.
+Top repeated boilerplate confirmed (exclude-list sections only):
+- `part2item8`: auditor opinion language ("projections of any evaluation of effectiveness…"), CAM headers
+- `part2item7`: "Table of Contents" navigation, MD&A headers (high-signal subsections remain valid)
+- `part1item1`: cross-section leakage from business description
 
-If contamination cuts across all section types → fix belongs in `_is_non_risk_content`.
+**Revised Conclusion:** The contamination root cause is confirmed — dispatch config includes all
+section types. The fix belongs **upstream in the dispatch config**, not in `_is_non_risk_content`.
+However, the initial closure of OQ-6 as "part1item1a only" was premature:
+`part2item7a` and `part1item1c` carry direct risk-classification training signal and must be
+included. A blanket "Item 1A only" filter discards ~20,000 unique segments from `part2item7a`
+and ~3,250 unique segments from `part1item1c`, worsening class imbalance for `financial`,
+`market`, `macro`, and `cybersecurity` archetypes. OQ-6 reopened — see §10.
 
 **Task B2 — Expand `_is_non_risk_content` (S5, if B1 confirms in-segmenter fix)**
 
@@ -496,7 +531,10 @@ The winning strategy is selected when all of the following hold on the
    Merging affects 0.01% of corpus. Replaced by: boilerplate leak rate < 5% on a
    random sample of 100 post-S5 segments (manual spot-check against Phase A pattern list)
 5. `over_limit_word_rate = 0.0` in health check — enforced automatically by
-   `max_segment_words: 380` in `_split_long_segments` (RFC-003 Option A, ADR-012)
+   `max_segment_words: 380` in `_split_long_segments` (RFC-003 Option A, ADR-012).
+   **NOT YET MET** — run `20260303_160207` shows 670 residual over-limit segments (0.11%).
+   Option A reduced baseline 0.54% → 0.11% but a bypass code path remains; investigation
+   needed before this criterion can be closed.
 6. **NEW:** Text deduplication rate < 30% in the post-S5 ≤100-word population
    (currently 52.7%; target requires removing the auditor / navigation boilerplate
    classes identified in Phase A)
@@ -512,5 +550,5 @@ The winning strategy is selected when all of the following hold on the
 | ~~OQ-3~~ | ~~Is `chunk_id` format stable enough post-merge?~~ **DEPRIORITISED**: S2 merges within the segmenter before `chunk_id` is assigned (`segment_extracted_section` assigns IDs after `segment_risks` returns). Merged segments receive a single sequential ID; no composite ID is needed. | ~~S2~~ |
 | OQ-4 | Are the 6 over-char (≥2000) segments structural artefacts (table cells, footnotes) or genuine long risk paragraphs that should be split? At full corpus scale, max word count is 3,232 — confirming the long tail is real. `max_segment_words: 380` will split these; the char gate remains dormant. | All strategies |
 | OQ-5 | At what word count does FinBERT zero-shot confidence reliably exceed 0.70 for known-topic segments? This empirically sets the actual minimum, which may differ from the theoretical 20-word gate. | Phase C |
-| OQ-6 | **NEW** — Which `section_identifier` values are the primary source of boilerplate contamination? Is the over-capture happening in Stage 3 section extraction (wrong section boundaries) or in the run dispatch config (wrong sections included)? The answer determines whether S5 fix belongs in `_is_non_risk_content` or upstream. | S5, Phase B |
+| OQ-6 | **REOPENED 2026-03-03.** Task 3 (run `20260303_160207`) confirmed the contamination root cause: dispatch config includes all 7 section types. Fix belongs upstream. However the initial closure concluded "part1item1a only" — this is too aggressive. Revised analysis shows `part2item7a` (Item 7A: Quantitative/Qualitative Market Risk Disclosures, 39,516 segments) and `part1item1c` (Item 1C: Cybersecurity Risk Management, post-2023, 5,074 segments) carry direct risk-classification training signal for `financial`/`market`/`macro` and `cybersecurity` archetypes respectively. Excluding them worsens class imbalance (G-16 ≥500/archetype gate). **Required action:** revise dispatch config to include `[part1item1a, part2item7a, part1item1c]` always; include `part2item7` only with a `parent_subsection`/`ancestors` subsection-level filter targeting Liquidity, Capital Resources, and Critical Accounting Estimates; hard-exclude `[part1item1, part1item1b, part2item8]`. Measure per-archetype example counts after the revised run before closing. | S5, dispatch config, G-16 |
 | OQ-7 | **NEW** — After applying S5 boilerplate filter, does the per-class example count still meet PRD-004's ≥500 target for all 9 risk categories? Filtering 52.7% of the ≤100-word population could reduce annotation-eligible segments significantly. | S5 retention gate |
