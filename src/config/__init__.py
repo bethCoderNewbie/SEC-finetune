@@ -51,6 +51,7 @@ from src.config.features import (
     TopicModelingConfig,
     ReadabilityConfig,
     RiskAnalysisConfig,
+    AnnotationConfig,
 )
 
 
@@ -85,6 +86,7 @@ class Settings(BaseSettings):
     readability: ReadabilityConfig = Field(default_factory=ReadabilityConfig)
     topic_modeling: TopicModelingConfig = Field(default_factory=TopicModelingConfig)
     risk_analysis: RiskAnalysisConfig = Field(default_factory=RiskAnalysisConfig)
+    annotation: AnnotationConfig = Field(default_factory=AnnotationConfig)
     naming: NamingConfig = Field(default_factory=NamingConfig)
     qa_validation: QAValidationConfig = Field(default_factory=QAValidationConfig)
 
@@ -128,6 +130,7 @@ __all__ = [
     "TopicModelingConfig",
     "ReadabilityConfig",
     "RiskAnalysisConfig",
+    "AnnotationConfig",
     # Naming config
     "NamingConfig",
     # QA Validation

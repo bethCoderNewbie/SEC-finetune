@@ -210,6 +210,8 @@ class SegmentedRisks(BaseModel):
                 company_name=di.get('company_name'),
                 form_type=di.get('form_type'),
                 fiscal_year=di.get('fiscal_year'),
+                accession_number=di.get('accession_number'),   # B-5 fix
+                filed_as_of_date=di.get('filed_as_of_date'),   # B-5 fix
                 amendment_flag=di.get('amendment_flag'),
                 entity_filer_category=di.get('entity_filer_category'),
                 ein=di.get('ein'),

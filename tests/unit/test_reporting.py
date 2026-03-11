@@ -87,8 +87,8 @@ class TestMarkdownReportGenerator:
         assert "# Processing Run Report: test_run" in report
         assert "Run ID:" in report
         assert "Executive Summary" in report
-        assert "Total Files: 100" in report
-        assert "Successful: 95" in report
+        assert "**Total Files:** 100" in report
+        assert "**Successful:** 95" in report
 
     def test_generate_run_report_success_rate_calculation(self, generator, basic_metrics, tmp_path):
         """Test success rate calculation and emoji."""
@@ -201,7 +201,7 @@ class TestMarkdownReportGenerator:
         )
 
         assert "Incremental Processing" in report or "Manifest" in report
-        assert "Total Tracked Files: 100" in report
+        assert "**Total Tracked Files:** 100" in report
 
     def test_generate_run_report_with_failed_files(self, generator, basic_metrics, failed_files, tmp_path):
         """Test report includes failed files analysis."""
@@ -214,7 +214,7 @@ class TestMarkdownReportGenerator:
         )
 
         assert "Failed Files Analysis" in report
-        assert "Total Failed Files: 3" in report
+        assert "**Total Failed Files:** 3" in report
         assert "Breakdown by Reason" in report
         assert "validation_failed" in report
         assert "extraction_error" in report
@@ -302,6 +302,94 @@ class TestMarkdownReportGenerator:
 
         assert "MLOps Auto-Documentation System" in report
 
+    def test_parse_success_rate_above_threshold(self, generator, basic_metrics, tmp_path):
+        """Parse success rate ≥ 0.95 shows ✅ and the correct percentage."""
+        report = generator.generate_run_report(
+            run_id="test", run_name="test",
+            metrics=basic_metrics, output_dir=tmp_path,
+            parse_success_rate=0.968,
+        )
+        assert "Parse Success Rate" in report
+        assert "96.8%" in report
+        assert "✅" in report
+
+    def test_parse_success_rate_below_threshold(self, generator, basic_metrics, tmp_path):
+        """Parse success rate < 0.95 shows ❌."""
+        report = generator.generate_run_report(
+            run_id="test", run_name="test",
+            metrics=basic_metrics, output_dir=tmp_path,
+            parse_success_rate=0.898,
+        )
+        assert "Parse Success Rate" in report
+        assert "89.8%" in report
+        assert "❌" in report
+
+    def test_parse_success_rate_absent(self, generator, basic_metrics, tmp_path):
+        """When parse_success_rate is not passed, placeholder message is shown."""
+        report = generator.generate_run_report(
+            run_id="test", run_name="test",
+            metrics=basic_metrics, output_dir=tmp_path,
+        )
+        assert "Parse Success Rate" in report
+        assert "not available" in report
+
+    def test_failures_by_ticker_table(self, generator, basic_metrics, tmp_path):
+        """Corpus Coverage by Ticker table is emitted when failures_by_ticker is passed."""
+        failures_by_ticker = {
+            "AAPL": {"submitted": 5, "succeeded": 5, "failed": 0,
+                     "failed_stage": None, "years_available": ["2020","2021","2022","2023","2024"]},
+            "CAH":  {"submitted": 5, "succeeded": 2, "failed": 3,
+                     "failed_stage": "extract", "years_available": ["2020","2021"]},
+        }
+        report = generator.generate_run_report(
+            run_id="test", run_name="test",
+            metrics=basic_metrics, output_dir=tmp_path,
+            failures_by_ticker=failures_by_ticker,
+        )
+        assert "Corpus Coverage by Ticker" in report
+        assert "AAPL" in report
+        assert "CAH" in report
+        assert "extract" in report
+
+    def test_failures_by_ticker_zero_coverage_opens_section(self, generator, basic_metrics, tmp_path):
+        """Section is open by default when at least one ticker has zero years_available."""
+        failures_by_ticker = {
+            "COP": {"submitted": 3, "succeeded": 0, "failed": 3,
+                    "failed_stage": "parse", "years_available": []},
+        }
+        report = generator.generate_run_report(
+            run_id="test", run_name="test",
+            metrics=basic_metrics, output_dir=tmp_path,
+            failures_by_ticker=failures_by_ticker,
+        )
+        assert "Zero-coverage tickers" in report
+        assert "COP" in report
+        # Section should be open by default (details open)
+        assert "<details open>" in report
+
+    def test_failed_files_table_has_stage_and_exception_columns(
+        self, generator, basic_metrics, tmp_path
+    ):
+        """Failed files table includes Stage and Exception columns."""
+        failed_files = {
+            "/path/filing.html": {
+                "failure_reason": "No sections extracted",
+                "failure_stage": "extract",
+                "exception_type": "ValueError",
+                "attempt_count": 1,
+                "last_processed": "2026-02-23T18:28:06",
+            }
+        }
+        report = generator.generate_run_report(
+            run_id="test", run_name="test",
+            metrics=basic_metrics, output_dir=tmp_path,
+            failed_files=failed_files,
+        )
+        assert "Stage" in report
+        assert "Exception" in report
+        assert "extract" in report
+        assert "ValueError" in report
+
     def test_generate_quarantine_summary_basic(self, generator, failed_files, tmp_path):
         """Test basic quarantine summary generation."""
         quarantine_dir = tmp_path / "quarantine"
@@ -314,7 +402,7 @@ class TestMarkdownReportGenerator:
         )
 
         assert "Quarantine Summary Report" in summary
-        assert "Total Failed Files: 3" in summary
+        assert "**Total Failed Files:** 3" in summary
         assert "Failure Breakdown" in summary
 
     def test_generate_quarantine_summary_breakdown_by_reason(self, generator, failed_files, tmp_path):

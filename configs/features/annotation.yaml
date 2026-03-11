@@ -1,0 +1,36 @@
+annotation:
+  # Zero-shot NLI model for Stage A archetype classification.
+  # Override: SEC_ANNOTATION__MODEL_NAME=your/model
+  model_name: "facebook/bart-large-mnli"
+
+  # Per-section thresholds are hard-coded in SegmentAnnotator._SECTION_CONFIDENCE_THRESHOLDS.
+  # This value is the fallback when no per-section override exists.
+  # Override: SEC_ANNOTATION__CONFIDENCE_THRESHOLD=0.75
+  confidence_threshold: 0.70
+
+  # Binary risk-relevance gate threshold (part1item1 and part2item7 only).
+  # Recall-biased: false negatives lose valid risk signals permanently.
+  # Override: SEC_ANNOTATION__BINARY_GATE_THRESHOLD=0.55
+  binary_gate_threshold: 0.50
+
+  # Ancestor-grouped merge target lower bound (words).
+  # Segments below this are candidates for merging with same-ancestors neighbours.
+  # Override: SEC_ANNOTATION__MERGE_LO=150
+  merge_lo: 200
+
+  # Hard ceiling for merged segments (words). Must not exceed Option A DeBERTa proxy.
+  # Override: SEC_ANNOTATION__MERGE_HI=300
+  merge_hi: 379
+
+  # Inference device. -1 = CPU; 0+ = GPU index.
+  # Override: SEC_ANNOTATION__DEVICE=0
+  device: -1
+
+  # Default section identifiers included in annotate_run_dir().
+  # Hard-excludes: part1item1b and part2item8 (never annotated).
+  # part2item7 and part1item1 are opt-in via CLI --include-sections.
+  # Override: SEC_ANNOTATION__SECTION_INCLUDE='["part1item1a"]'
+  section_include:
+    - "part1item1a"
+    - "part2item7a"
+    - "part1item1c"

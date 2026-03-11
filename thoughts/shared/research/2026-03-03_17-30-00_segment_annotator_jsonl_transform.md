@@ -1,14 +1,14 @@
 ---
 title: "Segment Annotator Module — JSONL Transform from SegmentedRisks to Training Record"
-date: 2026-03-03
+date: 2026-03-11
 time: "17:30:00"
 author: beth88.career@gmail.com
-git_commit: 3bc89d7
+git_commit: d774bf7
 branch: main
-status: VALIDATED — 2026-03-03; conflicts and OQs updated against classifier input formats, SASB taxonomy architecture, and LLM synthesis research
+status: IMPLEMENTED — 2026-03-11; US-032 delivered. B-5 fixed, AnnotationConfig created, SegmentAnnotator + CLI shipped, 48 unit tests green. OQ-A9/C-3 (label_source namespace) resolved via ADR-015. OQ-A18 (ancestor prior) resolved as score-bonus (option c). B-5/C-1/OQ-A8 resolved. B-8/C-10 resolved (token-count truncation). Previous update 2026-03-11: §4.2–§4.6 extended with binary risk gate, section-specific hypothesis templates, ancestor context injection, section-specific confidence thresholds, and pluggable LLM backend for part1item1 / part2item7. Domain expert clarification: "81.5% noise" framing too narrow — see §10 C-11. Original validation: 2026-03-03 against classifier input formats, SASB taxonomy architecture, and LLM synthesis research.
 related_prd: PRD-002_SEC_Finetune_Pipeline_v2.md
 related_goals: G-04, G-12, G-15
-related_stories: US-001, US-029, US-030
+related_stories: US-001, US-029, US-030, US-032
 ---
 
 # Segment Annotator Module — Research
@@ -189,20 +189,72 @@ class SegmentAnnotator:
 
     Stage A: zero-shot classifier (facebook/bart-large-mnli)
     Stage B: fine-tuned checkpoint swap — same interface, no schema change
+
+    Classification strategy (2026-03-11):
+    - Binary risk gate filters non-risk segments before multi-class inference
+    - Section-specific hypothesis templates match linguistic register of each section
+    - Ancestor context injection narrows NLI candidate set using heading priors
+    - Section-specific confidence thresholds reflect signal density per section
+    - Pluggable LLM backend for part1item1 / part2item7 (Layer 5, optional)
+    See §4.4.1–§4.4.5 for full design rationale.
     """
 
     ARCHETYPE_LABEL_MAP: ClassVar[Dict[str, int]]  # 9-entry constant
     ARCHETYPE_NAMES: ClassVar[List[str]]           # ordered by label int
+
+    # Section-specific NLI hypothesis templates. {archetype} substituted at inference time.
+    # Adapts to linguistic register: part1item1a = explicit; part1item1 = structural/factual;
+    # part2item7 = retrospective causal. See §4.4.2.
+    _HYPOTHESIS_TEMPLATES: ClassVar[Dict[str, str]] = {
+        "part1item1a": "This text describes a risk related to {archetype}.",
+        "part1item1c": "This text describes a risk related to {archetype}.",
+        "part1item1":  ("This business description reveals a dependency, concentration, "
+                        "or structural exposure related to {archetype}."),
+        "part2item7":  ("This management discussion describes the financial or operational "
+                        "impact of, or ongoing exposure to, {archetype}-related factors."),
+        "part2item7a": ("This market risk disclosure describes quantitative exposure "
+                        "to {archetype}."),
+        "_default":    "This text describes a risk related to {archetype}.",
+    }
+
+    # Ancestor heading → archetype prior for candidate pruning and tie-breaking.
+    # Keys are lowercase; matched against ancestors[-1].lower(). See §4.4.3.
+    _ANCESTOR_ARCHETYPE_PRIOR: ClassVar[Dict[str, str]] = {
+        "liquidity and capital resources": "financial",
+        "market risk":                     "market",
+        "competition":                     "market",
+        "supply chain":                    "supply_chain",
+        "cybersecurity":                   "cybersecurity",
+        "regulatory":                      "regulatory",
+        "human capital":                   "human_capital",
+        "environmental":                   "esg",
+        "climate":                         "esg",
+        "critical accounting":             "financial",
+    }
+
+    # Per-section confidence thresholds. Implicit-language sections use lower values.
+    # Below threshold → label_source = "heuristic". See §4.4.4.
+    _SECTION_CONFIDENCE_THRESHOLDS: ClassVar[Dict[str, float]] = {
+        "part1item1a": 0.70,
+        "part1item1c": 0.70,
+        "part2item7a": 0.65,
+        "part2item7":  0.60,
+        "part1item1":  0.55,
+        "_default":    0.70,
+    }
 
     def __init__(
         self,
         model_name: str,               # settings.models.zero_shot_model
         taxonomy_manager: TaxonomyManager,
         archetype_yaml_path: Optional[Path],  # archetype_to_sasb.yaml; may be None
-        confidence_threshold: float = 0.7,
+        confidence_threshold: float = 0.7,    # overridden per section by _SECTION_CONFIDENCE_THRESHOLDS
+        binary_gate_threshold: float = 0.5,   # binary risk relevance gate; see §4.4.1
         merge_lo: int = 200,           # target lower bound for merged segment (words)
         merge_hi: int = 379,           # hard ceiling; must not exceed Option A limit
         device: int = -1,
+        llm_client: Optional[Any] = None,          # optional LLM backend; see §4.4.5
+        use_llm_for_sections: Tuple[str, ...] = (), # e.g. ("part1item1", "part2item7")
     ) -> None: ...
 
     def annotate(self, segmented: SegmentedRisks) -> List[Dict[str, Any]]:
@@ -245,6 +297,34 @@ class SegmentAnnotator:
     @staticmethod
     def write_jsonl(records: List[Dict], output_path: Path) -> None:
         """Write records to JSONL, one JSON object per line."""
+
+    @staticmethod
+    def _is_risk_relevant(
+        text: str,
+        section_id: str,
+        pipeline: Any,               # transformers zero-shot-classification pipeline
+        gate_threshold: float = 0.5,
+    ) -> bool:
+        """
+        Binary pre-classification gate. Returns True if segment contains a risk,
+        vulnerability, dependency, or adverse event. Applied to part1item1 and
+        part2item7 only — sections with high non-risk content density.
+        part1item1a, part1item1c, part2item7a always return True (gate skipped).
+        See §4.4.1.
+        """
+
+    @staticmethod
+    def _build_candidate_labels(
+        archetype_names: List[str],
+        ancestors: List[str],
+        ancestor_prior: Dict[str, str],
+        top_n: int = 3,
+    ) -> List[str]:
+        """
+        Narrow NLI candidate set using ancestor heading prior. Returns top_n archetype
+        names biased toward the ancestor-implied archetype. Falls back to all
+        archetype_names when no ancestor match found. See §4.4.3 and OQ-A18.
+        """
 ```
 
 ### 4.3 `annotate()` Internal Flow
@@ -255,21 +335,54 @@ SegmentedRisks
     ├─ filing-level:
     │     sic_code → sasb_industry = TaxonomyManager.get_industry_for_sic(sic_code)
     │     filed_as_of_date ("20211029") → filing_date ("2021-10-29")
+    │     section_id = segmented.section_identifier
     │
     ├─ PRE-CLASSIFICATION MERGE:
     │     merged_segs = _merge_by_ancestors(segmented.segments, merge_lo, merge_hi)
     │     (see §4.6 for full algorithm)
     │
     └─ for chunk_i, seg in enumerate(merged_segs):
-          1. top_archetype, confidence = _classify_archetype(seg.text)
-          2. label = ARCHETYPE_LABEL_MAP[top_archetype]
-          3. label_source = "classifier" if confidence ≥ threshold else "heuristic"
-             # ⚠ Conflicts with synthesis research namespace — see C-3 and OQ-A9.
-             # Correct Stage A value is "nli_zero_shot"; Stage B is "classifier".
-             # Must be resolved before the first record is written.
-          4. sasb_topic = _crosswalk(top_archetype, sasb_industry)
+          0. BINARY RISK GATE (part1item1 and part2item7 only):
+             if section_id in ("part1item1", "part2item7"):
+                 if not _is_risk_relevant(seg.text, section_id, pipeline, gate_threshold):
+                     continue  # excluded from JSONL; not labeled "other"
+             # part1item1a, part1item1c, part2item7a: gate always True — skipped.
+             # See §4.4.1.
+
+          1. CANDIDATE NARROWING (ancestor context injection):
+             candidate_labels = _build_candidate_labels(
+                 ARCHETYPE_NAMES, seg.ancestors, _ANCESTOR_ARCHETYPE_PRIOR, top_n=3
+             )
+             # Falls back to full ARCHETYPE_NAMES when no ancestor prior matches.
+             # See §4.4.3 and OQ-A18.
+
+          2. HYPOTHESIS + THRESHOLD SELECTION (section-specific):
+             template  = _HYPOTHESIS_TEMPLATES.get(section_id, _HYPOTHESIS_TEMPLATES["_default"])
+             threshold = _SECTION_CONFIDENCE_THRESHOLDS.get(section_id,
+                         _SECTION_CONFIDENCE_THRESHOLDS["_default"])
+             # See §4.4.2 and §4.4.4.
+
+          3. CLASSIFY:
+             if section_id in use_llm_for_sections and llm_client is not None:
+                 top_archetype, confidence = _classify_with_llm(
+                     seg.text, section_id, seg.ancestors, llm_client
+                 )
+                 label_source = "llm_silver"    # OQ-A9 namespace
+             else:
+                 top_archetype, confidence = _classify_archetype(
+                     seg.text, template, candidate_labels
+                 )
+                 label_source = "nli_zero_shot" if confidence ≥ threshold else "heuristic"
+             # ⚠ OQ-A9: namespace must be locked before first annotation run.
+             # "nli_zero_shot" = Stage A BART; "llm_silver" = LLM backend;
+             # "heuristic" = keyword fallback; "classifier" = Stage B fine-tuned.
+
+          4. label = ARCHETYPE_LABEL_MAP[top_archetype]
+
+          5. sasb_topic = _crosswalk(top_archetype, sasb_industry)
                           or None if archetype_to_sasb.yaml absent
-          5. yield {
+
+          6. yield {
                "index":        global_index,
                "text":         seg.text,
                "word_count":   seg.word_count,
@@ -288,6 +401,104 @@ SegmentedRisks
 ```
 
 ### 4.4 Classifier Design (Stage A)
+
+#### 4.4.1 Binary Risk Gate (Layer 1)
+
+Before multi-class classification, a binary NLI pass filters segments that do not
+contain risk-relevant content. Applied to `part1item1` and `part2item7` only —
+sections with high non-risk content density. For `part1item1a`, `part1item1c`, and
+`part2item7a`, all content is risk-relevant by definition; the gate is skipped.
+
+```
+Binary hypothesis:
+  "This text describes a risk, vulnerability, dependency, or adverse event
+   that could affect the company's operations or finances."
+Threshold: 0.5  (recall-biased — false negatives lose valid risk signals permanently)
+```
+
+Segments below threshold are excluded from JSONL output entirely. They are **not**
+labeled "other" and not emitted.
+
+**Expected filter rates:**
+- `part1item1`: ~40–60% of segments are non-risk (product descriptions, employee
+  counts, facility lists)
+- `part2item7`: ~20–30% (boilerplate disclaimers, transition sentences, table labels)
+
+One additional BART inference call per segment. No new model required.
+
+#### 4.4.2 Section-Specific Hypothesis Templates (Layer 2)
+
+`part1item1` uses structural/factual language: "One customer accounted for 38% of
+revenue." `part2item7` uses retrospective causal language: "Revenue declined due to
+supply chain delays." Neither surface-matches "This text is about supply chain risk."
+NLI entailment is weak on implicit framing.
+
+Section-specific templates adapt the hypothesis to each section's linguistic register.
+See `_HYPOTHESIS_TEMPLATES` constant in §4.2.
+
+**Key design principle:** The `part1item1` template uses "dependency, concentration,
+or structural exposure" to trigger entailment from factual language. The `part2item7`
+template uses "impact of, or ongoing exposure to" to cover both retrospective
+and prospective language.
+
+#### 4.4.3 Ancestor Context Injection (Layer 3)
+
+`ancestors[-1]` (immediate heading) is a strong prior over the likely archetype.
+`_build_candidate_labels()` narrows the NLI candidate set to top 3 archetypes,
+biased toward the ancestor-implied archetype. See `_ANCESTOR_ARCHETYPE_PRIOR` in §4.2.
+
+**Two uses:**
+1. **Candidate pruning:** Narrowing from 9 → 3 significantly increases per-archetype
+   entailment scores (less score dilution across hypotheses).
+2. **Tie-breaking:** When confidence < threshold, ancestor prior determines the
+   fallback archetype rather than the keyword heuristic. `label_source = "ancestor_prior"`
+   when this path fires.
+
+**Example:** Segment from `part2item7` under `ancestors[-1] = "Liquidity and Capital
+Resources"` → candidate_labels = `["financial", "macro", "market"]`. BART scores
+against only these 3 hypotheses.
+
+See OQ-A18 for the debate between candidate filtering vs. score-biasing.
+
+#### 4.4.4 Section-Specific Confidence Thresholds (Layer 4)
+
+Implicit-language sections require lower thresholds to avoid routing all segments to
+the heuristic fallback. Below threshold → `label_source = "heuristic"`. See
+`_SECTION_CONFIDENCE_THRESHOLDS` in §4.2.
+
+**Critical:** Threshold values are initial estimates. Must be tuned after empirical
+validation (50-segment labeled sample per section, see §8 SC-11 and OQ-A16).
+
+#### 4.4.5 Pluggable LLM Backend (Layer 5)
+
+BART zero-shot estimated Macro F1 ceiling on implicit risk language (`part1item1`,
+`part2item7`): ~0.60–0.65 even with Layers 1–4. LLM-based classification (Claude
+structured output) reaches estimated ~0.72–0.78 on these sections.
+
+`_classify_archetype()` dispatches to `_classify_with_llm()` when:
+- `llm_client is not None` (LLM backend configured)
+- `section_id in use_llm_for_sections` (caller explicitly opts in)
+
+LLM prompt template:
+```
+Classify the following text from a 10-K {section_name} into the most applicable
+risk archetype, or "other" if no risk is implied.
+Return JSON: {"archetype": str, "confidence": float}
+Archetypes: {archetype_list}
+Context: This text appears under the heading: "{ancestors[-1]}"
+Text: {segment_text}
+```
+
+`label_source` values: LLM path → `"llm_silver"`; BART path → `"nli_zero_shot"`.
+Output schema is identical — no downstream change.
+
+**Cost:** ~$0.002–0.005 per segment (Claude Haiku). For ~100K `part1item1` +
+`part2item7` segments after binary gate, estimated $200–500 total. Activate only
+after binary gate reduces the candidate pool and BART baseline F1 is measured.
+See OQ-A19.
+
+**Recommendation:** Run BART with Layers 1–4 first. Activate LLM only if BART F1
+< 0.65 on the 50-segment per-section holdout.
 
 Two approaches for the `(risk_label, sasb_topic)` pair:
 
@@ -353,24 +564,33 @@ _HEURISTIC_KEYWORDS: Dict[str, List[str]] = {
 Assign `label = 8` ("other") when no keywords match. This replaces the deprecated
 `RiskClassifier` path entirely.
 
-**`label_source` namespace — unresolved conflict (C-3, OQ-A9):**
+**`label_source` namespace — RESOLVED (C-3, OQ-A9) — ADR-015, 2026-03-11:**
 
-The synthesis research defines the following canonical values:
+The seven-value namespace is locked as module-level constants in `src/analysis/segment_annotator.py`.
+`"classifier"` is reserved exclusively for Stage B fine-tuned inference and is **never written
+by this module**. ADR-015 governs — no new value may be added without a superseding ADR.
 
-| Value | Meaning |
-|---|---|
-| `"nli_zero_shot"` | Stage A: `facebook/bart-large-mnli` zero-shot NLI (current annotator) |
-| `"classifier"` | Stage B: fine-tuned checkpoint inference |
-| `"llm_silver"` | LLM-assigned label on real EDGAR text (`synthesize_training_data.py`) |
-| `"llm_synthetic"` | LLM-generated text with known-by-construction label |
-| `"human"` | Human-annotated ground truth |
-| `"heuristic"` | Keyword fallback (confidence < threshold) |
+| Constant | Value | Written by |
+|---|---|---|
+| `LABEL_SOURCE_NLI` | `"nli_zero_shot"` | BART Stage A, confidence ≥ section threshold |
+| `LABEL_SOURCE_HEURISTIC` | `"heuristic"` | Keyword fallback, confidence < threshold, no ancestor match |
+| `LABEL_SOURCE_ANCESTOR` | `"ancestor_prior"` | Confidence < threshold; ancestor heading matched prior map |
+| `LABEL_SOURCE_LLM` | `"llm_silver"` | LLM backend (`llm_client` set and section in `use_llm_for_sections`) |
+| `LABEL_SOURCE_CLASSIFIER` | `"classifier"` | **Not written here** — Stage B fine-tuned model only |
+| `LABEL_SOURCE_HUMAN` | `"human"` | **Not written here** — IAA tool only |
+| `LABEL_SOURCE_SYNTHETIC` | `"llm_synthetic"` | **Not written here** — synthesis script only |
 
-The annotator currently collapses Stage A and Stage B into `"classifier"`. Using `"classifier"`
-for both makes it impossible to down-weight or filter noisy zero-shot labels after the
-fine-tuned model produces better labels on the same corpus. **This namespace must be agreed
-and locked as a constant before the first record is written.** Migrating 156K records
-post-hoc requires a full re-annotation pass.
+Assignment logic in `annotate()`:
+```python
+if section_id in self._use_llm_for and self._llm_client is not None:
+    label_source = LABEL_SOURCE_LLM
+elif confidence >= section_threshold:
+    label_source = LABEL_SOURCE_NLI
+elif ancestor_matched:
+    label_source = LABEL_SOURCE_ANCESTOR
+else:
+    label_source = LABEL_SOURCE_HEURISTIC
+```
 
 ### 4.6 Ancestor-Grouped Pre-classification Merge
 
@@ -521,7 +741,9 @@ vs `part1item1a` at 53.5%) and do not require S5 to be safe to include.
 | `part2item7a` | ✅ Always | — |
 | `part1item1c` | ✅ Always | Post-2023 filings only; pre-2023 files will simply have no matching JSON |
 | `part2item7` | ⚠️ Optional | Only with `part2item7_subsection_filter` set to high-signal subsection names |
-| `part1item1`, `part2item8`, `part1item1b` | ❌ Never | Hard-excluded in `annotate_run_dir()` regardless of caller input |
+| `part1item1` | ⚠️ Optional | Domain expert confirmed embedded risk signals (customer concentration, supplier dependencies, competitive exposures). Include with binary risk gate enabled (§4.4.1); gate filters ~40–60% non-risk segments. Requires `use_binary_gate=True` in `annotate_run_dir()` call. |
+| `part2item8` | ❌ Never | Financial statement tables are non-classifiable for NLP. Footnotes contain risk signals (litigation contingencies, going concern, covenant violations) but cannot be separated from tables at current pipeline level. Revisit when pipeline can isolate footnotes. |
+| `part1item1b` | ❌ Never | Typically a stub ("None" or "Not applicable"); negligible signal. |
 
 ---
 
@@ -609,11 +831,11 @@ is implemented. This is a one-line fix per field in the structured-schema branch
 | `archetype_to_sasb.yaml` absent (G-15) | `sasb_topic = null`; forces Option B or null | US-030; resolve OQ-T3 (macro default) first |
 | Dispatch config contamination (OQ-PRD-1, OQ-6 reopened) | Annotation corpus quality | Default `section_include` = `[part1item1a, part2item7a, part1item1c]`; hard-exclude `[part1item1, part2item8, part1item1b]`; `part2item7` opt-in with subsection filter |
 | Option A 0.11% over-380-word residual | Some segments may exceed DeBERTa 512 tokens | Investigate bypass path; annotate with warning or pre-filter |
-| **B-5** `filed_as_of_date` not restored in `segmentation.py:load_from_json` (lines 204–224) — `accession_number` has same omission | `filing_date = null` in all annotator output; every record is undated | Patch `load_from_json` to pass `filed_as_of_date` and `accession_number` to constructor before running annotator |
+| **B-5** ~~`filed_as_of_date` not restored in `segmentation.py:load_from_json` (lines 204–224) — `accession_number` has same omission~~ | ~~`filing_date = null` in all annotator output; every record is undated~~ | **RESOLVED 2026-03-11** — patched `load_from_json` to pass `filed_as_of_date=di.get('filed_as_of_date')` and `accession_number=di.get('accession_number')` to constructor; round-trip tests in `test_preprocessing_models_unit.py` |
 | **B-6** No test set holdout mechanism | Phase 2 Macro F1 ≥ 0.72 gate is invalid — evaluating on NLI-labeled segments measures label-copying, not classification of real text | Implement filing-level `--hold-out-test` split (OQ-A11) before first corpus annotation run; holdout filings must never be passed to NLI |
 | **B-7** IAA gate absent (QR-01) | Cohen's Kappa ≥ 0.80 requirement unenforceable; noisy BART labels enter training without quality verification | Define 50-sample-per-SASB-topic IAA output path (OQ-A12) |
-| **B-8** Char truncation in `inference.py:84–86` is not token-aware | Inputs >2,000 chars truncated regardless of actual token count; BART limit is 1,024 tokens, DeBERTa limit is 512 tokens — neither is 2,000 chars | Replace char gate with tokenizer token-count gate in `_classify_archetype()` (OQ-A13) |
-| **B-9** `label_source` namespace conflict with synthesis research | Merged corpus cannot distinguish zero-shot BART labels from fine-tuned labels from LLM silver labels | Resolve OQ-A9; define namespace constant before first annotation run |
+| **B-8** ~~Char truncation in `inference.py:84–86` is not token-aware~~ | ~~Inputs >2,000 chars truncated regardless of actual token count; BART limit is 1,024 tokens, DeBERTa limit is 512 tokens — neither is 2,000 chars~~ | **RESOLVED 2026-03-11** — `_classify_archetype()` uses `self._tokenizer.encode()` for truncation; char limit removed |
+| **B-9** ~~`label_source` namespace conflict with synthesis research~~ | ~~Merged corpus cannot distinguish zero-shot BART labels from fine-tuned labels from LLM silver labels~~ | **RESOLVED 2026-03-11** — 7-value locked namespace as module-level constants in `segment_annotator.py`; ADR-015 |
 
 ---
 
@@ -625,7 +847,7 @@ is implemented. This is a one-line fix per field in the structured-schema branch
 | `index` monotonically increasing per output file | Verified by JSONL read-back |
 | `filing_date` is ISO 8601 | `re.match(r'\d{4}-\d{2}-\d{2}', record["filing_date"])` |
 | `label` in range 0–8 | `assert 0 <= record["label"] <= 8` |
-| `label_source` in `{"classifier", "heuristic"}` | Schema check — **see C-3; this criterion will be superseded once OQ-A9 is resolved** |
+| `label_source` ∈ `{"nli_zero_shot", "heuristic", "ancestor_prior", "llm_silver"}` for all BART-path output | All records: `assert record["label_source"] in {LABEL_SOURCE_NLI, LABEL_SOURCE_HEURISTIC, LABEL_SOURCE_ANCESTOR, LABEL_SOURCE_LLM}` — `"classifier"` never written by this module (ADR-015) |
 | `datasets.load_dataset("json", data_files="output.jsonl")` succeeds without preprocessing | G-04 gate |
 | SASB fields null-safe (no crash when taxonomy files absent) | `TaxonomyManager` already handles this |
 | Default section include on run `20260303_160207`: input is 112,177 (`part1item1a`) + 39,516 (`part2item7a`) + 5,074 (`part1item1c`) = ~156,767 segments | Hard-excluded sections produce zero records; verify by grouping output by `section_identifier` |
@@ -635,8 +857,11 @@ is implemented. This is a one-line fix per field in the structured-schema branch
 | Merge does not cross `ancestors` boundaries | Verified: consecutive segments in each merged group have identical `ancestors` |
 | `filed_as_of_date` survives `load_from_json` round-trip | `segmented.filed_as_of_date` non-null after load for any filing whose `document_info` contains `filed_as_of_date` |
 | No merged segment exceeds 512 tokens (DeBERTa) | Verified via `tokenizer(text, return_length=True, truncation=False)["length"][0] <= 512` for all records in output JSONL |
-| `label_source` values are from agreed namespace | All records have `label_source in {"nli_zero_shot", "classifier", "heuristic", "llm_silver", "llm_synthetic", "human"}` |
+| `label_source` values are from agreed namespace | All records have `label_source in {"nli_zero_shot", "classifier", "heuristic", "llm_silver", "llm_synthetic", "human", "ancestor_prior"}` |
 | Test set holdout files produce zero NLI-labeled records | Holdout filing list written before `annotate_run_dir()` runs; holdout records are absent from `labeled.jsonl` entirely |
+| SC-11: Binary gate recall ≥ 90% on `part1item1` and `part2item7` | 100-segment human-labeled holdout per section; `_is_risk_relevant()` must retain ≥ 90 of 100 genuine risk segments |
+| SC-12: Section-specific templates improve Macro F1 vs default template | A/B comparison on 50-segment labeled sample per section; improvement ≥ 5 F1 points required to justify template complexity |
+| SC-13: No segment emitted with mismatched `label_source` | All below-threshold records have `label_source in {"heuristic", "ancestor_prior"}`; all above-threshold BART records have `label_source = "nli_zero_shot"`; all LLM records have `label_source = "llm_silver"` |
 
 ---
 
@@ -651,14 +876,18 @@ is implemented. This is a one-line fix per field in the structured-schema branch
 | OQ-A5 | Is `merge_lo=200` the right lower bound? The segment strategy research (§3 Tension 1) identifies 20–49 words as "ideal atomic range". Merging to 200 produces richer context but may create multi-topic segments from subsections with diverse risk statements. A lower `merge_lo=100` is safer; needs empirical validation. | `_merge_by_ancestors` tuning |
 | OQ-A6 | Should singletons below `merge_lo` that have no ancestor-matching neighbours be filtered out (too short for reliable classification) or passed through as-is? Phase A showed these are 0.01% of corpus at sub-20 words; the broader < 100-word population is 82% and mostly genuine content. Pass through is safer. | `_merge_by_ancestors` edge case |
 | OQ-A7 | What is the canonical allowlist of `ancestors[-1]` values for the `part2item7` subsection filter? Candidates: "Liquidity and Capital Resources", "Critical Accounting Estimates", "Market Risk". Needs a one-time audit of `ancestors` values across `part2item7` files in run `20260303_160207` to confirm exact strings before hardening the CLI default. | `--part2item7-subsections` CLI default |
-| OQ-A8 | `filed_as_of_date` not restored in `segmentation.py:load_from_json` lines 204–224. Fix: pass `filed_as_of_date=di.get('filed_as_of_date')` and `accession_number=di.get('accession_number')` to the `SegmentedRisks` constructor. Confirm fix with a round-trip test before annotator ships. Also confirm that `accession_number` has same omission and fix both in one patch. | `annotate()` correctness, Blocker B-5 |
-| OQ-A9 | `label_source` namespace: use `"classifier"` / `"heuristic"` (current annotator) or adopt the full synthesis research namespace (`"nli_zero_shot"` / `"classifier"` / `"llm_silver"` / `"llm_synthetic"` / `"human"` / `"heuristic"`)? Must be resolved before the first annotation run — cannot be migrated post-hoc across 156K records without a full re-annotation pass. Recommendation: adopt full namespace immediately; define as a module-level constant in `segment_annotator.py`. | All JSONL output, Blocker B-9 |
+| OQ-A8 | ~~`filed_as_of_date` not restored in `segmentation.py:load_from_json` lines 204–224.~~ **RESOLVED 2026-03-11** — patched `segmentation.py:load_from_json`; both `filed_as_of_date` and `accession_number` now passed to constructor. Round-trip tests added to `test_preprocessing_models_unit.py`. | ~~`annotate()` correctness, Blocker B-5~~ |
+| OQ-A9 | ~~`label_source` namespace: use `"classifier"` / `"heuristic"` or adopt full synthesis research namespace?~~ **RESOLVED 2026-03-11** — adopted full 7-value namespace; locked as constants in `segment_annotator.py`; `"classifier"` reserved for Stage B only; documented in ADR-015. | ~~All JSONL output, Blocker B-9~~ |
 | OQ-A10 | NLI candidate labels — use `ARCHETYPE_NAMES` (current §4.4 design) or industry-specific SASB topic names from `TaxonomyManager.get_topics_for_sic()` (synthesis research §4.1)? SASB topics as candidates: higher NLI precision, `sasb_topic` produced directly, crosswalk not needed for inference. Cost: requires `sasb_sics_mapping.json` (G-15) at annotation time; when G-15 is blocked, falls back to archetype candidates. Recommendation: use SASB topics as candidates when `sasb_sics_mapping.json` is present; archetype names otherwise. | `_classify_archetype()` interface, `archetype_to_sasb.yaml` necessity, C-2 |
 | OQ-A11 | Test set holdout: implement as `--hold-out-test <fraction>` flag in `annotate_run_dir()` (filing-level split decided before NLI labeling begins), or as a separate pre-annotation script that writes a holdout filing list to disk? The holdout must be decided and locked before any NLI call runs. Recommendation: separate script — decouples the holdout decision from the annotator implementation and makes the holdout list auditable and version-controlled. | Phase 2 F1 gate validity, QR-01, Blocker B-6 |
 | OQ-A12 | IAA sampling (QR-01): where does the Cohen's Kappa gate live? Options: (a) post-annotation script over `labeled.jsonl` that samples 50 records per SASB topic; (b) integrated into `annotate_run_dir()` as `--iaa-sample-output` flag; (c) separate `scripts/feature_engineering/iaa_sampler.py`. Recommendation: option (c) — keeps annotator stateless and IAA sampling independently runnable. Must output a reviewable TSV with `text`, `sasb_topic`, `label_source`, `confidence` columns for two annotators to label independently. | QR-01 compliance, training corpus sign-off, Blocker B-7 |
 | OQ-A13 | Replace 2,000-char truncation in `inference.py` with token-count gate in `_classify_archetype()`. `facebook/bart-large-mnli` supports up to 1,024 tokens; DeBERTa supports 512. These are different limits for different models. `_classify_archetype()` must use the NLI model's tokenizer for truncation decisions, not DeBERTa's. The fine-tuning dataset must separately enforce DeBERTa's 512-token limit via the HuggingFace data quality checklist. | `_classify_archetype()` correctness, C-10 |
 | OQ-A14 | Section priority without S5: start annotation corpus with `part2item7a` + `part1item1c` (dup rates 49.6% and 35.9%) before `part1item1a` (53.5% dup rate)? This inverts the current default section priority but produces a cleaner bootstrap corpus for IAA and initial fine-tuning. Recommendation: yes — build and validate the IAA pipeline on lower-dup sections first; add `part1item1a` after S5 ships. | Annotation corpus quality, Phase 2 training data plan |
 | OQ-A15 | Add `sasb_source: "crosswalk" \| "nli" \| null` field to distinguish how `sasb_topic` was derived (Option A crosswalk vs Option B NLI vs absent taxonomy files)? Records generated under different option paths cannot be merged without this field. | Corpus reproducibility, `sasb_topic` provenance |
+| OQ-A16 | Binary risk gate threshold: is 0.5 the right value for `part1item1` and `part2item7`? Lower threshold = higher recall (fewer valid risk signals dropped) but more noise passes. Empirically validate against a 100-segment human-labeled set per section before first annotation run. Recall ≥ 0.90 required (SC-11). | `_is_risk_relevant()` gate, §4.4.1 |
+| OQ-A17 | Section-specific hypothesis template effectiveness: do the templates in `_HYPOTHESIS_TEMPLATES` materially improve Macro F1 on `part1item1` and `part2item7`? Requires 50-segment per-section labeled sample and A/B comparison against the default template. If improvement < 5 F1 points, simplify to one template for all sections. | `_HYPOTHESIS_TEMPLATES`, §4.4.2, SC-12 |
+| OQ-A18 | ~~Ancestor candidate pruning: is top_n=3 the right narrowing depth?~~ **RESOLVED 2026-03-11** — option (c) chosen: all 9 archetype candidates always passed to NLI; ancestor prior adds a 0.05 score bonus to the matched archetype before threshold comparison. `_apply_ancestor_score_bonus()` implements this. No hard filter; correct label cannot be excluded by a wrong prior. | ~~`_build_candidate_labels()`, §4.4.3~~ |
+| OQ-A19 | LLM backend activation timing: activate for `part1item1` / `part2item7` in the initial annotation run, or only after BART baseline F1 is measured on those sections? Activating LLM before baseline obscures whether Layers 1–4 alone are sufficient. Recommendation: run BART + Layers 1–4 first; measure F1 on 50-segment per-section holdout; activate LLM backend only if BART F1 < 0.65 on `part1item1` or `part2item7`. | `use_llm_for_sections`, §4.4.5, cost estimate |
 
 ---
 
@@ -673,13 +902,14 @@ Conflicts identified by cross-referencing against:
 
 | ID | Conflict | Severity | Location in This Doc | Resolves via |
 |---|---|---|---|---|
-| C-1 | `filed_as_of_date` not restored by `segmentation.py:load_from_json` (lines 204–224). Field is written to JSON by `save_to_json` but not passed to the constructor on load. `segmented.filed_as_of_date` is always `None` after a round-trip. `filing_date` will be `None` in all records. | **Critical** | §2.2, §7 B-5 | OQ-A8 |
+| C-1 | ~~`filed_as_of_date` not restored by `segmentation.py:load_from_json` (lines 204–224).~~ **RESOLVED 2026-03-11** — B-5 patch applied; `filed_as_of_date` and `accession_number` both restored by `load_from_json`. | ~~**Critical**~~ **CLOSED** | §2.2, §7 B-5 | OQ-A8 RESOLVED |
 | C-2 | NLI candidate labels: annotator uses abstract `ARCHETYPE_NAMES` as NLI hypotheses. Synthesis research (§4.1) and SASB architecture annotation workflow (§5.1) both use industry-specific SASB topic names — more discriminative hypotheses that produce `sasb_topic` directly and eliminate the `archetype_to_sasb.yaml` crosswalk dependency. | High | §4.4 | OQ-A10 |
-| C-3 | `label_source` namespace mismatch: annotator collapses all model paths into `"classifier"`. Synthesis research defines `"llm_silver"` / `"llm_synthetic"` / `"human"` / `"heuristic"`. In a merged corpus, Stage A (BART zero-shot) and Stage B (fine-tuned) labels are indistinguishable. IAA gate, weighted loss, and training recipe filters in synthesis research all operate on this field. | High | §4.3 step 3, §4.5 | OQ-A9 |
+| C-3 | ~~`label_source` namespace mismatch: annotator collapses all model paths into `"classifier"`.~~ **RESOLVED 2026-03-11** — 7-value locked namespace; `"classifier"` reserved Stage B only; all paths distinguished. ADR-015 governs. | ~~High~~ **CLOSED** | §4.3 step 3, §4.5 | OQ-A9 RESOLVED |
 | C-4 | Silver labeling model: annotator retains `facebook/bart-large-mnli`. Synthesis research (§1) explicitly proposes replacing it with Claude/GPT-4o. BART zero-shot Macro F1 on SEC domain text is estimated ~0.55–0.60, below the frontier LLM zero-shot range (0.63–0.69) from the SASB architecture comparison table. Fine-tuning DeBERTa on BART-labeled records sets a lower accuracy ceiling. | Medium | §3.1 | OQ-A9 resolved |
 | C-5 | 379-word ceiling ≠ 512-token ceiling. DeBERTa-v3 SentencePiece produces ~1.3–1.5 tokens/word on SEC prose. A 379-word merged segment can tokenize to ~490–570 tokens; upper bound exceeds 512. HuggingFace formats research (§10 data quality checklist) mandates explicit per-segment token count verification. The `assert word_count <= 379` success criterion does not catch this. | Medium | §4.6 Step 4, §7 B-5, §8 | OQ-A13 |
 | C-6 | No test set holdout. Synthesis research (§3 "TEST SET") requires 10–15% of real EDGAR segments held out at filing level before any NLI labeling. Annotator has no holdout mechanism. A test split drawn from `labeled.jsonl` contains NLI-labeled records; Phase 2 Macro F1 ≥ 0.72 gate measures label-copying from BART, not real classification quality. | High | §5.1 CLI design, §8 | OQ-A11 |
 | C-7 | IAA gate absent. QR-01 (Cohen's Kappa ≥ 0.80, 50 examples per SASB topic) required by HuggingFace formats research (§10 label quality checklist) and synthesis research (§3 Layer 3) before training begins. Annotator success criteria do not include a Kappa check or a sampling output path. | Medium | §8 | OQ-A12 |
 | C-8 | `word_count` sum in merge may not match joined text word count. The accumulator uses `sum(seg.word_count)` but `word_count` was computed at construction time (`len(text.split())`). After `" ".join(seg.text for seg in group)`, segments with trailing/leading whitespace or unicode non-breaking spaces produce a post-join word count that differs from the sum by ±2–5 words. The `merge_hi` boundary check fires on the sum. | Low | §4.6 Algorithm Step 2 | Before `merge_hi` boundary hardened |
 | C-9 | `index` non-unique in combined JSONL. Counter resets per `SegmentedRisks` (per filing), so the merged 156K-record `labeled.jsonl` contains ~309 sequences of 0–N. Synthesis research dedup (SHA-256 of text) is unaffected, but `index` cannot serve as a record identifier for downstream tools. | Low | §2.2 `index` row, §8 | Before downstream tools use `index` as key |
-| C-10 | Char truncation in `inference.py:84–86` uses 2,000-char limit. BART NLI limit is 1,024 tokens (~750–900 words, ~4,500–5,400 chars). DeBERTa fine-tuning limit is 512 tokens (~350–400 words, ~2,100–2,400 chars). Neither limit is 2,000 chars. The annotator's `_classify_archetype()` must use the NLI model's tokenizer for truncation decisions; the fine-tuning pipeline must separately enforce DeBERTa's limit. | Medium | §3.1, §4.4 | OQ-A13 |
+| C-10 | ~~Char truncation in `inference.py:84–86` uses 2,000-char limit.~~ **RESOLVED 2026-03-11** — `_classify_archetype()` in `segment_annotator.py` uses `self._tokenizer.encode()` for truncation; char limit not used. Fine-tuning pipeline enforcement (DeBERTa 512 tokens) remains a separate concern. | ~~Medium~~ **CLOSED** | §3.1, §4.4 | OQ-A13 RESOLVED |
+| C-11 | Domain expert challenge to "81.5% noise" framing in gap analysis (2026-03-11). Gap analysis (YoY research doc §2.3) classified `part1item1`, `part2item7`, and `part2item8` as noise. Domain expert correctly identified that risk signals appear throughout the 10-K: `part1item1` contains structural risks (customer concentration, supplier dependency, competitive exposure); `part2item7` contains materialized and liquidity risks and is arguably the richest risk source for trailing signals; `part2item8` footnotes contain contingent liabilities, going concern notes, and covenant violations. The ✅/❌ section classification was based on structural section identity, not semantic content. **Resolution:** `part1item1` promoted to "optional with binary risk gate" in the revised section policy (§4.6). `part2item8` remains excluded only because footnotes cannot be separated from financial tables at current pipeline level. `part2item7` policy unchanged (opt-in with subsection filter). The five-layer classifier strategy (§4.4.1–§4.4.5) directly addresses classification quality on non-1A sections. | Medium | §4.4, §4.6 revised section policy | OQ-A16–OQ-A19 |

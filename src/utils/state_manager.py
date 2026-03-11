@@ -270,7 +270,9 @@ class StateManifest:
         run_id: str,
         reason: str,
         quarantine_path: Optional[Path] = None,
-        validation_report: Optional[Dict] = None
+        validation_report: Optional[Dict] = None,
+        failure_stage: Optional[str] = None,
+        exception_type: Optional[str] = None,
     ) -> None:
         """Record failed processing of file.
 
@@ -280,6 +282,8 @@ class StateManifest:
             reason: Failure reason (e.g., "validation_failed", "parsing_error")
             quarantine_path: Path to quarantined file (if applicable)
             validation_report: Detailed validation report
+            failure_stage: Pipeline stage where failure occurred (parse/extract/clean/segment)
+            exception_type: Python exception class name (e.g. "ValueError")
         """
         file_key = str(input_path)
         file_hash = compute_file_hash(input_path)
@@ -290,6 +294,8 @@ class StateManifest:
             "run_id": run_id,
             "status": "failed",
             "failure_reason": reason,
+            "failure_stage": failure_stage,
+            "exception_type": exception_type,
         }
 
         if quarantine_path:

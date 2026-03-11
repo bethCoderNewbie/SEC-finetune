@@ -178,6 +178,34 @@ class TestSegmentedRisksSaveLoad:
         assert "version" in data
         assert data["version"] == "1.0"
 
+    def test_b5_filed_as_of_date_roundtrip(self, risk_segment, tmp_path):
+        """B-5 fix: filed_as_of_date must survive save_to_json → load_from_json."""
+        sr = SegmentedRisks(
+            segments=[risk_segment],
+            ticker="AAPL",
+            filed_as_of_date="20211029",
+        )
+        out = tmp_path / "AAPL_segmented.json"
+        sr.save_to_json(out)
+        loaded = SegmentedRisks.load_from_json(out)
+        assert loaded.filed_as_of_date == "20211029", (
+            "filed_as_of_date lost in load_from_json — B-5 fix not applied"
+        )
+
+    def test_b5_accession_number_roundtrip(self, risk_segment, tmp_path):
+        """B-5 fix: accession_number must survive save_to_json → load_from_json."""
+        sr = SegmentedRisks(
+            segments=[risk_segment],
+            ticker="AAPL",
+            accession_number="0000320193-21-000105",
+        )
+        out = tmp_path / "AAPL_segmented.json"
+        sr.save_to_json(out)
+        loaded = SegmentedRisks.load_from_json(out)
+        assert loaded.accession_number == "0000320193-21-000105", (
+            "accession_number lost in load_from_json — B-5 fix not applied"
+        )
+
 
 # ---------------------------------------------------------------------------
 # ExtractedSection

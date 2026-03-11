@@ -249,28 +249,32 @@ class TestStateManifest:
         manifest.record_failure(
             input_path=input_file,
             run_id="test_run",
-            reason="validation_failed"
+            reason="validation_failed",
+            failure_stage="extract",
+            exception_type="ValueError",
         )
 
         # Verify recorded data
         file_data = manifest.data["files"][str(input_file.absolute())]
         assert file_data["status"] == "failed"
-        assert file_data["reason"] == "validation_failed"
-        assert file_data["attempt_count"] == 1
-        assert "last_attempt" in file_data
+        assert file_data["failure_reason"] == "validation_failed"
+        assert file_data["failure_stage"] == "extract"
+        assert file_data["exception_type"] == "ValueError"
+        assert "last_processed" in file_data
 
-    def test_record_failure_increments_attempts(self, manifest, tmp_path):
-        """Test that recording multiple failures increments attempt count."""
+    def test_record_failure_overwrites_on_retry(self, manifest, tmp_path):
+        """Test that recording a second failure for the same file overwrites the first."""
         input_file = tmp_path / "failed.txt"
         input_file.write_text("content")
 
-        # First failure
-        manifest.record_failure(input_file, "run1", "error1")
-        assert manifest.data["files"][str(input_file.absolute())]["attempt_count"] == 1
+        manifest.record_failure(input_file, "run1", "error1", failure_stage="parse")
+        assert manifest.data["files"][str(input_file.absolute())]["failure_reason"] == "error1"
 
-        # Second failure
-        manifest.record_failure(input_file, "run2", "error2")
-        assert manifest.data["files"][str(input_file.absolute())]["attempt_count"] == 2
+        manifest.record_failure(input_file, "run2", "error2", failure_stage="extract")
+        file_data = manifest.data["files"][str(input_file.absolute())]
+        assert file_data["failure_reason"] == "error2"
+        assert file_data["failure_stage"] == "extract"
+        assert file_data["run_id"] == "run2"
 
     def test_record_failure_with_quarantine(self, manifest, tmp_path):
         """Test recording failure with quarantine path."""

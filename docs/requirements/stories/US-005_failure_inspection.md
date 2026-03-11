@@ -4,7 +4,7 @@ epic: EP-5 Observability
 priority: P1
 status: Partially Implemented
 source_prd: PRD-001, PRD-002
-estimation: 2 points
+estimation: 3 points
 ---
 
 # US-005: Failure Inspection After Batch Run
@@ -88,6 +88,26 @@ Additional gaps for the `Then` clauses:
 - `batch_summary_{run_id}.json` has no `parse_success_rate` numeric field; rate must be
   computed from `successful`, `warnings`, `failed`, `total_files`.
 
+### Scenario E: Per-ticker failure summary in run report
+```gherkin
+Given a batch run in which filings from multiple tickers were submitted
+  And at least one ticker has ≥1 failed filing
+When I open RUN_REPORT.md
+Then a "Corpus Coverage by Ticker" table is present with columns:
+    ticker | submitted | succeeded | failed | failed_stage | years_available
+  And each row aggregates all filings for that ticker across the run
+  And failed_stage contains the earliest failing stage (parse/extract/clean/segment)
+    for that ticker's failed filings, or "—" if all succeeded
+  And years_available lists the fiscal_year values of succeeded filings only
+  And batch_summary_{run_id}.json contains a failures_by_ticker map with the same fields
+  And any ticker with years_available=[] produces a WARNING log line at run completion
+```
+**Status:** ❌ Not implemented. Rationale: the YoY risk comparison feature (gap analysis
+`2026-03-11_14-24-12_yoy_risk_comparison_gap_analysis.md` §3 D-5) requires distinguishing
+corpus gaps caused by failed processing from gaps caused by missing downloads. The existing
+per-filing failure detail (Scenario A) does not surface this — the D-5 audit script counts
+years from successful output files only and cannot see DLQ entries.
+
 ## Technical Notes
 
 - Run report: `MarkdownReportGenerator` → `data/processed/{run_dir}/RUN_REPORT.md`
@@ -102,3 +122,5 @@ Additional gaps for the `Then` clauses:
   3. Add `parse_success_rate` as a named numeric field in `batch_summary_{run_id}.json`
   4. Add "Parse Success Rate" heading to RUN_REPORT.md template
   5. Fix zero-section extraction for CAH/COP/C to push rate above 95%
+  6. Aggregate DLQ entries by ticker in `MarkdownReportGenerator`; emit "Corpus Coverage by
+     Ticker" table in RUN_REPORT.md and `failures_by_ticker` map in `batch_summary_{run_id}.json`

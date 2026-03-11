@@ -413,4 +413,80 @@ pytest tests/ \
   -q
 ```
 
+---
+
+## Feature Engineering / Annotation
+
+### Symptom: `segment_annotator_cli.py` exits 0 but `labeled.jsonl` is empty or has far fewer records than expected
+
+**Severity:** Medium
+**Trigger:** All `*_segmented.json` files in `--run-dir` have a `section_identifier` that is not
+in the `--include-sections` list (default: `part1item1a`, `part2item7a`, `part1item1c`), or the
+run directory contains an old schema version that lacks the `section_metadata.identifier` field.
+
+**Diagnosis:**
+
+```bash
+# 1. Check what section identifiers are actually in the run directory
+python -c "
+import json, glob, sys
+run_dir = sys.argv[1]
+ids = set()
+for f in glob.glob(run_dir + '/*_segmented.json'):
+    d = json.load(open(f))
+    ids.add(d.get('section_metadata', {}).get('identifier', '<missing>'))
+print(sorted(ids))
+" data/processed/<run_dir>
+
+# 2. Confirm the run used v2-schema (post-ADR-014 run dirs have 'section_metadata' key)
+python -c "
+import json; d = json.load(open('data/processed/<run_dir>/<any>_segmented.json'))
+print('version:', d.get('version'), 'has section_metadata:', 'section_metadata' in d)
+"
+```
+
+**Resolution:**
+
+```bash
+# Pass --include-sections matching the identifiers found above
+python scripts/feature_engineering/segment_annotator_cli.py \
+    --run-dir data/processed/<run_dir> \
+    --output /tmp/labeled.jsonl \
+    --include-sections part1item1a part2item7a  # use identifiers found in diagnosis step
+
+# If run dir is pre-ADR-014 (no section_metadata), re-run preprocessing with current pipeline
+# and annotate the new run directory.
+```
+
+**Known limitations:** The annotator only reads v2-schema files (`"version": "2.1"` with
+`section_metadata` key). Files written before the ADR-014 `ancestors` field was introduced
+will not produce any records.
+
+---
+
+### Symptom: `segment_annotator_cli.py` raises `RuntimeError: filed_as_of_date is None`
+
+**Severity:** Medium
+**Trigger:** A `*_segmented.json` file was written before the B-5 fix
+(`segmentation.py:load_from_json` lines 204–224). `filed_as_of_date` is absent from the
+constructor call, so `segmented.filed_as_of_date` is `None` after `load_from_json()`.
+
+**Diagnosis:**
+
+```bash
+python -c "
+from src.preprocessing.models.segmentation import SegmentedRisks
+import json
+d = json.load(open('data/processed/<run_dir>/<file>_segmented.json'))
+sr = SegmentedRisks.load_from_json(json.dumps(d))
+print('filed_as_of_date:', sr.filed_as_of_date)
+"
+```
+
+**Resolution:** Verify that `src/preprocessing/models/segmentation.py` contains the B-5 fix
+(lines 204–224 include `filed_as_of_date=di.get('filed_as_of_date')`). If the fix is absent,
+apply the patch from US-032 and re-run the annotator. The annotator emits `filing_date: null`
+for records with `filed_as_of_date is None` — it does not raise; the `RuntimeError` above is
+for illustration only.
+
 Expected: ≥ 658 passed, 0 errors (excludes 2 known broken collection files).

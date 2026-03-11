@@ -199,7 +199,9 @@ class MarkdownReportGenerator:
         git_sha: Optional[str] = None,
         config_snapshot: Optional[Dict[str, Any]] = None,
         start_time: Optional[str] = None,
-        end_time: Optional[str] = None
+        end_time: Optional[str] = None,
+        parse_success_rate: Optional[float] = None,
+        failures_by_ticker: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Generate comprehensive markdown report for a processing run.
@@ -216,6 +218,11 @@ class MarkdownReportGenerator:
             config_snapshot: Optional config snapshot dict
             start_time: Optional ISO timestamp for start
             end_time: Optional ISO timestamp for end
+            parse_success_rate: Fraction of filings that succeeded or warned
+                (i.e. were not DLQ'd). KPI threshold: ≥0.95.
+            failures_by_ticker: Per-ticker aggregation dict produced by main().
+                Keys are ticker symbols; values have submitted/succeeded/failed/
+                failed_stage/years_available fields.
 
         Returns:
             Markdown report content as string
@@ -251,6 +258,26 @@ class MarkdownReportGenerator:
             duration = self._format_duration(start_time, end_time)
             sections.append(f"- **Duration:** {duration}")
 
+        sections.append("")
+
+        # Parse Success Rate (US-005 Scenario D)
+        sections.append("## Parse Success Rate")
+        sections.append("")
+        if parse_success_rate is not None:
+            pct = parse_success_rate * 100
+            kpi_icon = "✅" if parse_success_rate >= 0.95 else "❌"
+            sections.append(
+                f"{kpi_icon} **{pct:.1f}%** "
+                f"({'≥' if parse_success_rate >= 0.95 else '<'} 95% KPI threshold)"
+            )
+            sections.append("")
+            sections.append(
+                "> Parse success rate = (successful + warnings) / total_submitted. "
+                "Warnings are filings that parsed but yielded zero sections (not DLQ'd). "
+                "Failures are filings that raised an unhandled exception."
+            )
+        else:
+            sections.append("_Parse success rate not available for this run._")
         sections.append("")
 
         # Processing Details (Collapsible)
@@ -308,16 +335,21 @@ This run uses hash-based incremental processing to skip unchanged files.
                 reverse=True
             )[:10]
 
-            failure_content += "| File | Reason | Attempts | Last Attempt |\n"
-            failure_content += "|------|--------|----------|-------------|\n"
+            failure_content += "| File | Stage | Exception | Reason | Attempts | Last Attempt |\n"
+            failure_content += "|------|-------|-----------|--------|----------|-------------|\n"
 
             for file_path, file_data in recent:
                 file_name = Path(file_path).name
-                reason = file_data.get('reason', 'unknown')
+                stage = file_data.get('failure_stage') or '—'
+                exc   = file_data.get('exception_type') or '—'
+                reason = file_data.get('failure_reason', file_data.get('reason', 'unknown'))
+                # Truncate long reason strings so the table stays readable
+                if len(reason) > 60:
+                    reason = reason[:57] + '…'
                 attempts = file_data.get('attempt_count', 1)
-                last_attempt = file_data.get('last_attempt', 'N/A')[:19]  # Truncate timestamp
+                last_attempt = file_data.get('last_processed', file_data.get('last_attempt', 'N/A'))[:19]
 
-                failure_content += f"| {file_name} | {reason} | {attempts} | {last_attempt} |\n"
+                failure_content += f"| {file_name} | {stage} | {exc} | {reason} | {attempts} | {last_attempt} |\n"
 
             if quarantine_dir:
                 failure_content += f"\n**Quarantine Location:** `{quarantine_dir}`\n"
@@ -348,6 +380,36 @@ This snapshot enables full reproducibility of this processing run.
                 "⚙️ Configuration Snapshot",
                 config_content,
                 open_by_default=False
+            ))
+            sections.append("")
+
+        # Corpus Coverage by Ticker (US-005 Scenario E)
+        if failures_by_ticker:
+            ticker_rows = sorted(failures_by_ticker.items())
+            ticker_content = (
+                f"**Tickers in this run:** {len(ticker_rows)}\n\n"
+                "| Ticker | Submitted | Succeeded | Failed | Stage | Years Available |\n"
+                "|--------|-----------|-----------|--------|-------|-----------------|\n"
+            )
+            zero_coverage = []
+            for ticker, d in ticker_rows:
+                stage = d.get('failed_stage') or '—'
+                years = ', '.join(d.get('years_available', [])) or '—'
+                ticker_content += (
+                    f"| {ticker} | {d['submitted']} | {d['succeeded']} "
+                    f"| {d['failed']} | {stage} | {years} |\n"
+                )
+                if not d.get('years_available'):
+                    zero_coverage.append(ticker)
+            if zero_coverage:
+                ticker_content += (
+                    f"\n⚠️ **Zero-coverage tickers** (all filings failed): "
+                    f"{', '.join(zero_coverage)}\n"
+                )
+            sections.append(self._create_collapsible_section(
+                "📈 Corpus Coverage by Ticker",
+                ticker_content,
+                open_by_default=(len(zero_coverage) > 0),
             ))
             sections.append("")
 

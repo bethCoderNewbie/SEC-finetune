@@ -56,8 +56,8 @@ Filing-level identity. All scalar fields are nullable when not present in the ED
 | `sic_name` | `str` | SIC industry name. E.g., `"ELECTRONIC COMPUTERS"`. | `SegmentedRisks.sic_name` ← `SGMLHeader.sic_name` | Yes |
 | `form_type` | `str` | SEC form type. E.g., `"10-K"`. | `SegmentedRisks.form_type` ← `ParsedFiling.form_type.value` | Yes |
 | `fiscal_year` | `str` | 4-digit fiscal year derived from `period_of_report`. | `SegmentedRisks.fiscal_year` ← `ExtractedSection.metadata['fiscal_year']` | Yes |
-| `accession_number` | `str` | EDGAR accession number. E.g., `"0000320193-21-000105"`. | `SegmentedRisks.accession_number` ← `SGMLHeader.accession_number` | Yes |
-| `filed_as_of_date` | `str` | Filing date in YYYYMMDD. | `SegmentedRisks.filed_as_of_date` ← `SGMLHeader.filed_as_of_date` | Yes |
+| `accession_number` | `str` | EDGAR accession number. E.g., `"0000320193-21-000105"`. | `SegmentedRisks.accession_number` ← `SGMLHeader.accession_number`. Written by `save_to_json()` (line 126); restored by `load_from_json()` (lines 204–224) after B-5 fix in US-032. **Pre-fix files loaded by old `load_from_json` silently returned `None`.** | Yes |
+| `filed_as_of_date` | `str` | Filing date in YYYYMMDD format. E.g., `"20211029"`. Reformatted to `"2021-10-29"` (ISO 8601) in annotator output. | `SegmentedRisks.filed_as_of_date` ← `SGMLHeader.filed_as_of_date`. Written by `save_to_json()` (line 127); restored by `load_from_json()` (lines 204–224) after B-5 fix in US-032. **Pre-fix files loaded by old `load_from_json` silently returned `None`.** | Yes |
 | `amendment_flag` | `bool` | `true` if this is an amendment (10-K/A). `null` when absent from DEI. | `SegmentedRisks.amendment_flag` ← DEI Tier-1 | Yes |
 | `entity_filer_category` | `str` | SEC filer size category. E.g., `"Large accelerated filer"`. | `SegmentedRisks.entity_filer_category` ← DEI Tier-1 | Yes |
 | `ein` | `str` | IRS Employer Identification Number. | `SegmentedRisks.ein` ← SGML or DEI Tier-1 | Yes |

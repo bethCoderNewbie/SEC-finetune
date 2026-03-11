@@ -480,11 +480,13 @@ def process_single_file_fast(args: Tuple) -> Dict[str, Any]:
     # filing is lazy-initialised: only parsed when at least one section has no
     # pre-extracted JSON available (or from_intermediates_dir is not set).
     filing = None
+    _current_stage: Optional[str] = None  # tracks active pipeline step for error reporting
 
     def _ensure_filing():
-        nonlocal filing
+        nonlocal filing, _current_stage
         if filing is not None:
             return filing
+        _current_stage = PipelineStep.PARSE
         with tracker.track_module(PipelineStep.PARSE):
             parsed_path = None
             if save_intermediates:
@@ -531,6 +533,7 @@ def process_single_file_fast(args: Tuple) -> Dict[str, Any]:
 
             # Step 2: Extract (only when no pre-extracted JSON was loaded)
             if section_result is None:
+                _current_stage = PipelineStep.EXTRACT
                 with tracker.track_module(PipelineStep.EXTRACT):
                     section_result = get_worker_extractor().extract_section(
                         cur_filing, section_enum
@@ -548,6 +551,7 @@ def process_single_file_fast(args: Tuple) -> Dict[str, Any]:
 
             # Step 3: Clean
             raw_chars = len(section_result.text)
+            _current_stage = PipelineStep.CLEAN
             with tracker.track_module(PipelineStep.CLEAN):
                 cleaned_text = get_worker_cleaner().clean_text(section_result.text, deep_clean=False)
             cleaned_chars = len(cleaned_text)
@@ -576,6 +580,7 @@ def process_single_file_fast(args: Tuple) -> Dict[str, Any]:
                 )
 
             # Step 4: Segment
+            _current_stage = PipelineStep.SEGMENT
             with tracker.track_module(PipelineStep.SEGMENT):
                 segmented_risks = get_worker_segmenter().segment_extracted_section(
                     cleaned_section,
@@ -588,6 +593,7 @@ def process_single_file_fast(args: Tuple) -> Dict[str, Any]:
             # Step 5: Sentiment (if worker is enabled)
             sentiment_features_list = None
             if _worker_analyzer:
+                _current_stage = PipelineStep.SENTIMENT
                 with tracker.track_module(PipelineStep.SENTIMENT):
                     sentiment_features_list = _worker_analyzer.extract_features_batch(
                         segmented_risks.get_texts()
@@ -630,9 +636,13 @@ def process_single_file_fast(args: Tuple) -> Dict[str, Any]:
                 'sic_code': _meta.get('sic_code'),
                 'sic_name': _meta.get('sic_name'),
                 'cik': _meta.get('cik'),
+                'ticker': _meta.get('ticker'),
+                'fiscal_year': _meta.get('fiscal_year'),
                 'elapsed_time': usage.elapsed_time(),
                 'file_size_mb': file_size_mb,
                 'resource_usage': usage.to_dict(),
+                'failure_stage': None,
+                'exception_type': None,
                 'error': 'No sections extracted from filing',
             }
 
@@ -649,15 +659,20 @@ def process_single_file_fast(args: Tuple) -> Dict[str, Any]:
             'sic_code': first_result.sic_code,
             'sic_name': first_result.sic_name,
             'cik': first_result.cik,
+            'ticker': first_result.ticker,
+            'fiscal_year': first_result.fiscal_year,
             'elapsed_time': usage.elapsed_time(),
             'file_size_mb': file_size_mb,
             'resource_usage': usage.to_dict(),
+            'failure_stage': None,
+            'exception_type': None,
             'error': None,
         }
 
     except Exception as e:
         logger.exception("Error processing %s", input_file.name)
         usage = tracker.finalize()
+        _meta = filing.metadata if filing is not None else {}
         return {
             'file': input_file.name,
             'input_path': str(input_file),
@@ -665,12 +680,16 @@ def process_single_file_fast(args: Tuple) -> Dict[str, Any]:
             'status': 'error',
             'num_segments': 0,
             'sections_extracted': [],
-            'sic_code': None,
-            'sic_name': None,
-            'cik': None,
+            'sic_code': _meta.get('sic_code'),
+            'sic_name': _meta.get('sic_name'),
+            'cik': _meta.get('cik'),
+            'ticker': _meta.get('ticker'),
+            'fiscal_year': _meta.get('fiscal_year'),
             'elapsed_time': usage.elapsed_time(),
             'file_size_mb': file_size_mb,
             'resource_usage': usage.to_dict(),
+            'failure_stage': _current_stage,
+            'exception_type': type(e).__name__,
             'error': str(e),
         }
 
@@ -858,6 +877,8 @@ def run_batch_pipeline(
                 input_path=Path(result['input_path']),
                 run_id=run_id,
                 reason=result.get('error', 'unknown'),
+                failure_stage=result.get('failure_stage'),
+                exception_type=result.get('exception_type'),
             )
 
         # Periodic checkpoint + manifest save every chunk_size completions
@@ -1046,6 +1067,57 @@ def main():
         warnings_cnt = sum(1 for r in results if r.get('status') == 'warning')
         failed_cnt   = sum(1 for r in results if r.get('status') == 'error')
 
+        # US-005 Scenario D: parse_success_rate = (success + warnings) / total
+        # warnings are filings that parsed but yielded zero sections — they count
+        # as processed (not DLQ'd) for this KPI.
+        parse_success_rate = (
+            (successful + warnings_cnt) / total_files if total_files > 0 else 0.0
+        )
+
+        # US-005 Scenario E: per-ticker corpus coverage aggregation
+        failures_by_ticker: Dict[str, Any] = {}
+        for r in results:
+            ticker = r.get('ticker') or 'unknown'
+            fy     = r.get('fiscal_year')
+            status = r.get('status', 'unknown')
+            entry  = failures_by_ticker.setdefault(ticker, {
+                'submitted': 0, 'succeeded': 0, 'failed': 0,
+                'failed_stage': None, 'years_available': [],
+            })
+            entry['submitted'] += 1
+            if status == 'success':
+                entry['succeeded'] += 1
+                if fy and fy not in entry['years_available']:
+                    entry['years_available'].append(fy)
+            elif status == 'warning':
+                # warning = parsed but zero sections; counts as a coverage gap
+                entry['failed'] += 1
+                if entry['failed_stage'] is None:
+                    entry['failed_stage'] = 'extract'
+            else:
+                entry['failed'] += 1
+                stage = r.get('failure_stage')
+                if stage and entry['failed_stage'] is None:
+                    entry['failed_stage'] = stage
+        for entry in failures_by_ticker.values():
+            entry['years_available'] = sorted(entry['years_available'])
+
+        # US-005 Scenario B: standalone plaintext DLQ log in run directory
+        error_results = [r for r in results if r.get('status') == 'error']
+        if error_results:
+            dlq_log_path = run_dir / "DLQ.log"
+            with open(dlq_log_path, 'w', encoding='utf-8') as dlq_f:
+                dlq_f.write(f"Dead Letter Queue — run {run_id}\n")
+                dlq_f.write(f"Generated: {datetime.now().isoformat()}\n")
+                dlq_f.write("=" * 80 + "\n\n")
+                for r in error_results:
+                    dlq_f.write(f"FILE:       {r.get('file', 'unknown')}\n")
+                    dlq_f.write(f"EXCEPTION:  {r.get('exception_type', 'unknown')}\n")
+                    dlq_f.write(f"STAGE:      {r.get('failure_stage', 'unknown')}\n")
+                    dlq_f.write(f"MESSAGE:    {r.get('error', 'unknown')}\n")
+                    dlq_f.write(f"RETRIES:    0\n")
+                    dlq_f.write("\n")
+
         # --- MarkdownReportGenerator ---
         generator = MarkdownReportGenerator()
         report_md = generator.generate_run_report(
@@ -1066,6 +1138,8 @@ def main():
             config_snapshot=run_meta,
             start_time=start_iso,
             end_time=end_iso,
+            parse_success_rate=parse_success_rate,
+            failures_by_ticker=failures_by_ticker,
         )
         (run_dir / "RUN_REPORT.md").write_text(report_md)
 
@@ -1075,16 +1149,18 @@ def main():
         summary_name = format_output_filename("batch_summary", run_dir_meta)
         summary_path = run_dir / summary_name
         summary_data = {
-            'version':     '3.0',
-            'run_id':      run_id,
-            'git_sha':     git_sha,
-            'total_files': total_files,
-            'successful':  successful,
-            'warnings':    warnings_cnt,
-            'failed':      failed_cnt,
-            'run_dir':     str(run_dir),
-            'manifest':    str(PROCESSED_DATA_DIR / ".manifest.json"),
-            'results':     results,
+            'version':            '3.0',
+            'run_id':             run_id,
+            'git_sha':            git_sha,
+            'total_files':        total_files,
+            'successful':         successful,
+            'warnings':           warnings_cnt,
+            'failed':             failed_cnt,
+            'parse_success_rate': round(parse_success_rate, 4),
+            'run_dir':            str(run_dir),
+            'manifest':           str(PROCESSED_DATA_DIR / ".manifest.json"),
+            'failures_by_ticker': failures_by_ticker,
+            'results':            results,
         }
         with open(summary_path, 'w', encoding='utf-8') as f:
             json.dump(summary_data, f, indent=2)
