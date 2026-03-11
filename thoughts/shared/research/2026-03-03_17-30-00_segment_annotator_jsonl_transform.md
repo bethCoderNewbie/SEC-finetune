@@ -5,7 +5,7 @@ time: "17:30:00"
 author: beth88.career@gmail.com
 git_commit: 3bc89d7
 branch: main
-status: RESEARCH_COMPLETE
+status: VALIDATED — 2026-03-03; conflicts and OQs updated against classifier input formats, SASB taxonomy architecture, and LLM synthesis research
 related_prd: PRD-002_SEC_Finetune_Pipeline_v2.md
 related_goals: G-04, G-12, G-15
 related_stories: US-001, US-029, US-030
@@ -80,6 +80,13 @@ chunks[i].char_count               → char_count      (direct copy)
 | `sasb_industry` | None | `TaxonomyManager.get_industry_for_sic(sic_code)` — **needs `sasb_sics_mapping.json`** |
 | `sasb_topic` | None | Crosswalk `(risk_label, sasb_industry)` via `archetype_to_sasb.yaml` — **file absent** |
 
+> **Bug — `filed_as_of_date` not restored by `load_from_json` (Blocker B-5, C-1):**
+> `segmentation.py:204–224` reads `document_info.filed_as_of_date` from disk but never
+> passes it to the `SegmentedRisks` constructor. After `load_from_json()`,
+> `segmented.filed_as_of_date` is always `None`. The `filing_date` reformat above will
+> produce `None` for every record. `accession_number` has the same omission.
+> **This must be patched in `segmentation.py` before the annotator can produce valid records.**
+
 ### 2.3 Archetype Integer Mapping (PRD-002 §8)
 
 No authoritative source exists in code yet. Must be defined as a constant in the module:
@@ -110,6 +117,12 @@ ARCHETYPE_LABEL_MAP = {
 - Returns string `label` (category from deprecated taxonomy), not an archetype int
 - No `sasb_topic`, `sasb_industry`, `confidence`, `label_source` in output
 - **Cannot be reused** — wrong taxonomy, wrong output schema
+- **Char truncation is wrong gate (C-10):** `inference.py:84–86` truncates at 2,000 chars
+  before calling the NLI model. BART NLI supports up to 1,024 tokens; DeBERTa supports
+  512 tokens. A 2,000-char SEC paragraph is ~330–400 words but can tokenize to 420–560
+  tokens under SentencePiece — above the DeBERTa limit. The annotator's
+  `_classify_archetype()` must use tokenizer token-count truncation, not char-count
+  truncation. The two models have different limits and neither is 2,000 chars.
 
 ### 3.2 `scripts/feature_engineering/auto_label.py`
 
@@ -251,6 +264,9 @@ SegmentedRisks
           1. top_archetype, confidence = _classify_archetype(seg.text)
           2. label = ARCHETYPE_LABEL_MAP[top_archetype]
           3. label_source = "classifier" if confidence ≥ threshold else "heuristic"
+             # ⚠ Conflicts with synthesis research namespace — see C-3 and OQ-A9.
+             # Correct Stage A value is "nli_zero_shot"; Stage B is "classifier".
+             # Must be resolved before the first record is written.
           4. sasb_topic = _crosswalk(top_archetype, sasb_industry)
                           or None if archetype_to_sasb.yaml absent
           5. yield {
@@ -294,6 +310,25 @@ Works without `archetype_to_sasb.yaml`. ~2× inference cost per segment.
 absent, either emit `null` for `sasb_topic` (simpler) or fall back to Option B
 (richer output, higher cost). Configurable via `--sasb-inference-fallback` flag.
 
+**Conflict — Archetype names vs. SASB topic names as NLI candidates (C-2, OQ-A10):**
+Using `ARCHETYPE_NAMES` as NLI hypotheses ("This text is about cybersecurity") produces
+weaker entailment signal than SASB topic names ("This text is about Data_Security").
+The synthesis research silver labeling prompt (§4.1) and SASB architecture annotation
+workflow (§5.1) both use industry-specific SASB topic names from
+`TaxonomyManager.get_topics_for_sic()` as candidates — producing `sasb_topic` directly,
+without requiring `archetype_to_sasb.yaml`. If SASB topic names are used as candidates,
+the crosswalk is no longer needed for NLI inference; instead `archetype_to_sasb.yaml`
+is consulted in reverse to derive `label` (int) from the winning SASB topic.
+Trade-off: requires `sasb_sics_mapping.json` (G-15 blocker) to be present at
+annotation time. If G-15 is not yet complete, Option A with archetype candidates is
+the only available path. See OQ-A10.
+
+**`sasb_source` provenance gap (C-9 extension, OQ-A15):**
+Option A (`archetype → crosswalk → sasb_topic`) and Option B (`NLI → sasb_topic directly`)
+produce `sasb_topic` values via different mechanisms. Records generated under different
+option paths cannot be safely merged without a `sasb_source: "crosswalk" | "nli" | null`
+field to distinguish them.
+
 ### 4.5 Heuristic Fallback (confidence < threshold)
 
 When the classifier confidence < 0.7, fall back to keyword matching and set
@@ -317,6 +352,25 @@ _HEURISTIC_KEYWORDS: Dict[str, List[str]] = {
 
 Assign `label = 8` ("other") when no keywords match. This replaces the deprecated
 `RiskClassifier` path entirely.
+
+**`label_source` namespace — unresolved conflict (C-3, OQ-A9):**
+
+The synthesis research defines the following canonical values:
+
+| Value | Meaning |
+|---|---|
+| `"nli_zero_shot"` | Stage A: `facebook/bart-large-mnli` zero-shot NLI (current annotator) |
+| `"classifier"` | Stage B: fine-tuned checkpoint inference |
+| `"llm_silver"` | LLM-assigned label on real EDGAR text (`synthesize_training_data.py`) |
+| `"llm_synthetic"` | LLM-generated text with known-by-construction label |
+| `"human"` | Human-annotated ground truth |
+| `"heuristic"` | Keyword fallback (confidence < threshold) |
+
+The annotator currently collapses Stage A and Stage B into `"classifier"`. Using `"classifier"`
+for both makes it impossible to down-weight or filter noisy zero-shot labels after the
+fine-tuned model produces better labels on the same corpus. **This namespace must be agreed
+and locked as a constant before the first record is written.** Migrating 156K records
+post-hoc requires a full re-annotation pass.
 
 ### 4.6 Ancestor-Grouped Pre-classification Merge
 
@@ -540,6 +594,11 @@ not import classifiers. The correct boundary:
 - `inference.py` — deprecated; new annotator replaces its role
 - `RiskSegment` or `SegmentedRisks` model fields — no schema migration required
 
+**Prerequisite patch (B-5):** `src/preprocessing/models/segmentation.py:load_from_json`
+must be fixed to restore `filed_as_of_date` and `accession_number` before this module
+is implemented. This is a one-line fix per field in the structured-schema branch
+(lines 204–224). Add to the same story as the annotator or as a preceding blocker story.
+
 ---
 
 ## 7. Blockers
@@ -550,6 +609,11 @@ not import classifiers. The correct boundary:
 | `archetype_to_sasb.yaml` absent (G-15) | `sasb_topic = null`; forces Option B or null | US-030; resolve OQ-T3 (macro default) first |
 | Dispatch config contamination (OQ-PRD-1, OQ-6 reopened) | Annotation corpus quality | Default `section_include` = `[part1item1a, part2item7a, part1item1c]`; hard-exclude `[part1item1, part2item8, part1item1b]`; `part2item7` opt-in with subsection filter |
 | Option A 0.11% over-380-word residual | Some segments may exceed DeBERTa 512 tokens | Investigate bypass path; annotate with warning or pre-filter |
+| **B-5** `filed_as_of_date` not restored in `segmentation.py:load_from_json` (lines 204–224) — `accession_number` has same omission | `filing_date = null` in all annotator output; every record is undated | Patch `load_from_json` to pass `filed_as_of_date` and `accession_number` to constructor before running annotator |
+| **B-6** No test set holdout mechanism | Phase 2 Macro F1 ≥ 0.72 gate is invalid — evaluating on NLI-labeled segments measures label-copying, not classification of real text | Implement filing-level `--hold-out-test` split (OQ-A11) before first corpus annotation run; holdout filings must never be passed to NLI |
+| **B-7** IAA gate absent (QR-01) | Cohen's Kappa ≥ 0.80 requirement unenforceable; noisy BART labels enter training without quality verification | Define 50-sample-per-SASB-topic IAA output path (OQ-A12) |
+| **B-8** Char truncation in `inference.py:84–86` is not token-aware | Inputs >2,000 chars truncated regardless of actual token count; BART limit is 1,024 tokens, DeBERTa limit is 512 tokens — neither is 2,000 chars | Replace char gate with tokenizer token-count gate in `_classify_archetype()` (OQ-A13) |
+| **B-9** `label_source` namespace conflict with synthesis research | Merged corpus cannot distinguish zero-shot BART labels from fine-tuned labels from LLM silver labels | Resolve OQ-A9; define namespace constant before first annotation run |
 
 ---
 
@@ -561,7 +625,7 @@ not import classifiers. The correct boundary:
 | `index` monotonically increasing per output file | Verified by JSONL read-back |
 | `filing_date` is ISO 8601 | `re.match(r'\d{4}-\d{2}-\d{2}', record["filing_date"])` |
 | `label` in range 0–8 | `assert 0 <= record["label"] <= 8` |
-| `label_source` in `{"classifier", "heuristic"}` | Schema check |
+| `label_source` in `{"classifier", "heuristic"}` | Schema check — **see C-3; this criterion will be superseded once OQ-A9 is resolved** |
 | `datasets.load_dataset("json", data_files="output.jsonl")` succeeds without preprocessing | G-04 gate |
 | SASB fields null-safe (no crash when taxonomy files absent) | `TaxonomyManager` already handles this |
 | Default section include on run `20260303_160207`: input is 112,177 (`part1item1a`) + 39,516 (`part2item7a`) + 5,074 (`part1item1c`) = ~156,767 segments | Hard-excluded sections produce zero records; verify by grouping output by `section_identifier` |
@@ -569,6 +633,10 @@ not import classifiers. The correct boundary:
 | Merged `chunk_id` format is `"{first}+{last}"` for multi-segment groups | Verified by JSONL read-back |
 | `ancestors = []` segments are never merged with neighbours | Singleton run — emitted as-is |
 | Merge does not cross `ancestors` boundaries | Verified: consecutive segments in each merged group have identical `ancestors` |
+| `filed_as_of_date` survives `load_from_json` round-trip | `segmented.filed_as_of_date` non-null after load for any filing whose `document_info` contains `filed_as_of_date` |
+| No merged segment exceeds 512 tokens (DeBERTa) | Verified via `tokenizer(text, return_length=True, truncation=False)["length"][0] <= 512` for all records in output JSONL |
+| `label_source` values are from agreed namespace | All records have `label_source in {"nli_zero_shot", "classifier", "heuristic", "llm_silver", "llm_synthetic", "human"}` |
+| Test set holdout files produce zero NLI-labeled records | Holdout filing list written before `annotate_run_dir()` runs; holdout records are absent from `labeled.jsonl` entirely |
 
 ---
 
@@ -583,3 +651,35 @@ not import classifiers. The correct boundary:
 | OQ-A5 | Is `merge_lo=200` the right lower bound? The segment strategy research (§3 Tension 1) identifies 20–49 words as "ideal atomic range". Merging to 200 produces richer context but may create multi-topic segments from subsections with diverse risk statements. A lower `merge_lo=100` is safer; needs empirical validation. | `_merge_by_ancestors` tuning |
 | OQ-A6 | Should singletons below `merge_lo` that have no ancestor-matching neighbours be filtered out (too short for reliable classification) or passed through as-is? Phase A showed these are 0.01% of corpus at sub-20 words; the broader < 100-word population is 82% and mostly genuine content. Pass through is safer. | `_merge_by_ancestors` edge case |
 | OQ-A7 | What is the canonical allowlist of `ancestors[-1]` values for the `part2item7` subsection filter? Candidates: "Liquidity and Capital Resources", "Critical Accounting Estimates", "Market Risk". Needs a one-time audit of `ancestors` values across `part2item7` files in run `20260303_160207` to confirm exact strings before hardening the CLI default. | `--part2item7-subsections` CLI default |
+| OQ-A8 | `filed_as_of_date` not restored in `segmentation.py:load_from_json` lines 204–224. Fix: pass `filed_as_of_date=di.get('filed_as_of_date')` and `accession_number=di.get('accession_number')` to the `SegmentedRisks` constructor. Confirm fix with a round-trip test before annotator ships. Also confirm that `accession_number` has same omission and fix both in one patch. | `annotate()` correctness, Blocker B-5 |
+| OQ-A9 | `label_source` namespace: use `"classifier"` / `"heuristic"` (current annotator) or adopt the full synthesis research namespace (`"nli_zero_shot"` / `"classifier"` / `"llm_silver"` / `"llm_synthetic"` / `"human"` / `"heuristic"`)? Must be resolved before the first annotation run — cannot be migrated post-hoc across 156K records without a full re-annotation pass. Recommendation: adopt full namespace immediately; define as a module-level constant in `segment_annotator.py`. | All JSONL output, Blocker B-9 |
+| OQ-A10 | NLI candidate labels — use `ARCHETYPE_NAMES` (current §4.4 design) or industry-specific SASB topic names from `TaxonomyManager.get_topics_for_sic()` (synthesis research §4.1)? SASB topics as candidates: higher NLI precision, `sasb_topic` produced directly, crosswalk not needed for inference. Cost: requires `sasb_sics_mapping.json` (G-15) at annotation time; when G-15 is blocked, falls back to archetype candidates. Recommendation: use SASB topics as candidates when `sasb_sics_mapping.json` is present; archetype names otherwise. | `_classify_archetype()` interface, `archetype_to_sasb.yaml` necessity, C-2 |
+| OQ-A11 | Test set holdout: implement as `--hold-out-test <fraction>` flag in `annotate_run_dir()` (filing-level split decided before NLI labeling begins), or as a separate pre-annotation script that writes a holdout filing list to disk? The holdout must be decided and locked before any NLI call runs. Recommendation: separate script — decouples the holdout decision from the annotator implementation and makes the holdout list auditable and version-controlled. | Phase 2 F1 gate validity, QR-01, Blocker B-6 |
+| OQ-A12 | IAA sampling (QR-01): where does the Cohen's Kappa gate live? Options: (a) post-annotation script over `labeled.jsonl` that samples 50 records per SASB topic; (b) integrated into `annotate_run_dir()` as `--iaa-sample-output` flag; (c) separate `scripts/feature_engineering/iaa_sampler.py`. Recommendation: option (c) — keeps annotator stateless and IAA sampling independently runnable. Must output a reviewable TSV with `text`, `sasb_topic`, `label_source`, `confidence` columns for two annotators to label independently. | QR-01 compliance, training corpus sign-off, Blocker B-7 |
+| OQ-A13 | Replace 2,000-char truncation in `inference.py` with token-count gate in `_classify_archetype()`. `facebook/bart-large-mnli` supports up to 1,024 tokens; DeBERTa supports 512. These are different limits for different models. `_classify_archetype()` must use the NLI model's tokenizer for truncation decisions, not DeBERTa's. The fine-tuning dataset must separately enforce DeBERTa's 512-token limit via the HuggingFace data quality checklist. | `_classify_archetype()` correctness, C-10 |
+| OQ-A14 | Section priority without S5: start annotation corpus with `part2item7a` + `part1item1c` (dup rates 49.6% and 35.9%) before `part1item1a` (53.5% dup rate)? This inverts the current default section priority but produces a cleaner bootstrap corpus for IAA and initial fine-tuning. Recommendation: yes — build and validate the IAA pipeline on lower-dup sections first; add `part1item1a` after S5 ships. | Annotation corpus quality, Phase 2 training data plan |
+| OQ-A15 | Add `sasb_source: "crosswalk" \| "nli" \| null` field to distinguish how `sasb_topic` was derived (Option A crosswalk vs Option B NLI vs absent taxonomy files)? Records generated under different option paths cannot be merged without this field. | Corpus reproducibility, `sasb_topic` provenance |
+
+---
+
+## 10. Cross-Research Conflict Register
+
+Conflicts identified by cross-referencing against:
+- `2026-02-19_14-22-00_huggingface_classifier_input_formats.md`
+- `2026-02-19_14-53-50_sasb_materiality_taxonomy_architecture.md`
+- `2026-02-19_14-59-17_llm_synthetic_data_per_industry_models.md`
+- `src/preprocessing/models/segmentation.py` (live code, lines 173–243)
+- `src/analysis/inference.py` (live code, lines 82–86)
+
+| ID | Conflict | Severity | Location in This Doc | Resolves via |
+|---|---|---|---|---|
+| C-1 | `filed_as_of_date` not restored by `segmentation.py:load_from_json` (lines 204–224). Field is written to JSON by `save_to_json` but not passed to the constructor on load. `segmented.filed_as_of_date` is always `None` after a round-trip. `filing_date` will be `None` in all records. | **Critical** | §2.2, §7 B-5 | OQ-A8 |
+| C-2 | NLI candidate labels: annotator uses abstract `ARCHETYPE_NAMES` as NLI hypotheses. Synthesis research (§4.1) and SASB architecture annotation workflow (§5.1) both use industry-specific SASB topic names — more discriminative hypotheses that produce `sasb_topic` directly and eliminate the `archetype_to_sasb.yaml` crosswalk dependency. | High | §4.4 | OQ-A10 |
+| C-3 | `label_source` namespace mismatch: annotator collapses all model paths into `"classifier"`. Synthesis research defines `"llm_silver"` / `"llm_synthetic"` / `"human"` / `"heuristic"`. In a merged corpus, Stage A (BART zero-shot) and Stage B (fine-tuned) labels are indistinguishable. IAA gate, weighted loss, and training recipe filters in synthesis research all operate on this field. | High | §4.3 step 3, §4.5 | OQ-A9 |
+| C-4 | Silver labeling model: annotator retains `facebook/bart-large-mnli`. Synthesis research (§1) explicitly proposes replacing it with Claude/GPT-4o. BART zero-shot Macro F1 on SEC domain text is estimated ~0.55–0.60, below the frontier LLM zero-shot range (0.63–0.69) from the SASB architecture comparison table. Fine-tuning DeBERTa on BART-labeled records sets a lower accuracy ceiling. | Medium | §3.1 | OQ-A9 resolved |
+| C-5 | 379-word ceiling ≠ 512-token ceiling. DeBERTa-v3 SentencePiece produces ~1.3–1.5 tokens/word on SEC prose. A 379-word merged segment can tokenize to ~490–570 tokens; upper bound exceeds 512. HuggingFace formats research (§10 data quality checklist) mandates explicit per-segment token count verification. The `assert word_count <= 379` success criterion does not catch this. | Medium | §4.6 Step 4, §7 B-5, §8 | OQ-A13 |
+| C-6 | No test set holdout. Synthesis research (§3 "TEST SET") requires 10–15% of real EDGAR segments held out at filing level before any NLI labeling. Annotator has no holdout mechanism. A test split drawn from `labeled.jsonl` contains NLI-labeled records; Phase 2 Macro F1 ≥ 0.72 gate measures label-copying from BART, not real classification quality. | High | §5.1 CLI design, §8 | OQ-A11 |
+| C-7 | IAA gate absent. QR-01 (Cohen's Kappa ≥ 0.80, 50 examples per SASB topic) required by HuggingFace formats research (§10 label quality checklist) and synthesis research (§3 Layer 3) before training begins. Annotator success criteria do not include a Kappa check or a sampling output path. | Medium | §8 | OQ-A12 |
+| C-8 | `word_count` sum in merge may not match joined text word count. The accumulator uses `sum(seg.word_count)` but `word_count` was computed at construction time (`len(text.split())`). After `" ".join(seg.text for seg in group)`, segments with trailing/leading whitespace or unicode non-breaking spaces produce a post-join word count that differs from the sum by ±2–5 words. The `merge_hi` boundary check fires on the sum. | Low | §4.6 Algorithm Step 2 | Before `merge_hi` boundary hardened |
+| C-9 | `index` non-unique in combined JSONL. Counter resets per `SegmentedRisks` (per filing), so the merged 156K-record `labeled.jsonl` contains ~309 sequences of 0–N. Synthesis research dedup (SHA-256 of text) is unaffected, but `index` cannot serve as a record identifier for downstream tools. | Low | §2.2 `index` row, §8 | Before downstream tools use `index` as key |
+| C-10 | Char truncation in `inference.py:84–86` uses 2,000-char limit. BART NLI limit is 1,024 tokens (~750–900 words, ~4,500–5,400 chars). DeBERTa fine-tuning limit is 512 tokens (~350–400 words, ~2,100–2,400 chars). Neither limit is 2,000 chars. The annotator's `_classify_archetype()` must use the NLI model's tokenizer for truncation decisions; the fine-tuning pipeline must separately enforce DeBERTa's limit. | Medium | §3.1, §4.4 | OQ-A13 |
