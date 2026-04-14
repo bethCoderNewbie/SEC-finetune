@@ -7,7 +7,7 @@ Stage B: fine-tuned checkpoint swap — same interface, no schema change
 Classification strategy:
   Layer 1 — Binary risk gate (part1item1 / part2item7 only)
   Layer 2 — Section-specific hypothesis templates
-  Layer 3 — Ancestor heading score bonus (all 9 candidates always passed)
+  Layer 3 — Ancestor heading score bonus (all 6 SASB dimension candidates always passed)
   Layer 4 — Section-specific confidence thresholds
   Layer 5 — Pluggable LLM backend (optional; inactive by default)
 
@@ -28,22 +28,87 @@ from src.preprocessing.models.segmentation import RiskSegment, SegmentedRisks
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Archetype label map (PRD-002 §8) — module-level constant (OQ-A3 resolved)
+# Archetype label map — SASB 5 sustainability dimensions + other (ADR-016)
 # ---------------------------------------------------------------------------
 
 ARCHETYPE_LABEL_MAP: ClassVar[Dict[str, int]] = {
-    "cybersecurity":  0,
-    "regulatory":     1,
-    "financial":      2,
-    "supply_chain":   3,
-    "market":         4,
-    "esg":            5,
-    "macro":          6,
-    "human_capital":  7,
-    "other":          8,
+    "environment":    0,   # GHG, Air Quality, Energy, Water, Waste, Ecological
+    "social_capital": 1,   # Data Security, Customer Privacy, Product Safety, Affordability
+    "human_capital":  2,   # Labour Practices, Employee H&S, Engagement & Diversity
+    "business_model": 3,   # Supply Chain, Materials, Physical Climate, Product Design
+    "governance":     4,   # Business Ethics, Competitive Behaviour, Legal/Regulatory, Systemic Risk
+    "other":          5,   # macro, financial, boilerplate — no SASB home
 }
 
+# Human-readable display names passed to BART NLI as candidate labels
+_ARCHETYPE_DISPLAY_NAMES: Dict[str, str] = {
+    "environment":    "environment",
+    "social_capital": "social capital",
+    "human_capital":  "human capital",
+    "business_model": "business model and innovation",
+    "governance":     "leadership and governance",
+    "other":          "other",
+}
+
+# Built from the above — do not edit directly
 ARCHETYPE_NAMES: List[str] = list(ARCHETYPE_LABEL_MAP.keys())
+_NLI_CANDIDATE_NAMES: List[str] = [_ARCHETYPE_DISPLAY_NAMES[k] for k in ARCHETYPE_NAMES]
+_NLI_LABEL_TO_CODE: Dict[str, str] = {v: k for k, v in _ARCHETYPE_DISPLAY_NAMES.items()}
+
+# ---------------------------------------------------------------------------
+# Official SASB Conceptual Framework dimension definitions (verbatim).
+# Used verbatim in the LLM prompt to ground zero-shot classification.
+# Source: SASB Conceptual Framework §4 (five sustainability dimensions).
+# ---------------------------------------------------------------------------
+
+_SASB_DIMENSION_DEFINITIONS: Dict[str, str] = {
+    "environment": (
+        "Corporate impacts on the environment through the use of nonrenewable natural "
+        "resources as inputs to the factors of production (e.g., water, minerals, ecosystems, "
+        "and biodiversity) or through harmful releases into the environment (such as air, land, "
+        "and water) that may negatively affect natural resources and result in impacts to the "
+        "company's financial condition or operating performance."
+    ),
+    "social_capital": (
+        "The perceived role of business in society and the expectation that a business will "
+        "contribute to society in return for a social license to operate. Addresses management "
+        "of relationships with customers, local communities, the public, and the government. "
+        "Includes issues related to human rights, protection of vulnerable groups, local economic "
+        "development, access to and quality of products and services, affordability, responsible "
+        "business practices in marketing, and customer privacy."
+    ),
+    "human_capital": (
+        "Management of a company's human resources (employees and individual contractors) as "
+        "key assets to delivering long-term value. Includes issues affecting the productivity of "
+        "employees such as employee engagement, diversity, and incentives and compensation, as "
+        "well as attraction and retention of employees in competitive or constrained talent markets. "
+        "Also addresses working conditions, management of labor relations, and the management of "
+        "health and safety of employees in dangerous working environments."
+    ),
+    "business_model": (
+        "The impact of sustainability issues on innovation and business models. Addresses the "
+        "integration of environmental, human, and social issues in a company's value-creation "
+        "process, including resource recovery and other innovations in the production process, "
+        "as well as product innovation including efficiency and responsibility in the design, "
+        "use phase, and disposal of products. Also includes management of environmental and "
+        "social impacts on tangible and financial assets—either a company's own or those that "
+        "it manages as the fiduciary for others."
+    ),
+    "governance": (
+        "Management of issues that are inherent to the business model or common practice in "
+        "the industry and that are in potential conflict with the interest of broader stakeholder "
+        "groups (e.g., government, community, customers, and employees), thereby creating a "
+        "potential liability or limitation or removal of a license to operate. Includes regulatory "
+        "compliance and regulatory and political influence. Also includes risk management, safety "
+        "management, supply-chain and materials sourcing, conflicts of interest, anticompetitive "
+        "behavior, and corruption and bribery."
+    ),
+    "other": (
+        "Macro-economic conditions, pure financial risk (liquidity, credit, interest rate), "
+        "or boilerplate disclosure content with no material connection to any of the five "
+        "SASB sustainability dimensions."
+    ),
+}
 
 # ---------------------------------------------------------------------------
 # label_source namespace — locked per ADR-015 (OQ-A9 resolved)
@@ -95,16 +160,16 @@ _HYPOTHESIS_TEMPLATES: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 _ANCESTOR_ARCHETYPE_PRIOR: Dict[str, str] = {
-    "liquidity and capital resources": "financial",
-    "market risk":                     "market",
-    "competition":                     "market",
-    "supply chain":                    "supply_chain",
-    "cybersecurity":                   "cybersecurity",
-    "regulatory":                      "regulatory",
+    "liquidity and capital resources": "other",
+    "market risk":                     "other",
+    "competition":                     "governance",
+    "supply chain":                    "governance",
+    "cybersecurity":                   "social_capital",
+    "regulatory":                      "governance",
     "human capital":                   "human_capital",
-    "environmental":                   "esg",
-    "climate":                         "esg",
-    "critical accounting":             "financial",
+    "environmental":                   "environment",
+    "climate":                         "environment",
+    "critical accounting":             "other",
 }
 
 # ---------------------------------------------------------------------------
@@ -127,14 +192,51 @@ _SECTION_CONFIDENCE_THRESHOLDS: Dict[str, float] = {
 # ---------------------------------------------------------------------------
 
 _HEURISTIC_KEYWORDS: Dict[str, List[str]] = {
-    "cybersecurity":  ["cybersecurity", "data breach", "ransomware", "gdpr", "unauthorized access"],
-    "regulatory":     ["regulatory", "compliance", "sec", "litigation", "enforcement", "cftc"],
-    "financial":      ["liquidity", "credit", "default", "interest rate", "refinancing", "debt"],
-    "supply_chain":   ["supply chain", "supplier", "logistics", "procurement", "sourcing"],
-    "market":         ["competition", "market share", "pricing", "demand", "commodity"],
-    "esg":            ["environmental", "climate", "greenhouse", "esg", "emissions", "sustainability"],
-    "macro":          ["inflation", "recession", "gdp", "federal reserve", "foreign exchange", "tariff"],
-    "human_capital":  ["workforce", "talent", "retention", "labor", "union", "employee"],
+    # SASB: GHG emissions, Air quality, Energy management, Fuel management,
+    #       Water and wastewater management, Waste and hazardous materials, Biodiversity impacts
+    "environment":    ["greenhouse", "ghg", "emissions", "carbon", "climate",
+                       "air quality", "particulate", "nox", "sox", "air emissions",
+                       "energy management", "fuel efficiency", "fuel consumption",
+                       "water management", "wastewater", "waste", "hazardous materials",
+                       "biodiversity", "habitat", "ecosystem", "ecological",
+                       "environmental", "pollution"],
+    # SASB: Human rights & community relations, Access & affordability,
+    #       Customer welfare, Data security & customer privacy,
+    #       Fair disclosure & labeling, Fair marketing & advertising
+    "social_capital": ["data security", "data breach", "cybersecurity", "ransomware",
+                       "gdpr", "unauthorized access", "privacy", "customer privacy",
+                       "product safety", "product quality", "customer welfare",
+                       "affordability", "access and affordability",
+                       "human rights", "community relations",
+                       "fair disclosure", "labeling", "marketing practices"],
+    # SASB: Labor relations, Fair labor practices, Diversity and inclusion,
+    #       Employee health safety and wellbeing, Compensation and benefits,
+    #       Recruitment development and retention
+    "human_capital":  ["workforce", "talent", "recruitment", "retention",
+                       "labor", "labour", "union", "employee", "workers",
+                       "diversity", "inclusion", "health and safety", "wellbeing",
+                       "fair labor", "compensation", "benefits", "training"],
+    # SASB: Lifecycle impacts of products and services,
+    #       Environmental and social impacts on assets and operations,
+    #       Product packaging, Product quality and safety
+    "business_model": ["lifecycle", "product lifecycle", "end of life",
+                       "product packaging", "packaging", "circular economy",
+                       "product innovation", "r&d", "stranded assets",
+                       "esg integration", "sustainable finance",
+                       "business model", "value chain"],
+    # SASB: Systemic risk management, Accident and safety management,
+    #       Business ethics and transparency of payments, Competitive behavior,
+    #       Regulatory capture and political influence,
+    #       Materials sourcing, Supply chain management
+    "governance":     ["regulatory", "compliance", "sec", "litigation",
+                       "enforcement", "antitrust", "corruption", "bribery",
+                       "systemic risk", "competition", "competitive behavior",
+                       "market share", "pricing power",
+                       "supply chain", "supplier", "logistics", "procurement",
+                       "sourcing", "materials sourcing", "commodity",
+                       "accident", "safety management",
+                       "political influence", "lobbying", "regulatory capture",
+                       "cftc"],
     "other":          [],
 }
 
@@ -536,7 +638,7 @@ class SegmentAnnotator:
     ) -> Tuple[str, float]:
         """
         Call NLI pipeline with token-count truncation and ancestor score bonus.
-        Always passes all 9 ARCHETYPE_NAMES as candidates (OQ-A18 option c).
+        Always passes all 6 SASB dimension display names as candidates (OQ-A18 option c).
         """
         # Token-count truncation (fixes C-10 / B-8): truncate to model max_length - 2
         max_tokens = self._tokenizer.model_max_length - 2
@@ -546,11 +648,12 @@ class SegmentAnnotator:
 
         result = self._pipeline(
             text,
-            ARCHETYPE_NAMES,
+            _NLI_CANDIDATE_NAMES,
             hypothesis_template=template,
             multi_label=False,
         )
-        raw_scores = dict(zip(result["labels"], result["scores"]))
+        raw_scores = {_NLI_LABEL_TO_CODE[lbl]: score
+                      for lbl, score in zip(result["labels"], result["scores"])}
 
         # Apply ancestor score bonus (returns unchanged scores if no match)
         bonused_scores, _ = self._apply_ancestor_score_bonus(
@@ -581,14 +684,18 @@ class SegmentAnnotator:
             "part2item7a": "Quantitative Market Risk (Item 7A)",
         }
         section_name  = section_name_map.get(section_id, section_id)
-        archetype_list = ", ".join(ARCHETYPE_NAMES)
-        ancestor_ctx   = seg.ancestors[-1] if seg.ancestors else "Unknown"
+        ancestor_ctx  = seg.ancestors[-1] if seg.ancestors else "Unknown"
+
+        dimension_block = "\n".join(
+            f"  {code}: {_SASB_DIMENSION_DEFINITIONS[code]}"
+            for code in ARCHETYPE_NAMES
+        )
 
         prompt = (
-            f"Classify the following text from a 10-K {section_name} into the most applicable "
-            f"risk archetype, or \"other\" if no risk is implied.\n"
-            f"Return JSON only: {{\"archetype\": str, \"confidence\": float}}\n"
-            f"Archetypes: {archetype_list}\n"
+            f"Classify the following text from a 10-K {section_name} into the single most "
+            f"applicable SASB sustainability dimension, or \"other\" if no risk is implied.\n"
+            f"Return JSON only: {{\"archetype\": str, \"confidence\": float}}\n\n"
+            f"SASB dimensions (official definitions):\n{dimension_block}\n\n"
             f"Context: This text appears under the heading: \"{ancestor_ctx}\"\n"
             f"Text: {seg.text}"
         )
@@ -622,7 +729,10 @@ class SegmentAnnotator:
         """
         if self._crosswalk is None or sasb_industry is None:
             return None
-        return self._crosswalk.get(archetype, {}).get(sasb_industry)
+        dimension_map = self._crosswalk.get(archetype, {})
+        if not dimension_map:
+            return None
+        return dimension_map.get(sasb_industry) or dimension_map.get("default")
 
     @staticmethod
     def write_jsonl(records: List[Dict[str, Any]], output_path: Path) -> None:

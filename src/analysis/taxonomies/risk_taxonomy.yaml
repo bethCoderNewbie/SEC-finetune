@@ -1,3 +1,4 @@
+# DEPRECATED — superseded by sasb_sics_mapping.json + archetype_to_sasb.yaml (ADR-016)
 # Risk Taxonomy for SEC 10-K Filings based on SASB Materiality Map (Software & IT Services)
 # These categories will be used as candidate labels for zero-shot classification and model fine-tuning.
 

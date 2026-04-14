@@ -65,7 +65,7 @@ def _make_segmented(
     )
 
 
-def _mock_pipeline_factory(label: str = "cybersecurity", score: float = 0.85):
+def _mock_pipeline_factory(label: str = "social capital", score: float = 0.85):
     """Return a callable mock that mimics the HF zero-shot-classification pipeline."""
     def _pipe(text, candidates, hypothesis_template=None, multi_label=False):
         scores = {c: 0.01 for c in candidates}
@@ -77,7 +77,7 @@ def _mock_pipeline_factory(label: str = "cybersecurity", score: float = 0.85):
 
 
 def _make_annotator(
-    pipeline_label: str = "cybersecurity",
+    pipeline_label: str = "social capital",
     pipeline_score: float = 0.85,
     device: int = -1,
 ) -> SegmentAnnotator:
@@ -226,10 +226,10 @@ class TestAncestorScoreBonus:
             scores, ancestors, _ANCESTOR_ARCHETYPE_PRIOR, bonus=0.05
         )
         assert matched
-        assert updated["financial"] == pytest.approx(0.15, abs=1e-6)
+        assert updated["other"] == pytest.approx(0.15, abs=1e-6)
         # All other archetypes unchanged
         for a in ARCHETYPE_NAMES:
-            if a != "financial":
+            if a != "other":
                 assert updated[a] == pytest.approx(0.10, abs=1e-6)
 
     def test_no_match_returns_unchanged(self):
@@ -253,10 +253,10 @@ class TestAncestorScoreBonus:
         scores = {a: 0.98 for a in ARCHETYPE_NAMES}
         ancestors = ["Liquidity and Capital Resources"]
         updated, matched = SegmentAnnotator._apply_ancestor_score_bonus(
-            scores, ancestors, {"liquidity and capital resources": "financial"}, bonus=0.05
+            scores, ancestors, {"liquidity and capital resources": "other"}, bonus=0.05
         )
         assert matched
-        assert updated["financial"] == pytest.approx(1.0)
+        assert updated["other"] == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +350,7 @@ class TestAnnotate:
         seg = _seg("1A_001", "word " * 50)
         segmented = _make_segmented([seg])
         records = annotator.annotate(segmented)
-        assert 0 <= records[0]["label"] <= 8
+        assert 0 <= records[0]["label"] <= 5
 
     def test_index_monotonically_increasing(self):
         annotator = _make_annotator()
@@ -376,7 +376,7 @@ class TestAnnotate:
 
 class TestLabelSourceNamespace:
     def test_nli_above_threshold(self):
-        annotator = _make_annotator(pipeline_label="regulatory", pipeline_score=0.90)
+        annotator = _make_annotator(pipeline_label="leadership and governance", pipeline_score=0.90)
         seg = _seg("1A_001", "word " * 50)
         segmented = _make_segmented([seg])
         records = annotator.annotate(segmented)
@@ -406,7 +406,7 @@ class TestLabelSourceNamespace:
         # Configure LLM backend
         mock_llm = MagicMock()
         mock_response = MagicMock()
-        mock_response.content = [MagicMock(text='{"archetype": "regulatory", "confidence": 0.88}')]
+        mock_response.content = [MagicMock(text='{"archetype": "governance", "confidence": 0.88}')]
         mock_llm.messages.create.return_value = mock_response
         annotator._llm_client = mock_llm
         annotator._use_llm_for = {"part1item1a"}
@@ -467,7 +467,7 @@ class TestBinaryGate:
             if "relevant" in candidates:
                 return {"labels": ["relevant", "not relevant"], "scores": [0.80, 0.20]}
             scores = {c: 0.01 for c in candidates}
-            scores["cybersecurity"] = 0.85
+            scores["social capital"] = 0.85
             sorted_labels = sorted(scores, key=scores.__getitem__, reverse=True)
             return {"labels": sorted_labels, "scores": [scores[l] for l in sorted_labels]}
         annotator._pipeline = _pipe
@@ -510,7 +510,7 @@ class TestAnnotationConfig:
 class TestWriteJsonl:
     def test_writes_valid_jsonl(self, tmp_path):
         records = [
-            {"index": 0, "text": "Risk text.", "label": 0, "risk_label": "cybersecurity",
+            {"index": 0, "text": "Risk text.", "label": 1, "risk_label": "social_capital",
              "word_count": 2, "char_count": 10, "char": 10,
              "sasb_topic": None, "sasb_industry": None,
              "sic_code": "7372", "ticker": "AAPL", "cik": "0000320193",
@@ -521,7 +521,7 @@ class TestWriteJsonl:
         lines = out.read_text().strip().split("\n")
         assert len(lines) == 1
         parsed = json.loads(lines[0])
-        assert parsed["label"] == 0
+        assert parsed["label"] == 1
         assert parsed["label_source"] == "nli_zero_shot"
 
     def test_creates_parent_dirs(self, tmp_path):
@@ -554,10 +554,10 @@ class TestReformatDate:
 
 class TestHeuristicLabel:
     def test_cybersecurity_match(self):
-        assert _heuristic_label("We face cybersecurity and data breach risks.") == "cybersecurity"
+        assert _heuristic_label("We face cybersecurity and data breach risks.") == "social_capital"
 
     def test_financial_match(self):
-        assert _heuristic_label("Our liquidity and credit facilities may be impaired.") == "financial"
+        assert _heuristic_label("Our liquidity and credit facilities may be impaired.") == "other"
 
     def test_no_match_returns_other(self):
         assert _heuristic_label("The quick brown fox jumps over the lazy dog.") == "other"

@@ -6,7 +6,7 @@ author: bethCoderNewbie
 git_commit: cddb2b2
 branch: main
 repository: SEC-finetune
-status: VALIDATED — 2026-03-11; all gaps verified against live codebase HEAD cddb2b2
+status: UPDATED — 2026-03-11; D-6 resolved (taxonomy files created, untracked); all other gaps verified against live codebase HEAD cddb2b2
 related_prd: PRD-002_SEC_Finetune_Pipeline_v2.md
 related_goals: G-04, G-12, G-13, G-15, G-16
 related_stories: US-001, US-004, US-006, US-029, US-030
@@ -210,16 +210,24 @@ year-range parameterization must be verified.
 
 ---
 
-#### D-6 — G-15 taxonomy files absent **[MEDIUM — SASB columns null]**
+#### D-6 — G-15 taxonomy files absent **[RESOLVED]**
 
-`src/analysis/taxonomies/sasb_sics_mapping.json` and `archetype_to_sasb.yaml` do not
-exist. `TaxonomyManager.get_industry_for_sic()` silently returns `None`
-(`taxonomy_manager.py:118`). `sasb_topic` and `sasb_industry` columns will be `null` in
-all output until US-030 is completed.
+~~`src/analysis/taxonomies/sasb_sics_mapping.json` and `archetype_to_sasb.yaml` do not
+exist.~~ Both files now exist (untracked at current HEAD):
 
-**Impact on use case:** The 9-archetype row labels still work without SASB taxonomy.
-`sasb_topic` is a "nice to have" column for industry-specific precision, not a prerequisite
-for a functional YoY comparison table.
+- `sasb_sics_mapping.json`: `sic_to_sasb` map (~104 entries) + `sasb_topics` per-industry
+  arrays with `{dimension, gic_code, gic_name, name, disclosure_topics[]}` objects.
+- `archetype_to_sasb.yaml`: 5-dimension crosswalk (`environment`, `social_capital`,
+  `human_capital`, `business_model`, `governance`) → most-material SASB GIC per industry.
+  `other` dimension is present but empty (`{}`).
+
+`TaxonomyManager.get_industry_for_sic()` should now return values once files are committed.
+`sasb_topic` and `sasb_industry` columns are no longer blocked by missing data files.
+
+**Remaining work:** Commit the two files; verify `TaxonomyManager` loads them correctly
+end-to-end (US-030 integration test). Note: industry name strings vary slightly across
+dimensions in `archetype_to_sasb.yaml` (e.g. `"Aerospace & Defence"` vs
+`"Aerospace & Defense"`) — confirm lookup is case/punctuation-tolerant.
 
 ---
 
@@ -441,8 +449,8 @@ Step 4 — Frontend
 | `src/preprocessing/models/segmentation.py` | MODIFY | B | B-5 patch: restore `filed_as_of_date` + `accession_number` in `load_from_json:204-224` |
 | `src/visualization/app.py` | MODIFY | B | Add new YoY view page; do not touch existing single-file pipeline view |
 | `configs/` (dispatch config) | MODIFY | B | `section_filter: [part1item1a]` |
-| `src/analysis/taxonomies/sasb_sics_mapping.json` | CREATE | C | G-15 / US-030 prerequisite |
-| `src/analysis/taxonomies/archetype_to_sasb.yaml` | CREATE | C | G-15 / US-030 prerequisite |
+| `src/analysis/taxonomies/sasb_sics_mapping.json` | ~~CREATE~~ EXISTS | C | G-15 / US-030 prerequisite — file created, untracked; commit + integration test remaining |
+| `src/analysis/taxonomies/archetype_to_sasb.yaml` | ~~CREATE~~ EXISTS | C | G-15 / US-030 prerequisite — file created, untracked; verify industry name string tolerance |
 
 **Do NOT modify:**
 - `src/analysis/inference.py` — deprecated; new path reads pre-computed JSONL

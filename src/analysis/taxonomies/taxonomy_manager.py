@@ -38,12 +38,45 @@ logger = logging.getLogger(__name__)
 # Pydantic V2 Models for SASB Topics
 # ===========================
 
-class SASBTopic(BaseModel):
-    """A single SASB disclosure topic."""
+class DisclosureTopic(BaseModel):
+    """A single industry-specific SASB disclosure topic (metric-level)."""
     model_config = SettingsConfigDict(frozen=True)
 
-    name: str = Field(..., description="Topic identifier (e.g., 'Data_Security')")
-    description: str = Field(..., description="Full description of the topic")
+    code: str = Field(..., description="SASB topic code (e.g., 'TC-SI-230a')")
+    name: str = Field(..., description="Disclosure topic name (e.g., 'Data Security')")
+
+
+class SASBTopic(BaseModel):
+    """
+    A SASB General Issue Category (GIC) that is material for a given industry.
+
+    Follows the SASB hierarchy: Dimension → GIC → Disclosure Topics.
+    The ``name`` and ``description`` fields preserve backward compatibility;
+    ``gic_code``, ``gic_name``, ``dimension``, and ``disclosure_topics`` add
+    the full SASB-website structure (populated by consolidate_sasb_taxonomy.py).
+    """
+    model_config = SettingsConfigDict(frozen=True, extra="ignore")
+
+    name: str = Field(..., description="GIC key in underscore format (e.g., 'Data_Security')")
+    description: str = Field(..., description="Risk description for this GIC in this industry")
+
+    # SASB-hierarchy fields (optional for backward compat with legacy entries)
+    dimension: Optional[str] = Field(
+        None,
+        description="SASB sustainability dimension (e.g., 'Social Capital')",
+    )
+    gic_code: Optional[int] = Field(
+        None,
+        description="Numeric GIC code (e.g., 230 for Data Security)",
+    )
+    gic_name: Optional[str] = Field(
+        None,
+        description="Official SASB GIC name (e.g., 'Data Security')",
+    )
+    disclosure_topics: List[DisclosureTopic] = Field(
+        default_factory=list,
+        description="Industry-specific disclosure topics under this GIC",
+    )
 
 
 class SASBIndustry(BaseModel):

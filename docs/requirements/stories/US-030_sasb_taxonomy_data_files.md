@@ -30,32 +30,33 @@ Then the result is a non-empty dict for every SIC code present in the corpus
 ```gherkin
 Given sasb_sics_mapping.json at src/analysis/taxonomies/sasb_sics_mapping.json
 When I parse it with json.load()
-Then the top-level object has at least one key representing a SASB industry name (str)
-  And each industry maps to: {"sic_codes": [str, ...], "topics": [str, ...]}
-  And every SIC code in the corpus appears in exactly one industry's sic_codes list
-  And the topics list for each industry contains at least 4 entries
+Then the top-level object has exactly two keys: "sic_to_sasb" and "sasb_topics"
+  And "sic_to_sasb" maps SIC code strings to SASB industry name strings
+  And "sasb_topics" maps industry name strings to lists of {"name": str, "description": str} objects
+  And every SIC code in the corpus appears as a key in "sic_to_sasb"
+  And every industry referenced in "sic_to_sasb" has a corresponding entry in "sasb_topics"
 ```
 
-### Scenario C: archetype_to_sasb.yaml crosswalk covers all 9 archetypes
+### Scenario C: archetype_to_sasb.yaml crosswalk covers all 6 SASB dimensions
 ```gherkin
 Given archetype_to_sasb.yaml at src/analysis/taxonomies/archetype_to_sasb.yaml
 When I parse it with yaml.safe_load()
-Then it contains exactly 9 top-level keys: cybersecurity, regulatory, financial, supply_chain, market, esg, macro, human_capital, other
-  And each archetype has a "default" entry (used when industry is Unknown or not in the file)
-  And each archetype has entries for every SASB industry defined in sasb_sics_mapping.json
+Then it contains exactly 6 top-level keys: environment, social_capital, human_capital, business_model, governance, other
+  And each dimension (except "other") has a "default" entry for unknown industries
+  And the "other" dimension maps to an empty dict (no crosswalk — no SASB home)
 ```
 
-### Scenario D: Crosswalk lookup produces correct SASB topic per archetype+industry pair
+### Scenario D: Crosswalk lookup produces correct SASB topic per dimension+industry pair
 ```gherkin
 Given archetype_to_sasb.yaml is loaded
-When I look up archetype="cybersecurity" and sasb_industry="Software & IT Services"
+When I look up dimension="social_capital" and sasb_industry="Software & IT Services"
 Then the result is "Data_Security"
-When I look up archetype="esg" and sasb_industry="Oil & Gas — Exploration & Production"
+When I look up dimension="environment" and sasb_industry="Oil & Gas \u2013 Exploration & Production"
 Then the result is "Greenhouse_Gas_Emissions"
-When I look up archetype="regulatory" and sasb_industry="Commercial Banks"
+When I look up dimension="governance" and sasb_industry="Commercial Banks"
 Then the result is "Systemic_Risk_Management"
-When I look up any archetype with sasb_industry="Unknown"
-Then the result is the archetype's "default" value (not null, not empty)
+When I look up any dimension (except "other") with sasb_industry="Unknown"
+Then the result is the dimension's "default" value (not null, not empty)
 ```
 
 ### Scenario E: risk_taxonomy.yaml deprecated — not loaded by any active code path
@@ -77,27 +78,32 @@ Then taxonomy_manager.py does not load risk_taxonomy.yaml
 - **SIC audit prerequisite (§11 item 1):** Before building the mapping file, run the SIC audit
   script to identify which SIC codes appear in the target corpus. Build `sasb_sics_mapping.json`
   to cover exactly those codes (Non-Goal: full 77-industry SASB coverage).
-- **Schema for `sasb_sics_mapping.json`** (authoritative source:
-  `thoughts/shared/research/2026-02-19_14-53-50_sasb_materiality_taxonomy_architecture.md` §4.1):
+- **Schema for `sasb_sics_mapping.json`** (matches `SASBMapping` Pydantic model in
+  `src/analysis/taxonomies/taxonomy_manager.py:61`):
   ```json
   {
-    "Software & IT Services": {
-      "sic_codes": ["7372", "7371", "7374", "7379"],
-      "topics": ["Data_Security", "Intellectual_Property", "Environmental_Footprint_of_HW_Infrastructure",
-                 "Employee_Engagement_Diversity_and_Inclusion", "Competitive_Behavior",
-                 "Systemic_Risk_Management", "Managing_Systemic_Risks_from_Technology_Disruption"]
+    "sic_to_sasb": {
+      "7372": "Software & IT Services",
+      "7371": "Software & IT Services"
+    },
+    "sasb_topics": {
+      "Software & IT Services": [
+        {"name": "Data_Security", "description": "..."},
+        {"name": "Recruiting_&_Managing_a_Skilled_Workforce", "description": "..."}
+      ]
     }
   }
   ```
-- **Schema for `archetype_to_sasb.yaml`** (authoritative source: same research doc §4.2):
+- **Schema for `archetype_to_sasb.yaml`** (6-class SASB dimensions per ADR-016):
   ```yaml
-  cybersecurity:
+  social_capital:
     default: "Data_Security"
     "Software & IT Services": "Data_Security"
     "Commercial Banks": "Data_Security"
-  esg:
-    default: "Environmental_and_Social_Impacts_of_Business_Lines"
-    "Oil & Gas — Exploration & Production": "Greenhouse_Gas_Emissions"
+  environment:
+    default: "Greenhouse_Gas_Emissions"
+    "Oil & Gas \u2013 Exploration & Production": "Greenhouse_Gas_Emissions"
+  other: {}
   ```
 - **`risk_taxonomy.yaml` deprecation:** Mark with a `# DEPRECATED` header comment. Do not delete
   until test fixtures that reference it are updated.
