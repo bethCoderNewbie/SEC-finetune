@@ -180,6 +180,21 @@ class AnalysisOrchestrator:
         )
         self._context[f"classifications_{ticker}"] = classifications
 
+        # Capture filing metadata for the report header (load_filing is already imported)
+        try:
+            _seg = load_filing(
+                ticker,
+                fiscal_year,
+                Path(str(self._run_dir)) if self._run_dir else None,
+            )
+            filing_metadata: Dict[str, Any] = {
+                "filed_as_of_date": _seg.filed_as_of_date,
+                "sic_code": _seg.sic_code,
+                "company_name": _seg.company_name,
+            }
+        except Exception:
+            filing_metadata = {}
+
         # Phase D: score
         risk_score = self._run_skill(
             "score_risk",
@@ -198,6 +213,7 @@ class AnalysisOrchestrator:
             run_dir=str(self._run_dir or ""),
             classifications=classifications,
             risk_score=risk_score,
+            filing_metadata=filing_metadata,
         )
 
         # Narration (Phase C) — requires Claude Code CLI (subscription) or ANTHROPIC_API_KEY
@@ -556,7 +572,7 @@ class AnalysisOrchestrator:
         if self._run_dir is None:
             from src.config import settings as _settings
             run_dirs = sorted(
-                [d for d in _settings.paths.processed_dir.iterdir()
+                [d for d in _settings.paths.processed_data_dir.iterdir()
                  if d.is_dir() and "_preprocessing_" in d.name],
                 key=lambda d: d.stat().st_mtime,
                 reverse=True,

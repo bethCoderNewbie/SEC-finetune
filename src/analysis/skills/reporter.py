@@ -67,65 +67,268 @@ def format_report(result: AnalysisResult, fmt: str = "md") -> str:
     return _format_markdown(result)
 
 
-def _format_markdown(result: AnalysisResult) -> str:
+# ---------------------------------------------------------------------------
+# Tier helpers
+# ---------------------------------------------------------------------------
+
+_SCORE_TIERS = [
+    (76, 100, "🔴", "Critical"),
+    (51, 75,  "🟠", "High"),
+    (26, 50,  "🟡", "Moderate"),
+    (1,  25,  "🟢", "Low"),
+]
+
+_CLUSTER_TIER_EMOJI = {"High": "🔴", "Moderate": "🟡", "Low": "🟢"}
+
+
+def _score_tier_badge(score: int) -> tuple:
+    """Return (emoji, label) for a composite score 1–100."""
+    for lo, hi, emoji, label in _SCORE_TIERS:
+        if lo <= score <= hi:
+            return emoji, label
+    return "⚪", "Unknown"
+
+
+def _cluster_tier_badge(risk_tier: Optional[str]) -> str:
+    """Return 'EMOJI Label' for a cluster risk_tier string."""
+    if not risk_tier:
+        return "—"
+    return f"{_CLUSTER_TIER_EMOJI.get(risk_tier, '⚪')} {risk_tier}"
+
+
+def _format_filing_date(raw: Optional[str]) -> str:
+    """Format YYYYMMDD → YYYY-MM-DD, or return raw value unchanged."""
+    if raw and len(raw) == 8 and raw.isdigit():
+        return f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
+    return raw or ""
+
+
+def _format_markdown(result: AnalysisResult) -> str:  # noqa: C901
     ticker = result.inputs.get("ticker", "Unknown")
     fiscal_year = result.inputs.get("fiscal_year", "Unknown")
-    score_line = ""
-    if result.composite_risk_score:
-        score_line = (
-            f"\n**Composite Risk Score:** {result.composite_risk_score.score}/100"
-            f"  (dominant: {result.composite_risk_score.dominant_archetype or 'n/a'})\n"
-        )
+    run_dir_str = result.inputs.get("run_dir", "")
 
-    summary = result.summary
-    label_dist = summary.get("risk_label_distribution", {})
-    top_sasb = summary.get("top_sasb_topics", [])
-    total_segs = summary.get("total_segments", 0)
+    score_obj = result.composite_risk_score
+    score_val = score_obj.score if score_obj else 0
+    dominant_arch = (score_obj.dominant_archetype or "n/a") if score_obj else "n/a"
+    score_emoji, score_tier_label = _score_tier_badge(score_val) if score_obj else ("⚪", "Unknown")
 
-    lines: list[str] = [
-        f"# Risk Analysis Report — {ticker} ({fiscal_year})",
-        "",
-        f"*Generated {result.generated_at} · Model: {result.agent_model}*",
-        "",
-        "---",
-        "",
-        "## Summary",
-        "",
-        f"- **Total segments analysed:** {total_segs}",
-        score_line,
+    total_segs = result.summary.get("total_segments", 0)
+    top_sasb = result.summary.get("top_sasb_topics", [])
+
+    non_other = [c for c in result.clusters if c.archetype != "other"]
+    other_clusters = [c for c in result.clusters if c.archetype == "other"]
+
+    # Confidence stats across scored clusters
+    if non_other:
+        all_confs = [c.mean_confidence for c in non_other]
+        min_conf = min(all_confs)
+        max_conf = max(all_confs)
+        weighted_sum = sum(c.mean_confidence * c.segment_count for c in non_other)
+        mean_conf_overall = weighted_sum / max(sum(c.segment_count for c in non_other), 1)
+    else:
+        min_conf = max_conf = mean_conf_overall = 0.0
+
+    other_pct = other_clusters[0].pct_of_filing if other_clusters else 0.0
+    non_other_segs = sum(c.segment_count for c in non_other)
+    pct_classified = round(non_other_segs / total_segs * 100, 1) if total_segs else 0.0
+
+    lines: list[str] = []
+
+    # ---------------------------------------------------------------
+    # Section 1 — Report Header
+    # ---------------------------------------------------------------
+    lines.append(f"# Risk Analysis Report — {ticker}")
+    lines.append("")
+
+    subtitle_parts = []
+    if result.company_name_full:
+        subtitle_parts.append(result.company_name_full)
+    subtitle_parts.append(f"Fiscal Year {fiscal_year}")
+    if result.filing_date:
+        subtitle_parts.append(f"Filed: {_format_filing_date(result.filing_date)}")
+    lines.append(f"**{' | '.join(subtitle_parts)}**")
+
+    meta_parts = []
+    if result.sic_code:
+        meta_parts.append(f"SIC {result.sic_code}")
+    meta_parts.append(f"Analysis {result.generated_at}")
+    meta_parts.append(f"Model: {result.agent_model}")
+    lines.append(f"*{' · '.join(meta_parts)}*")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    # ---------------------------------------------------------------
+    # Section 2 — Executive Summary
+    # ---------------------------------------------------------------
+    lines.append("## Executive Summary")
+    lines.append("")
+    lines.append(
+        f"**{total_segs} segments classified** across **{len(non_other)} SASB dimensions**."
+    )
+    if score_obj:
+        lines.append(f"Composite risk score: **{score_val}/100 ({score_tier_label})**.")
+    lines.append("")
+
+    top_findings = [
+        c for c in sorted(result.clusters, key=lambda c: -c.segment_count)
+        if c.archetype != "other" and c.pct_of_filing >= 5.0
     ]
+    if top_findings:
+        lines.append("**Key findings:**")
+        for c in top_findings[:5]:
+            arch_title = c.archetype.replace("_", " ").title()
+            finding = f"- **{arch_title} ({c.pct_of_filing}%)**"
+            if c.sasb_topic:
+                finding += f" — {c.sasb_topic}"
+            if c.narrative_summary:
+                finding += f". {c.narrative_summary}"
+            lines.append(finding)
 
-    if label_dist:
-        lines.append("### SASB Dimension Distribution\n")
-        lines.append("| Dimension | Segments |")
-        lines.append("|-----------|----------|")
-        for label, count in sorted(label_dist.items(), key=lambda x: -x[1]):
-            lines.append(f"| {label} | {count} |")
+        env_segs = next((c.segment_count for c in result.clusters if c.archetype == "environment"), 0)
+        social_segs = next((c.segment_count for c in result.clusters if c.archetype == "social_capital"), 0)
+        env_social_pct = round((env_segs + social_segs) / total_segs * 100, 1) if total_segs else 0.0
+        if env_social_pct < 3.0:
+            lines.append(
+                f"- **Low ESG signal** — Environment + Social Capital combined "
+                f"{env_social_pct}% of classified segments."
+            )
+        lines.append("")
+
+    # ---------------------------------------------------------------
+    # Section 3 — Risk Score Card
+    # ---------------------------------------------------------------
+    lines.append("## Composite Risk Score")
+    lines.append("")
+    if score_obj:
+        lines.append("| Metric | Value |")
+        lines.append("|--------|-------|")
+        lines.append(f"| **Score** | {score_val} / 100 |")
+        lines.append(f"| **Tier** | {score_emoji} {score_tier_label} |")
+        lines.append(f"| **Dominant archetype** | {dominant_arch} |")
+        lines.append(
+            f"| **Total segments classified** | {non_other_segs} ({pct_classified}% of filing) |"
+        )
+        lines.append(f"| **Mean model confidence** | {mean_conf_overall:.2f} |")
+        lines.append("")
+        lines.append(
+            '> **Scoring note:** Frequency-weighted mean NLI confidence across SASB dimensions '
+            '(excluding "other"), scaled 1–100. Scores reflect disclosure density, not risk severity.'
+        )
+    else:
+        lines.append("*Risk score not computed.*")
+    lines.append("")
+
+    # ---------------------------------------------------------------
+    # Section 4 — SASB Dimension Distribution
+    # ---------------------------------------------------------------
+    lines.append("## SASB Dimension Distribution")
+    lines.append("")
+    if result.clusters:
+        lines.append("| Dimension | Segments | % of Filing | Mean Confidence | Tier |")
+        lines.append("|-----------|----------|-------------|-----------------|------|")
+        sorted_clusters = sorted(
+            result.clusters,
+            key=lambda c: (c.archetype == "other", -c.segment_count),
+        )
+        for c in sorted_clusters:
+            dim_name = c.archetype.replace("_", " ").title()
+            if c.archetype == "other":
+                lines.append(
+                    f"| *Other (unclassified)* | {c.segment_count} | {c.pct_of_filing}% | — | — |"
+                )
+            else:
+                badge = _cluster_tier_badge(c.risk_tier)
+                lines.append(
+                    f"| {dim_name} | {c.segment_count} | {c.pct_of_filing}% "
+                    f"| {c.mean_confidence:.2f} | {badge} |"
+                )
         lines.append("")
 
     if top_sasb:
-        lines.append(f"**Top SASB Topics:** {', '.join(top_sasb)}\n")
+        lines.append(f"**Top SASB Topics:** {', '.join(top_sasb)}")
+        lines.append("")
 
+    # ---------------------------------------------------------------
+    # Section 5 — Risk Clusters (detailed)
+    # ---------------------------------------------------------------
     if result.clusters:
         lines.append("---")
         lines.append("")
         lines.append("## Risk Clusters")
         lines.append("")
-        for cluster in result.clusters:
-            lines.append(f"### {cluster.archetype.replace('_', ' ').title()}")
+
+        cluster_order = sorted(non_other, key=lambda c: -c.segment_count) + other_clusters
+        for rank, cluster in enumerate(cluster_order, 1):
+            arch_title = cluster.archetype.replace("_", " ").title()
+            lines.append(f"### {rank}. {arch_title}")
+
+            detail_parts = []
             if cluster.sasb_topic:
-                lines.append(f"*SASB Topic: {cluster.sasb_topic}*")
-            lines.append(f"**Segments:** {cluster.segment_count}  |  "
-                         f"**Mean confidence:** {cluster.mean_confidence:.2f}")
+                detail_parts.append(f"*SASB Topic: {cluster.sasb_topic}*")
+            if cluster.archetype != "other":
+                detail_parts.append(f"**{_cluster_tier_badge(cluster.risk_tier)}**")
+            if detail_parts:
+                lines.append(" · ".join(detail_parts))
             lines.append("")
+
+            lines.append("| Metric | Value |")
+            lines.append("|--------|-------|")
+            lines.append(
+                f"| Segments | {cluster.segment_count} ({cluster.pct_of_filing}% of filing) |"
+            )
+            if cluster.archetype != "other":
+                lines.append(f"| Mean confidence | {cluster.mean_confidence:.2f} |")
+            lines.append("")
+
             if cluster.narrative_summary:
                 lines.append(cluster.narrative_summary)
                 lines.append("")
+
             if cluster.representative_segments:
-                lines.append("**Representative segments:**")
-                for seg in cluster.representative_segments[:3]:
-                    lines.append(f"> {seg[:200]}{'…' if len(seg) > 200 else ''}")
+                lines.append("**Representative disclosures:**")
                 lines.append("")
+                for seg in cluster.representative_segments[:3]:
+                    excerpt = seg[:400]
+                    ellipsis = "\u2026" if len(seg) > 400 else ""
+                    lines.append(f'> "{excerpt}{ellipsis}"')
+                    lines.append("")
+
+    # ---------------------------------------------------------------
+    # Section 6 — Model Transparency & Limitations
+    # ---------------------------------------------------------------
+    lines.append("## Model Transparency & Limitations")
+    lines.append("")
+    lines.append("| Parameter | Value |")
+    lines.append("|-----------|-------|")
+    lines.append("| Classification model | facebook/bart-large-mnli (NLI zero-shot) |")
+    lines.append("| Taxonomy | SASB 5-Dimension, 6 archetypes (ADR-016) |")
+    lines.append("| Hypothesis templates | Section-specific (part1item1a, part2item7, etc.) |")
+    lines.append(
+        "| Scoring formula | \u03a3(count_i \u00d7 mean_conf_i) / total \u00d7 100, excluding \"other\" |"
+    )
+    if non_other:
+        lines.append(f"| Confidence range in this report | {min_conf:.2f} \u2013 {max_conf:.2f} |")
+    lines.append("")
+    lines.append("**Known limitations:**")
+    lines.append(
+        "- Zero-shot NLI confidence scores near 0.30\u20130.40 are near the model\u2019s uncertainty boundary; "
+        "tier labels are directional."
+    )
+    lines.append(
+        f'- "Other" segments ({other_pct}%) carry no SASB signal and are excluded from the risk score.'
+    )
+    lines.append(
+        "- Narrative summaries require Phase C (Claude CLI / API); current clusters show representative excerpts only."
+    )
+    lines.append(
+        "- This report reflects disclosed language; it does not assess the probability of risk materialization."
+    )
+    lines.append("")
+    lines.append("---")
+    if run_dir_str:
+        lines.append(f"*Run directory: {run_dir_str} \u00b7 Trace: agent_trace.jsonl*")
 
     return "\n".join(lines)
 
@@ -136,8 +339,8 @@ def _format_csv(result: AnalysisResult) -> str:
     writer = csv.writer(buf)
     writer.writerow([
         "ticker", "fiscal_year", "archetype", "sasb_topic",
-        "segment_count", "mean_confidence", "composite_score",
-        "narrative_summary",
+        "segment_count", "pct_of_filing", "mean_confidence", "risk_tier",
+        "composite_score", "narrative_summary",
     ])
     ticker = result.inputs.get("ticker", "")
     fiscal_year = result.inputs.get("fiscal_year", "")
@@ -149,7 +352,9 @@ def _format_csv(result: AnalysisResult) -> str:
             cluster.archetype,
             cluster.sasb_topic or "",
             cluster.segment_count,
+            cluster.pct_of_filing,
             round(cluster.mean_confidence, 4),
+            cluster.risk_tier or "",
             score,
             (cluster.narrative_summary or "").replace("\n", " "),
         ])

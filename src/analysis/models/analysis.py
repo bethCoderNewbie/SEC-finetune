@@ -50,6 +50,8 @@ class ClusterResult(BaseModel):
     representative_segments: List[str] = Field(default_factory=list)
     narrative_summary: Optional[str] = None
     mean_confidence: float = 0.0
+    pct_of_filing: float = 0.0
+    risk_tier: Optional[str] = None
 
 
 class RiskScore(BaseModel):
@@ -77,6 +79,9 @@ class AnalysisResult(BaseModel):
     clusters: List[ClusterResult] = Field(default_factory=list)
     composite_risk_score: Optional[RiskScore] = None
     agent_model: str = "claude-opus-4-6"
+    filing_date: Optional[str] = None
+    sic_code: Optional[str] = None
+    company_name_full: Optional[str] = None
     skill_versions: Dict[str, str] = Field(default_factory=dict)
 
 

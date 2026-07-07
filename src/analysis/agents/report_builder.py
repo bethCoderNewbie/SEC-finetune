@@ -51,6 +51,7 @@ class ReportBuilderAgent:
         classifications: List[ClassificationResult],
         risk_score: Optional[RiskScore] = None,
         command: str = "analyze company",
+        filing_metadata: Optional[Dict] = None,
     ) -> AnalysisResult:
         """
         Assemble an AnalysisResult from classified segments.
@@ -72,6 +73,23 @@ class ReportBuilderAgent:
         )
         top_sasb = self._top_sasb_topics(classifications, n=5)
 
+        # Populate computed cluster fields
+        total = len(classifications)
+        for cluster in clusters:
+            cluster.pct_of_filing = round(cluster.segment_count / total * 100, 1) if total else 0.0
+            conf = cluster.mean_confidence
+            cluster.risk_tier = (
+                "High"     if conf >= 0.50 else
+                "Moderate" if conf >= 0.35 else
+                "Low"
+            )
+
+        # Extract filing metadata
+        meta = filing_metadata or {}
+        filing_date = meta.get("filed_as_of_date")
+        sic_code = meta.get("sic_code")
+        company_name_full = meta.get("company_name")
+
         return AnalysisResult(
             command=command,
             inputs={
@@ -88,6 +106,9 @@ class ReportBuilderAgent:
             clusters=clusters,
             composite_risk_score=risk_score,
             agent_model=self.model,
+            filing_date=filing_date,
+            sic_code=sic_code,
+            company_name_full=company_name_full,
             skill_versions={"classify": "1.0", "score": "1.0", "summarize": "1.0"},
         )
 
