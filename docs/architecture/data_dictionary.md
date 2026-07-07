@@ -318,3 +318,138 @@ It is called only by `SECPreprocessingPipeline.process_filing()` in the library 
 (used by `process_risk_factors()` and direct API callers). Downstream consumers should
 prefer the v2.0 flat schema from `_build_output_data()` unless calling the pipeline
 library directly.
+
+---
+
+---
+
+# Analysis Layer Output Schema (PRD-005 / ADR-017)
+
+**Last updated:** 2026-07-07
+**Schema version:** 1.0
+**Output location:** `data/reports/{YYYYMMDD_HHMMSS}_analysis_{git_sha}/`
+**Producer:** `src/analysis/orchestrator.py:AnalysisOrchestrator`
+**Note:** `data/reports/` is excluded by `.gitignore:70` — output is local-only, not committed.
+
+---
+
+## Output File Bundle
+
+| File | Format | Always written | Description |
+|------|--------|---------------|-------------|
+| `report.json` | JSON | Yes | Full `AnalysisResult` object — machine-readable |
+| `report.md` | Markdown | When `--format md` | Human-readable narrative report |
+| `report.csv` | CSV | When `--format csv` | Cluster-level tabular export |
+| `agent_trace.jsonl` | JSONL | When `trace_logging=true` | One line per agent event |
+
+---
+
+## `report.json` — Top-Level Fields (`AnalysisResult`)
+
+Defined in `src/analysis/models/analysis.py:AnalysisResult`.
+
+| Field | Type | Description | Source / Logic | Nullable |
+|-------|------|-------------|----------------|---------|
+| `schema_version` | `str` | Always `"1.0"` | Hard-coded in model | No |
+| `command` | `str` | CLI command that produced this report. E.g. `"analyze company"`, `"compare"`, `"trend"` | Set by orchestrator command handler | No |
+| `generated_at` | `str` | UTC timestamp ISO 8601. E.g. `"2026-07-07T14:23:01Z"` | `datetime.now(timezone.utc)` at model init | No |
+| `inputs` | `object` | Echo of CLI inputs (ticker, fiscal_year, run_dir, etc.) | Assembled by `ReportBuilderAgent.build()` | No |
+| `summary` | `object` | Aggregate statistics. See sub-fields below. | Assembled by `ReportBuilderAgent.build()` | No |
+| `clusters` | `array[ClusterResult]` | One entry per SASB archetype found. See sub-schema below. | `ReportBuilderAgent._build_clusters()` | No (empty array if no segments) |
+| `composite_risk_score` | `object\|null` | `RiskScore` object — null in Phase A stub (no classifications). See sub-schema below. | `score_risk()` in `scorer.py` | Yes |
+| `agent_model` | `str` | Claude model used. Default `"claude-opus-4-6"` | `AnalysisConfig.model` | No |
+| `skill_versions` | `object` | Version string per skill. Currently all `"1.0"` | Hard-coded in `ReportBuilderAgent.build()` | No |
+
+### `summary` sub-fields
+
+| Field | Type | Description | Nullable |
+|-------|------|-------------|---------|
+| `total_segments` | `int` | Total segments classified in this run | No |
+| `risk_label_distribution` | `object` | Mapping of archetype → segment count. All 6 keys present. | No |
+| `top_sasb_topics` | `array[str]` | Up to 5 most frequent SASB topic strings | Yes (empty when taxonomy files absent) |
+| `composite_risk_score` | `int\|null` | Mirror of `composite_risk_score.score` for convenience | Yes |
+
+### `clusters[]` sub-schema (`ClusterResult`)
+
+Defined in `src/analysis/models/analysis.py:ClusterResult`.
+
+| Field | Type | Description | Source / Logic | Nullable |
+|-------|------|-------------|----------------|---------|
+| `archetype` | `str` | SASB dimension key: `environment`, `social_capital`, `human_capital`, `business_model`, `governance`, or `other` | Group key in `_build_clusters()` | No |
+| `sasb_topic` | `str\|null` | Most frequent `sasb_topic` string among cluster members | `_most_common_topic()` in `report_builder.py` | Yes — null when taxonomy files absent (US-030) |
+| `segment_count` | `int` | Number of segments in this cluster | `len(members)` | No |
+| `representative_segments` | `array[str]` | Up to `representative_segment_count` (default 3) highest-confidence segment texts | Top-k by confidence; seed=42 (Tech Req #7) | No (empty array possible) |
+| `narrative_summary` | `str\|null` | 1–3 sentence Claude-generated narrative | `summarize_cluster()` via NarratorAgent (Phase C) — null when `ANTHROPIC_API_KEY` absent | Yes |
+| `mean_confidence` | `float` | Mean NLI confidence across all cluster members | `sum(conf) / len(members)` | No |
+
+### `composite_risk_score` sub-schema (`RiskScore`)
+
+Defined in `src/analysis/models/analysis.py:RiskScore`.
+
+| Field | Type | Description | Source / Logic | Nullable |
+|-------|------|-------------|----------------|---------|
+| `score` | `int` | 1–100 composite risk score (OQ-A02 formula: `clip(Σ(count_i × mean_conf_i) / total × 100, 1, 100)`) | `score_risk()` in `scorer.py` | No |
+| `label_distribution` | `object` | Archetype → count (same as `summary.risk_label_distribution`) | `score_risk()` | No |
+| `dominant_archetype` | `str\|null` | Archetype with highest segment count (excluding "other") | `max(scored_archetypes, key=count)` | Yes — null if all segments are "other" |
+
+---
+
+## `agent_trace.jsonl` Schema
+
+One JSON object per line. Defined by `AnalysisOrchestrator._trace_event()`.
+
+| Field | Type | Always present | Description |
+|-------|------|---------------|-------------|
+| `ts` | `str` | Yes | UTC timestamp to millisecond precision. E.g. `"2026-07-07T14:23:01.123Z"` |
+| `event` | `str` | Yes | Event type. See event types below. |
+
+**Event types and their additional fields:**
+
+| `event` | Additional fields | Description |
+|---------|-------------------|-------------|
+| `orchestrator_start` | `command`, `ticker` (or `sic_code`, `ticker_a/b`, `years`) | First event in every run |
+| `tool_use` | `tool`, `input` (dict of skill args — segment IDs, not texts; OQ-A06) | Claude requested a skill call |
+| `tool_result` | `tool`, `duration_ms`, `status` | Skill returned successfully |
+| `tool_error` | `tool`, `error`, `duration_ms` | Skill raised an exception |
+| `sub_agent_spawn` | `ticker`, `fiscal_year` | `_parallel_dispatch` spawned a worker |
+| `sub_agent_result` | `ticker`, `segment_count` | Worker completed |
+| `orchestrator_end` | `report_dir` | Final event; path to output directory |
+
+---
+
+## Pipeline Lineage (Analysis Layer)
+
+```
+data/processed/*/
+    *_segmented.json                 ← Preprocessing pipeline output (v2.1 schema)
+          │
+          │  load_filing skill
+          ▼
+    SegmentedRisks (in-memory)
+          │
+          │  classify_filing skill → SegmentAnnotator.annotate()
+          ▼
+    List[ClassificationResult]       ← segment_id, risk_label, confidence, label_source
+          │
+          ├──► score_risk()          → RiskScore (composite_risk_score)
+          │
+          ├──► ReportBuilderAgent    → AnalysisResult
+          │         │
+          │         └──► NarratorAgent → summarize_cluster() → narrative_summary per cluster
+          │
+          └──► export_report()       → data/reports/{ts}_analysis_{sha}/
+                                          report.json
+                                          report.md
+                                          agent_trace.jsonl
+```
+
+---
+
+## Fields NOT Yet Present (Planned)
+
+| Field | Planned location | Depends on |
+|-------|-----------------|------------|
+| `clusters[].embedding` | `ClusterResult` | Sentence embedding caching (Phase F optimisation) |
+| `yoy_deltas` | Top-level `AnalysisResult` | `trend` command result builder (implemented; not yet in `AnalysisResult` schema) |
+| `comparison` | Top-level `AnalysisResult` | `compare` result stored in `summary` dict today; deserves its own typed field |
+| `clusters[].segment_ids` | `ClusterResult` | Requires `segment_id` list per cluster for cross-referencing trace entries |

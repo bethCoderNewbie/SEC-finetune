@@ -490,3 +490,219 @@ for records with `filed_as_of_date is None` — it does not raise; the `RuntimeE
 for illustration only.
 
 Expected: ≥ 658 passed, 0 errors (excludes 2 known broken collection files).
+
+---
+
+---
+
+# Analysis Layer Runbook (PRD-005 / ADR-017)
+
+**Audience:** Engineers running or debugging `python -m src.analysis.cli`.
+**Scope:** `src/analysis/` — orchestrator, skills, agents.
+
+## Quick-Reference Commands
+
+```bash
+# Run a full single-company analysis
+python -m src.analysis.cli analyze company AAPL --year 2024
+
+# Run without LLM narration (narration is skipped automatically when key is absent)
+ANTHROPIC_API_KEY="" python -m src.analysis.cli analyze company AAPL --year 2024
+
+# Explicit run-dir (skip auto-discovery)
+python -m src.analysis.cli analyze company AAPL --run-dir data/processed/20260220_185647_preprocessing_b9fb777
+
+# Compare two companies
+python -m src.analysis.cli compare AAPL MSFT --year 2024
+
+# Sector report
+python -m src.analysis.cli analyze sector 3571 --year 2024
+
+# YoY trend (3-year window)
+python -m src.analysis.cli trend AAPL --years 3
+
+# Shorthand alias (US-041)
+python -m src.analysis.cli report AAPL --format json
+
+# Inspect trace
+cat data/reports/<run_id>/agent_trace.jsonl | python -m json.tool | head -40
+
+# Validate report schema
+python -c "
+from src.analysis.models.analysis import AnalysisResult
+import json
+AnalysisResult.model_validate(json.load(open('data/reports/<run_id>/report.json')))
+print('schema OK')
+"
+```
+
+---
+
+## Symptom: `FilingNotFoundError` — no segmented JSON found
+
+**Severity:** Medium
+**Trigger:** `python -m src.analysis.cli analyze company AAPL` raises or exits 2 with:
+```
+[load_filing] No segmented JSON found for ticker='AAPL' fiscal_year='2024' in run_dir=...
+```
+
+**Diagnosis:**
+
+```bash
+# 1. Confirm the run directory exists and contains *_segmented.json files
+ls data/processed/ | tail -5
+ls data/processed/<latest_run_dir>/ | grep segmented | head -10
+
+# 2. Check the ticker field in the candidate files
+python -c "
+import json, pathlib
+for f in pathlib.Path('data/processed/<run_dir>').rglob('*_segmented.json'):
+    d = json.load(open(f))
+    di = d.get('document_info', d)
+    print(di.get('ticker'), di.get('fiscal_year'), f.name)
+" | grep -i aapl
+```
+
+**Resolution:**
+
+| Finding | Resolution |
+|---------|------------|
+| No `*_segmented.json` files at all | The preprocessing pipeline has not been run yet. Run it first: `python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch` |
+| Files exist but wrong ticker capitalization | The lookup is case-insensitive; this is a code bug — open an issue. |
+| Correct ticker found but wrong `fiscal_year` | Pass `--year` matching the fiscal_year in `document_info.fiscal_year`. |
+| Correct ticker+year but different `--run-dir` | Pass `--run-dir <path>` explicitly to the correct stamped directory. |
+
+---
+
+## Symptom: `SkillTimeoutError` — skill timed out
+
+**Severity:** Medium
+**Trigger:** Exit code 2 with:
+```
+[classify_filing] Timed out after 30s
+```
+
+**Diagnosis:**
+
+The NLI model (`facebook/bart-large-mnli`) can be slow on CPU for large filings.
+```bash
+# Check how many segments the filing has
+python -c "
+from src.analysis.skills.filing_loader import load_filing
+s = load_filing('AAPL', '2024')
+print(len(s.segments), 'segments')
+"
+```
+
+**Resolution:**
+
+```bash
+# Increase timeout via env var
+SEC_ANALYSIS__SKILL_TIMEOUT_SECONDS=120 python -m src.analysis.cli analyze company AAPL
+
+# Or use GPU if available (set CUDA device)
+SEC_ANNOTATION__DEVICE=0 SEC_ANALYSIS__SKILL_TIMEOUT_SECONDS=60 python -m src.analysis.cli analyze company AAPL
+```
+
+---
+
+## Symptom: Phase C narration skipped — `ANTHROPIC_API_KEY not set`
+
+**Severity:** Low (informational)
+**Trigger:** Log line:
+```
+INFO  src.analysis.orchestrator  ANTHROPIC_API_KEY not set — skipping narrative summaries (Phase C).
+```
+
+**This is not an error.** The report is still written; `narrative_summary` fields in `report.json`
+will be `null`.
+
+**Resolution:**
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+python -m src.analysis.cli analyze company AAPL
+```
+
+---
+
+## Symptom: `ImportError: No module named 'anthropic'`
+
+**Severity:** High
+**Trigger:** Phase C narration raises `ImportError` at `src/analysis/skills/narrator.py`.
+
+**Resolution:**
+```bash
+pip install anthropic>=0.40.0
+# Or reinstall all project deps:
+pip install -e ".[dev]"
+```
+
+---
+
+## Symptom: `analyze sector` exits 2 — fewer than minimum filings
+
+**Severity:** Medium
+**Trigger:**
+```
+[analyze_sector] Found only 1 filing(s) for SIC 3571; minimum required is 2.
+```
+
+**Diagnosis:**
+```bash
+python -c "
+import json, pathlib
+for f in pathlib.Path('data/processed').rglob('*_segmented.json'):
+    d = json.load(open(f))
+    di = d.get('document_info', d)
+    if di.get('sic_code') == '3571':
+        print(di.get('ticker'), di.get('fiscal_year'))
+"
+```
+
+**Resolution:** Either preprocess more filings for the SIC code, or lower the minimum:
+```bash
+SEC_ANALYSIS__SECTOR_MIN_FILINGS=1 python -m src.analysis.cli analyze sector 3571
+```
+
+---
+
+## Symptom: `report.json` fails Pydantic schema validation
+
+**Severity:** High
+**Trigger:** The `AnalysisResult` model raises a `ValidationError` when loading an existing
+`report.json`. Usually indicates a schema version mismatch.
+
+**Diagnosis:**
+```bash
+python -c "
+import json
+from src.analysis.models.analysis import AnalysisResult
+r = json.load(open('data/reports/<run_id>/report.json'))
+print('schema_version:', r.get('schema_version'))
+AnalysisResult.model_validate(r)
+"
+```
+
+**Resolution:** If `schema_version` is absent or `< 1.0`, the file was written by a pre-release
+version of the analysis layer. Re-run the command against the same `--run-dir` to regenerate
+a valid `report.json`.
+
+---
+
+## Symptom: `agent_trace.jsonl` is empty or missing
+
+**Severity:** Low
+**Trigger:** `agent_trace.jsonl` is absent from `data/reports/<run_id>/` after a successful run.
+
+**Diagnosis:**
+```bash
+grep "trace_logging" src/config/analysis.py
+# Check if it was disabled via env var:
+echo $SEC_ANALYSIS__TRACE_LOGGING
+```
+
+**Resolution:**
+```bash
+# Ensure trace logging is enabled (default: true)
+SEC_ANALYSIS__TRACE_LOGGING=true python -m src.analysis.cli analyze company AAPL
+```

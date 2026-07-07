@@ -72,6 +72,9 @@ dependencies = [
     # Data validation and configuration (ENFORCED: Pydantic v2.12.4+)
     "pydantic>=2.12.4",
     "pydantic-settings>=2.0.0",
+
+    # Anthropic Claude API (agentic analysis layer — PRD-005)
+    "anthropic>=0.40.0",
 ]
 
 [project.optional-dependencies]

@@ -101,7 +101,7 @@ Each type has its own independent numeric counter. Examples: `PRD-003_quality_re
 * **When to write:** Before starting any significant new capability or when the current implementation diverges from the existing PRD.
 * **Required sections:** Context & Problem, Goals/Non-Goals, Dataset Definition (§2.1), Feature Schema (§2.2), Model Specifications with baseline + KPIs (§3), Engineering & MLOps (§4), Phase-Gate plan (§5), User Stories, Architecture, Data & Metrics, Technical Requirements, Open Questions.
 * **Status field:** `DRAFT` → `APPROVED`. Never delete; write a superseding PRD instead.
-* **Current PRDs:** PRD-001 (MVP baseline), PRD-002 (pipeline v2, current state), PRD-003 (training data quality remediation).
+* **Current PRDs:** PRD-001 (MVP baseline), PRD-002 (pipeline v2, current state), PRD-003 (training data quality remediation), PRD-004 (business intelligence use cases), PRD-005 (agentic analysis workflow).
 
 #### User Stories in PRDs
 
@@ -120,7 +120,7 @@ Each type has its own independent numeric counter. Examples: `PRD-003_quality_re
   4. **Technical Notes** — file paths, implementation class, current status
 * **Gherkin rules:** `Given` sets preconditions. `When` is the single user or system action. `Then` is the observable outcome. `And` extends the previous step. Never use vague `Then` clauses like "it works correctly" — name the exact field, file, log message, or exit code.
 * **Epic grouping:** Assign every story to one of the Epics defined in `docs/requirements/README.md`. If a new Epic is needed, add it to the README Epic table first.
-* **Current story count:** US-001 through US-020 (next ID: US-021).
+* **Current story count:** US-001 through US-041 (next ID: US-042).
 
 ### ADRs (Architecture Decision Records)
 
@@ -128,7 +128,7 @@ Each type has its own independent numeric counter. Examples: `PRD-003_quality_re
 * **When to write:** After any decision about technology choice, architectural pattern, or deliberate trade-off. Write *after* agreement, not during debate (that is an RFC).
 * **Required sections:** Status, Date, Author, Context (what problem forced this decision), Decision (what exactly was chosen and any governing rules), Consequences (positive and negative), Supersedes, References.
 * **Immutable:** Never edit an existing ADR. Write a new one with `Status: Supersedes ADR-NNN`.
-* **Current ADRs:** ADR-001 (Pydantic V2), ADR-002 (sec-parser), ADR-003 (global worker pool), ADR-004 (sanitization removed), ADR-005 (custom DLQ/checkpoint), ADR-006 (modular config), ADR-007 (stamped run dirs).
+* **Current ADRs:** ADR-001 through ADR-016 (next: ADR-017). See `docs/architecture/README.md` for full index.
 
 ### Runbook
 
