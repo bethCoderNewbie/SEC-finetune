@@ -3,10 +3,10 @@
 | Field | Value |
 |-------|-------|
 | **Status** | DRAFT |
-| **Version** | 0.1 |
+| **Version** | 0.2 |
 | **Author** | Beth |
 | **Created** | 2026-07-07 |
-| **Last Updated** | 2026-07-07 |
+| **Last Updated** | 2026-08-13 |
 | **Supersedes** | — |
 | **Source PRDs** | PRD-002 (pipeline v2), PRD-004 (business intelligence use cases) |
 
@@ -87,10 +87,12 @@ The primary input is the `*_segmented.json` output produced by the preprocessing
 | `chunks[].ancestors` | list[str] | `RiskSegmenter._resolve_ancestors()` (ADR-014 decision; `segmenter.py:457`) |
 | `chunks[].word_count` | int | RiskSegmenter |
 
-**Annotation is always a required Phase B step.** `SegmentAnnotator` writes a separate JSONL file
-via the preprocessing pipeline (US-032/US-029); it does **not** update chunk fields in-place in
-`*_segmented.json`. The `classify_filing` skill in Phase B always runs annotation fresh from the
-raw `SegmentedRisks` input — these fields below are produced by that skill call, not pre-populated:
+**Annotation is a Phase B step, now cacheable via SQLite (ADR-018).** `SegmentAnnotator` writes a
+separate JSONL file via the preprocessing pipeline (US-032/US-029); it does **not** update chunk
+fields in-place in `*_segmented.json`. The `classify_filing` skill checks the SQLite database for
+pre-computed classifications before invoking `SegmentAnnotator`. On cache hit, results are returned
+in <1ms with no model loading. On cache miss, the skill runs annotation fresh and stores results
+for future calls. These fields below are produced by that skill call or served from cache:
 
 | Field | Type | Produced by |
 |-------|------|-------------|
@@ -213,38 +215,40 @@ Output always written to `data/reports/{run_id}/`. Path printed to stdout on com
 
 ### 5.1 Module Layout
 
-New source locations (no changes to existing `src/preprocessing/` or `src/utils/`):
+Source locations (no changes to existing `src/preprocessing/` or `src/utils/`):
 
 ```
 src/
+├── storage/                          # ADR-018: SQLite filing database
+│   ├── __init__.py                   # Package init; exports FilingDatabase
+│   ├── database.py                   # FilingDatabase class (schema, CRUD, backfill, queries)
+│   └── cli.py                        # Admin CLI (status, backfill, classify-all, refresh)
 └── analysis/
-    ├── cli.py                    # Argument parsing + command dispatch (NEW)
-    ├── orchestrator.py           # AnalysisOrchestrator (Claude API client) (NEW)
+    ├── cli.py                        # Argument parsing + command dispatch
+    ├── orchestrator.py               # AnalysisOrchestrator (Claude API client)
     ├── agents/
     │   ├── __init__.py
-    │   ├── classifier_agent.py   # ClassifierAgent (NEW)
-    │   ├── narrator_agent.py     # NarratorAgent (NEW)
-    │   ├── comparator_agent.py   # ComparatorAgent (NEW)
-    │   ├── trend_agent.py        # TrendAgent (NEW)
-    │   └── report_builder.py     # ReportBuilderAgent (NEW)
+    │   ├── classifier_agent.py       # ClassifierAgent
+    │   ├── narrator_agent.py         # NarratorAgent
+    │   ├── comparator_agent.py       # ComparatorAgent
+    │   ├── trend_agent.py            # TrendAgent
+    │   └── report_builder.py         # ReportBuilderAgent
     ├── skills/
     │   ├── __init__.py
-    │   ├── filing_loader.py      # load_filing skill (NEW)
-    │   ├── classifier.py         # classify_filing skill (wraps existing SegmentAnnotator) (NEW)
-    │   ├── narrator.py           # summarize_cluster skill (NEW)
-    │   ├── scorer.py             # score_risk skill (NEW)
-    │   ├── delta_detector.py     # detect_yoy_delta skill (NEW)
-    │   ├── comparator.py         # diff_risk_profiles + aggregate_sector (NEW)
-    │   └── reporter.py           # format_report + export_report (NEW)
-    │                             # NOTE: `src/utils/reporting.py` contains an existing
-    │                             # `MarkdownReportGenerator` — consider reuse before re-implementing.
+    │   ├── filing_loader.py          # load_filing skill (DB lookup + glob fallback)
+    │   ├── classifier.py             # classify_filing skill (DB cache + SegmentAnnotator)
+    │   ├── narrator.py               # summarize_cluster skill
+    │   ├── scorer.py                 # score_risk skill
+    │   ├── delta_detector.py         # detect_yoy_delta skill
+    │   ├── comparator.py             # diff_risk_profiles + aggregate_sector
+    │   └── reporter.py               # format_report + export_report
     ├── models/
     │   ├── __init__.py
-    │   ├── analysis.py           # AnalysisResult, ClusterResult, RiskScore, YoYDelta, ComparisonResult (NEW)
-    │   └── report.py             # ReportBundle schema (NEW)
-    ├── segment_annotator.py      # EXISTING — wrapped by classifier skill
-    ├── inference.py              # EXISTING — wraps BART NLI for SegmentAnnotator._classify_segment()
-    └── taxonomies/               # EXISTING
+    │   ├── analysis.py               # AnalysisResult, ClusterResult, RiskScore, YoYDelta, etc.
+    │   └── report.py                 # ReportBundle schema
+    ├── segment_annotator.py          # EXISTING — wrapped by classifier skill
+    ├── inference.py                  # EXISTING — wraps BART NLI
+    └── taxonomies/                   # EXISTING
         ├── taxonomy_manager.py
         ├── sasb_sics_mapping.json
         └── archetype_to_sasb.yaml
@@ -256,16 +260,18 @@ The orchestrator and narrator agents call the Anthropic Claude API using the `an
 SDK (**not yet in `pyproject.toml`; must be added before Phase C** — see Tech Req #2).
 Model: `claude-opus-4-6` (overridable via config).
 
-Configuration via `src/config/analysis.py` (new module, following ADR-006 pattern):
+Configuration via `src/config/analysis.py` (following ADR-006 pattern):
 
 ```python
 class AnalysisConfig(BaseSettings):
     model: str = "claude-opus-4-6"
     max_tokens: int = 4096
     temperature: float = 0.2
-    skill_timeout_seconds: int = 30
+    skill_timeout_seconds: int = 600    # was 30; classify_filing needs 1–5 min
     trace_logging: bool = True
     report_output_dir: Path = Path("data/reports")
+    processed_dir: Path = Path("data/processed")
+    db_path: Path = Path("data/sec_filings.db")  # ADR-018
 ```
 
 ### 5.3 Pydantic V2 Enforcement (ADR-001)
@@ -296,67 +302,84 @@ is local-only and intentionally not committed to version control — the same po
 
 ## 6. Phase-Gate Plan
 
-### Phase A — Foundation (CLI + Filing Loader + Report Skeleton)
+### Phase A — Foundation (CLI + Filing Loader + Report Skeleton) ✅
 
 Delivers `analyze company` with stub agent output (no LLM calls yet).
 
-- [ ] **A-1** Create `src/analysis/cli.py` with `analyze company` argument parsing
-- [ ] **A-2** Create `src/analysis/skills/filing_loader.py` (`load_filing` skill)
-- [ ] **A-3** Create `src/analysis/models/analysis.py` (Pydantic V2 schemas)
-- [ ] **A-4** Create `src/analysis/skills/reporter.py` (`format_report`, `export_report`)
-- [ ] **A-5** Wire together: `analyze company AAPL` loads segments, writes stub `report.md`
+- [x] **A-1** Create `src/analysis/cli.py` with `analyze company` argument parsing
+- [x] **A-2** Create `src/analysis/skills/filing_loader.py` (`load_filing` skill)
+- [x] **A-3** Create `src/analysis/models/analysis.py` (Pydantic V2 schemas)
+- [x] **A-4** Create `src/analysis/skills/reporter.py` (`format_report`, `export_report`)
+- [x] **A-5** Wire together: `analyze company AAPL` loads segments, writes stub `report.md`
 - [ ] **A-6** Unit tests for `load_filing` and `format_report`
 
-**Exit criterion:** `python -m src.analysis.cli analyze company AAPL` exits 0, writes `report.md`.
+**Exit criterion:** `python -m src.analysis.cli analyze company AAPL` exits 0, writes `report.md`. ✅
 
-### Phase B — Classification Skill (Wraps Existing Annotator)
+### Phase B — Classification Skill (Wraps Existing Annotator) ✅
 
-- [ ] **B-1** Create `src/analysis/skills/classifier.py` wrapping `SegmentAnnotator`
-- [ ] **B-2** Create `src/analysis/agents/classifier_agent.py`
-- [ ] **B-3** Wire classifier into `analyze company` output (populates `risk_label_distribution`)
+- [x] **B-1** Create `src/analysis/skills/classifier.py` wrapping `SegmentAnnotator`
+- [x] **B-2** Create `src/analysis/agents/classifier_agent.py`
+- [x] **B-3** Wire classifier into `analyze company` output (populates `risk_label_distribution`)
 - [ ] **B-4** Unit tests for `classify_filing` with mock `SegmentAnnotator`
 
-**Exit criterion:** `report.json` contains non-zero `risk_label_distribution` values.
+**Exit criterion:** `report.json` contains non-zero `risk_label_distribution` values. ✅
 
-### Phase C — LLM Narration (Claude API)
+### Phase C — LLM Narration (Claude API) ✅
 
-- [ ] **C-1** Create `src/config/analysis.py` (`AnalysisConfig`)
-- [ ] **C-2** Create `src/analysis/orchestrator.py` (Claude API client, tool loop)
-- [ ] **C-3** Create `src/analysis/skills/narrator.py` (`summarize_cluster`)
-- [ ] **C-4** Create `src/analysis/agents/narrator_agent.py`
-- [ ] **C-5** Wire: each cluster in `report.json` has `narrative_summary`
-- [ ] **C-6** Implement `agent_trace.jsonl` logging (G-A08)
+- [x] **C-1** Create `src/config/analysis.py` (`AnalysisConfig`)
+- [x] **C-2** Create `src/analysis/orchestrator.py` (Claude API client, tool loop)
+- [x] **C-3** Create `src/analysis/skills/narrator.py` (`summarize_cluster`)
+- [x] **C-4** Create `src/analysis/agents/narrator_agent.py`
+- [x] **C-5** Wire: each cluster in `report.json` has `narrative_summary`
+- [x] **C-6** Implement `agent_trace.jsonl` logging (G-A08)
 - [ ] **C-7** Integration test: mock Claude API responses; verify trace log structure
 
-**Exit criterion:** `report.json` clusters contain `narrative_summary` strings; `agent_trace.jsonl` written.
+**Exit criterion:** `report.json` clusters contain `narrative_summary` strings; `agent_trace.jsonl` written. ✅
 
-### Phase D — Scoring & Comparison Commands
+### Phase D — Scoring & Comparison Commands ✅
 
-- [ ] **D-1** Create `src/analysis/skills/scorer.py` (`score_risk`)
-- [ ] **D-2** Create `src/analysis/skills/comparator.py` (`diff_risk_profiles`, `aggregate_sector`)
-- [ ] **D-3** Wire `analyze company` to include `composite_risk_score`
-- [ ] **D-4** Create `compare` command and `src/analysis/agents/comparator_agent.py`
-- [ ] **D-5** Create `analyze sector` command
+- [x] **D-1** Create `src/analysis/skills/scorer.py` (`score_risk`)
+- [x] **D-2** Create `src/analysis/skills/comparator.py` (`diff_risk_profiles`, `aggregate_sector`)
+- [x] **D-3** Wire `analyze company` to include `composite_risk_score`
+- [x] **D-4** Create `compare` command and `src/analysis/agents/comparator_agent.py`
+- [x] **D-5** Create `analyze sector` command
 - [ ] **D-6** Unit tests for scoring and comparison skills
 
-**Exit criterion:** `compare AAPL MSFT` exits 0 and writes a report with both tickers.
+**Exit criterion:** `compare AAPL MSFT` exits 0 and writes a report with both tickers. ✅
 
-### Phase E — Trend Analysis Command
+### Phase E — Trend Analysis Command ✅
 
-- [ ] **E-1** Create `src/analysis/skills/delta_detector.py` (`detect_yoy_delta`)
-- [ ] **E-2** Create `src/analysis/agents/trend_agent.py`
-- [ ] **E-3** Wire `trend` command
+- [x] **E-1** Create `src/analysis/skills/delta_detector.py` (`detect_yoy_delta`)
+- [x] **E-2** Create `src/analysis/agents/trend_agent.py`
+- [x] **E-3** Wire `trend` command
 - [ ] **E-4** Unit tests for `detect_yoy_delta`
 
-**Exit criterion:** `trend AAPL --years 3` exits 0; `YoYDelta` objects present in `report.json`.
+**Exit criterion:** `trend AAPL --years 3` exits 0; `YoYDelta` objects present in `report.json`. ✅
 
-### Phase F — Hardening & Documentation
+### Phase F — Hardening & Documentation (Partial)
 
 - [ ] **F-1** End-to-end integration test: process one real 10-K, run `analyze company`, validate report
 - [ ] **F-2** Update `docs/ops/runbook.md` with analysis command symptoms and fixes
 - [ ] **F-3** Update `docs/architecture/data_dictionary.md` with `AnalysisResult` schema
-- [ ] **F-4** Add `--format csv` export path
-- [ ] **F-5** Add `report` command alias (shorthand for `analyze company` with explicit format)
+- [x] **F-4** Add `--format csv` export path
+- [x] **F-5** Add `report` command alias (shorthand for `analyze company` with explicit format)
+
+### Phase G — Storage Layer & Pre-Computed Cache (ADR-018) ✅
+
+Added 2026-08-13. Addresses performance bottlenecks identified in production usage.
+
+- [x] **G-1** Create `src/storage/database.py` (`FilingDatabase`, SQLite schema)
+- [x] **G-2** Create `src/storage/cli.py` (admin CLI: status, backfill, classify-all)
+- [x] **G-3** Add `db_path` to `AnalysisConfig`
+- [x] **G-4** Add DB lookup to `filing_loader.py` (40,000x speedup over glob)
+- [x] **G-5** Add classification cache to `classifier.py` (skip model load on hit)
+- [x] **G-6** Add DB-backed SIC lookup to `orchestrator.py`
+- [x] **G-7** Create `scripts/data_preprocessing/classify_batch.py`
+- [x] **G-8** Backfill production DB (4,335 records, 238 tickers)
+- [ ] **G-9** Unit tests for `FilingDatabase` CRUD and backfill
+- [ ] **G-10** Schema migration mechanism (currently delete-and-rebuild)
+
+**Exit criterion:** `filing_loader.load_filing("AAPL", "2024")` returns in <1ms from DB. ✅
 
 ---
 
@@ -368,15 +391,15 @@ All stories below belong to **EP-8**. See the [epic table](README.md#epics) for 
 
 | ID | Priority | As a | I want to | So that | Status | Detail |
 |----|----------|------|-----------|---------|--------|--------|
-| [US-033](stories/US-033_analyze_company_command.md) | **P0** | Financial Analyst | Run `analyze company <ticker>` and receive a structured risk report | I can analyze a company's risk posture without writing custom code | ❌ Not implemented | [Detail](stories/US-033_analyze_company_command.md) |
-| [US-034](stories/US-034_agent_classification_skill.md) | **P0** | ML Engineer | Have an agent skill classify each segment by SASB archetype and topic | Every report is grounded in the SASB taxonomy without manual labeling | ❌ Not implemented | [Detail](stories/US-034_agent_classification_skill.md) |
-| [US-035](stories/US-035_multi_format_report_export.md) | **P0** | Data Scientist | Export analysis reports as Markdown, JSON, or CSV using `--format` | I can integrate analysis results into downstream tools without format conversion | ❌ Not implemented | [Detail](stories/US-035_multi_format_report_export.md) |
-| [US-036](stories/US-036_compare_companies.md) | **P1** | Corporate Development Analyst | Run `compare <ticker1> <ticker2>` and get a side-by-side risk comparison | I can identify divergent risk exposures between acquisition targets | ❌ Not implemented | [Detail](stories/US-036_compare_companies.md) |
-| [US-037](stories/US-037_yoy_trend_analysis.md) | **P1** | Risk Manager | Run `trend <ticker> --years N` and see which risk clusters grew or shrank | I can detect emerging or receding risk themes without reading multiple filings | ❌ Not implemented | [Detail](stories/US-037_yoy_trend_analysis.md) |
-| [US-038](stories/US-038_analyze_sector_command.md) | **P1** | Strategic Analyst | Run `analyze sector <sic>` and get aggregated risk themes across a peer cohort | I can benchmark a company's risk profile against industry norms | ❌ Not implemented | [Detail](stories/US-038_analyze_sector_command.md) |
-| [US-039](stories/US-039_agent_trace_logging.md) | **P1** | ML Engineer | Find a structured `agent_trace.jsonl` in every analysis run directory | I can debug agent reasoning, audit LLM decisions, and improve skill logic | ❌ Not implemented | [Detail](stories/US-039_agent_trace_logging.md) |
-| [US-040](stories/US-040_composite_risk_score.md) | **P1** | Portfolio Manager | See a composite risk score (1–100) per company in the analysis report | I can triage a watchlist of companies in minutes, not hours | ❌ Not implemented | [Detail](stories/US-040_composite_risk_score.md) |
-| [US-041](stories/US-041_report_command_alias.md) | **P2** | Financial Analyst | Run `report <ticker>` as a shorthand for `analyze company <ticker>` | I can generate a risk report with minimal typing | ❌ Not implemented | [Detail](stories/US-041_report_command_alias.md) |
+| [US-033](stories/US-033_analyze_company_command.md) | **P0** | Financial Analyst | Run `analyze company <ticker>` and receive a structured risk report | I can analyze a company's risk posture without writing custom code | ✅ Implemented (Phase A) | [Detail](stories/US-033_analyze_company_command.md) |
+| [US-034](stories/US-034_agent_classification_skill.md) | **P0** | ML Engineer | Have an agent skill classify each segment by SASB archetype and topic | Every report is grounded in the SASB taxonomy without manual labeling | ✅ Implemented (Phase B); DB-cached (Phase G) | [Detail](stories/US-034_agent_classification_skill.md) |
+| [US-035](stories/US-035_multi_format_report_export.md) | **P0** | Data Scientist | Export analysis reports as Markdown, JSON, or CSV using `--format` | I can integrate analysis results into downstream tools without format conversion | ✅ Implemented (Phase A) | [Detail](stories/US-035_multi_format_report_export.md) |
+| [US-036](stories/US-036_compare_companies.md) | **P1** | Corporate Development Analyst | Run `compare <ticker1> <ticker2>` and get a side-by-side risk comparison | I can identify divergent risk exposures between acquisition targets | ✅ Implemented (Phase D) | [Detail](stories/US-036_compare_companies.md) |
+| [US-037](stories/US-037_yoy_trend_analysis.md) | **P1** | Risk Manager | Run `trend <ticker> --years N` and see which risk clusters grew or shrank | I can detect emerging or receding risk themes without reading multiple filings | ✅ Implemented (Phase E) | [Detail](stories/US-037_yoy_trend_analysis.md) |
+| [US-038](stories/US-038_analyze_sector_command.md) | **P1** | Strategic Analyst | Run `analyze sector <sic>` and get aggregated risk themes across a peer cohort | I can benchmark a company's risk profile against industry norms | ✅ Implemented (Phase D) | [Detail](stories/US-038_analyze_sector_command.md) |
+| [US-039](stories/US-039_agent_trace_logging.md) | **P1** | ML Engineer | Find a structured `agent_trace.jsonl` in every analysis run directory | I can debug agent reasoning, audit LLM decisions, and improve skill logic | ✅ Implemented (Phase C) | [Detail](stories/US-039_agent_trace_logging.md) |
+| [US-040](stories/US-040_composite_risk_score.md) | **P1** | Portfolio Manager | See a composite risk score (1–100) per company in the analysis report | I can triage a watchlist of companies in minutes, not hours | ✅ Implemented (Phase D) | [Detail](stories/US-040_composite_risk_score.md) |
+| [US-041](stories/US-041_report_command_alias.md) | **P2** | Financial Analyst | Run `report <ticker>` as a shorthand for `analyze company <ticker>` | I can generate a risk report with minimal typing | ✅ Implemented (Phase F) | [Detail](stories/US-041_report_command_alias.md) |
 
 ---
 
@@ -388,8 +411,23 @@ All stories below belong to **EP-8**. See the [epic table](README.md#epics) for 
 │  HTML 10-K → Parse → Extract → Clean → Segment → SegmentedRisks│
 │                    data/processed/*/  *_segmented.json          │
 └───────────────────────────────┬─────────────────────────────────┘
-                                │  reads
+                                │
+                    backfill_from_run_dir()
+                                │
                                 ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    STORAGE LAYER (ADR-018)                        │
+│              data/sec_filings.db  (SQLite, WAL mode)             │
+│                                                                  │
+│  ┌──────────┐  ┌─────────────────┐  ┌─────────────┐            │
+│  │ filings  │←─│ classifications │  │ risk_scores  │            │
+│  │ (4,335)  │  │ (pre-computed)  │  │ (1-100)      │            │
+│  └──────────┘  └─────────────────┘  └─────────────┘            │
+│       │              │                    │                      │
+│       │  Lookup: 0.036ms (vs 1,435ms glob)                      │
+└───────┼──────────────┼────────────────────┼─────────────────────┘
+        │  index scan  │  cache hit         │  cached
+        ▼              ▼                    ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    AGENTIC ANALYSIS LAYER (PRD-005)              │
 │                                                                  │
@@ -401,22 +439,22 @@ All stories below belong to **EP-8**. See the [epic table](README.md#epics) for 
 │                      ▼                                          │
 │  ┌───────────────────────────────────────────┐                 │
 │  │         AnalysisOrchestrator               │                 │
-│  │  (Claude claude-opus-4-6 + tool loop)          │                 │
+│  │  (Claude claude-opus-4-6 + tool loop)      │                 │
 │  └──────┬────────┬────────┬────────┬─────────┘                 │
 │         │        │        │        │                            │
 │    Skills (Python callables, registered as Claude tools)        │
 │    ┌────▼──┐ ┌───▼───┐ ┌──▼───┐ ┌─▼──────┐ ┌─────────┐       │
 │    │ load  │ │classi-│ │summ- │ │detect  │ │ format  │       │
 │    │filing │ │fy_fil │ │arize │ │yoy_    │ │ report  │       │
-│    └───────┘ └───────┘ └──────┘ │ delta  │ └────┬────┘       │
-│                │                └────────┘       │             │
-│                │ wraps                           │ writes      │
-│                ▼                                 ▼             │
-│    ┌───────────────────┐         data/reports/*/report.md     │
-│    │  SegmentAnnotator  │              report.json             │
-│    │  TaxonomyManager   │              report.csv              │
-│    │  (src/analysis/)   │              agent_trace.jsonl       │
-│    └───────────────────┘                                       │
+│    └───┬───┘ └───┬───┘ └──────┘ │ delta  │ └────┬────┘       │
+│        │         │              └────────┘       │             │
+│     DB │      DB cache                           │ writes      │
+│   first│      first, then                        ▼             │
+│        │      SegmentAnnotator   data/reports/*/report.md     │
+│        │                                 report.json           │
+│        │                                 report.csv            │
+│        └─── glob fallback                agent_trace.jsonl     │
+│             if DB absent                                       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -444,7 +482,7 @@ All stories below belong to **EP-8**. See the [epic table](README.md#epics) for 
 3. **`ANTHROPIC_API_KEY` env var** — must be set; `AnalysisConfig` raises `ConfigurationError` if absent.
 4. **Pydantic V2** — all new models follow ADR-001; `extra="forbid"` on all `BaseModel` subclasses.
 5. **Stamped run directories** — ADR-007 pattern applied to `data/reports/`; `RunMetadata` reused from `src/utils/metadata.py`.
-6. **No new database dependency** — all state in files (`data/reports/`); no SQLite, Redis, or similar.
+6. ~~**No new database dependency**~~ — **Superseded by ADR-018 (2026-08-13).** SQLite (`data/sec_filings.db`) is now used as a derived index for filing lookup and classification caching. The DB supplements JSON run directories (ADR-007); if deleted, `backfill_from_run_dir()` reconstructs it. See ADR-018 for full rationale.
 7. **`RANDOM_SEED=42`** — any sampling operations (e.g., representative segment selection) must use this seed for reproducibility.
 8. **No LLM calls in unit tests** — skill tests mock the `anthropic.Anthropic` client; integration tests tag with `@pytest.mark.integration` and are excluded from the default CI run.
 9. **Skill timeouts** — each skill invocation uses `concurrent.futures.Future.result(timeout=AnalysisConfig.skill_timeout_seconds)` for thread-safe cancellation; timeout raises `SkillTimeoutError`. **`signal.alarm` / `SIGALRM` must not be used** — it only fires on the main thread and silently fails (or raises `ValueError`) when called from `ThreadPoolExecutor` worker threads used by `_parallel_dispatch()`.
@@ -454,11 +492,11 @@ All stories below belong to **EP-8**. See the [epic table](README.md#epics) for 
 
 ## 11. Open Questions
 
-| ID | Question | Owner | Priority |
-|----|----------|-------|----------|
-| OQ-A01 | Should `summarize_cluster` use Claude streaming to reduce P95 latency, or blocking calls for simplicity? | ML Engineer | Medium |
-| OQ-A02 | Is `composite_risk_score` a simple frequency-weighted average, or should severity signals (e.g., sentiment polarity, specificity) also factor in? Define formula before Phase D. | Data Scientist | High |
-| OQ-A03 | What is the minimum number of preprocessed filings required before `analyze sector` is meaningful? Proposed: ≥ 5 filings per SIC. | Strategic Analyst | Medium |
-| OQ-A04 | Should `detect_yoy_delta` use cosine similarity on TF-IDF vectors or sentence embeddings (SentenceTransformer already in worker pool)? Sentence embeddings preferred; confirm. | ML Engineer | High |
-| OQ-A05 | Does the `compare` command require both companies to be in the same `--run-dir`, or can it mix run directories? Single run-dir simplest; confirm. | ML Engineer | Medium |
-| OQ-A06 | Should agent trace entries include the full segment text (large payloads) or only segment IDs (requires cross-referencing)? Segment IDs preferred; confirm. | ML Engineer | Low |
+| ID | Question | Owner | Priority | Status |
+|----|----------|-------|----------|--------|
+| OQ-A01 | Should `summarize_cluster` use Claude streaming to reduce P95 latency, or blocking calls for simplicity? | ML Engineer | Medium | **Open** — blocking calls used currently; streaming not implemented |
+| OQ-A02 | Is `composite_risk_score` a simple frequency-weighted average, or should severity signals (e.g., sentiment polarity, specificity) also factor in? Define formula before Phase D. | Data Scientist | High | **Resolved** (ADR-017 §6) — frequency-weighted mean confidence, "other" excluded. Formula: `raw = Σ(count_i × mean_confidence_i) / total_segments`; `score = clip(round(raw × 100), 1, 100)`. Impl: `scorer.py:53-60` |
+| OQ-A03 | What is the minimum number of preprocessed filings required before `analyze sector` is meaningful? Proposed: ≥ 5 filings per SIC. | Strategic Analyst | Medium | **Resolved** — implemented as `sector_min_filings=2` (`analysis.py:41`). Lower than proposed to accommodate SIC codes with sparse coverage |
+| OQ-A04 | Should `detect_yoy_delta` use cosine similarity on TF-IDF vectors or sentence embeddings (SentenceTransformer already in worker pool)? Sentence embeddings preferred; confirm. | ML Engineer | High | **Resolved** (ADR-017 §3) — sentence embeddings via `all-MiniLM-L6-v2` with cosine similarity. Thresholds: <0.70 new, 0.70–0.85 shifted, ≥0.85 stable |
+| OQ-A05 | Does the `compare` command require both companies to be in the same `--run-dir`, or can it mix run directories? Single run-dir simplest; confirm. | ML Engineer | Medium | **Resolved** — same `--run-dir` required. DB lookup (ADR-018) may relax this in the future since DB spans all run directories |
+| OQ-A06 | Should agent trace entries include the full segment text (large payloads) or only segment IDs (requires cross-referencing)? Segment IDs preferred; confirm. | ML Engineer | Low | **Resolved** (ADR-017 §7) — segment IDs only. Full texts cross-referenceable via `*_segmented.json` |

@@ -32,6 +32,7 @@ Location: `docs/architecture/adr/ADR-{NNN}_{ShortName}.md`
 | [ADR-015](adr/ADR-015_label_source_namespace.md) | Label Source Namespace (7 Values) | Accepted | 2026-02-26 |
 | [ADR-016](adr/ADR-016_sasb_5dimension_taxonomy.md) | Replace 9-Class Archetype Taxonomy with SASB 5-Dimension 6-Class Schema | Accepted | 2026-03-11 |
 | [ADR-017](adr/ADR-017_agentic_analysis_orchestration.md) | Agentic Analysis Orchestration Model — Option C Hybrid, Direct Dispatch, Sentence Embeddings | Accepted | 2026-07-07 |
+| [ADR-018](adr/ADR-018_sqlite_filing_database.md) | SQLite Filing Database for Pre-Computed Classification Cache | Accepted | 2026-08-13 |
 
 ---
 
