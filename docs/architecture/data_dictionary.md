@@ -349,14 +349,13 @@ data/processed/{run_dir}/{stem}_{section_id}_segmented.json
 }
 ```
 
-**Note on the `SegmentedRisks.save_to_json()` method:** This method exists on the
-`SegmentedRisks` model (`src/preprocessing/models/segmentation.py`) and emits a
-different nested schema (`document_info / processing_metadata / section_metadata / chunks`,
-version `"1.0"`). It is NOT the primary output writer for the preprocessing pipeline.
-It is called only by `SECPreprocessingPipeline.process_filing()` in the library path
-(used by `process_risk_factors()` and direct API callers). Downstream consumers should
-prefer the v2.0 flat schema from `_build_output_data()` unless calling the pipeline
-library directly.
+**Single serializer:** `SegmentedRisks.save_to_json()` (`src/preprocessing/models/segmentation.py`)
+is the sole JSON output writer for the preprocessing pipeline (v2.1 schema). The former
+`_build_output_data()` function has been removed. Both the script pipeline
+(`run_preprocessing_pipeline.py`) and the library pipeline (`SECPreprocessingPipeline`)
+use `save_to_json()` for output. The v2.1 schema uses `segments` (not `chunks`) as the
+top-level key for segment data. `load_from_json()` accepts both keys for backward
+compatibility with v1.0 files.
 
 ---
 

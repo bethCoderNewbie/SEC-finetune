@@ -412,3 +412,171 @@ def test_get_database_singleton(tmp_path: Path) -> None:
 def test_schema_version(db: FilingDatabase) -> None:
     row = db.conn.execute("SELECT MAX(version) as v FROM schema_version").fetchone()
     assert row["v"] == _CURRENT_SCHEMA_VERSION
+
+
+# ---------------------------------------------------------------------------
+# Test 17: migration v1 → v2 adds new columns
+# ---------------------------------------------------------------------------
+
+
+def test_migration_v1_to_v2(tmp_path: Path) -> None:
+    """Create a v1 DB, then connect with v2 code — verify new columns exist."""
+    import sqlite3
+
+    db_path = tmp_path / "migrate.db"
+
+    # Create a v1 database manually (without the new columns)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS filings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            cik TEXT,
+            company_name TEXT,
+            form_type TEXT NOT NULL,
+            fiscal_year TEXT NOT NULL,
+            fiscal_quarter TEXT,
+            accession_number TEXT,
+            filed_as_of_date TEXT,
+            sic_code TEXT,
+            sic_name TEXT,
+            section_id TEXT NOT NULL,
+            raw_file_path TEXT,
+            segmented_json_path TEXT,
+            run_dir TEXT,
+            total_segments INTEGER,
+            raw_char_count INTEGER,
+            cleaned_char_count INTEGER,
+            pipeline_version TEXT,
+            classifier_version TEXT,
+            processed_at TEXT,
+            classified_at TEXT,
+            no_material_change BOOLEAN DEFAULT FALSE,
+            UNIQUE(ticker, fiscal_year, form_type, section_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS classifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filing_id INTEGER NOT NULL REFERENCES filings(id) ON DELETE CASCADE,
+            segment_index INTEGER NOT NULL,
+            chunk_id TEXT,
+            text TEXT NOT NULL,
+            word_count INTEGER,
+            risk_label TEXT NOT NULL,
+            sasb_topic TEXT,
+            sasb_industry TEXT,
+            confidence REAL NOT NULL,
+            label_source TEXT NOT NULL,
+            parent_subsection TEXT,
+            ticker TEXT NOT NULL,
+            fiscal_year TEXT NOT NULL,
+            UNIQUE(filing_id, segment_index)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS risk_scores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filing_id INTEGER NOT NULL REFERENCES filings(id) ON DELETE CASCADE,
+            ticker TEXT NOT NULL,
+            fiscal_year TEXT NOT NULL,
+            form_type TEXT NOT NULL,
+            score INTEGER NOT NULL,
+            dominant_archetype TEXT,
+            label_distribution TEXT,
+            computed_at TEXT NOT NULL,
+            UNIQUE(filing_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("INSERT INTO schema_version (version, applied_at) VALUES (1, '2026-01-01')")
+
+    # Insert a classification row (without char_count/segment_hash)
+    conn.execute("""
+        INSERT INTO filings (ticker, form_type, fiscal_year, section_id)
+        VALUES ('AAPL', '10-K', '2024', 'part1item1a')
+    """)
+    conn.execute("""
+        INSERT INTO classifications (filing_id, segment_index, text, risk_label, confidence,
+                                     label_source, ticker, fiscal_year)
+        VALUES (1, 0, 'test risk text', 'environment', 0.9, 'heuristic', 'AAPL', '2024')
+    """)
+    conn.commit()
+    conn.close()
+
+    # Now open with the v2 code — migration should run
+    db = FilingDatabase(db_path)
+    db.connect()
+    try:
+        # Verify schema version is 2
+        row = db.conn.execute("SELECT MAX(version) as v FROM schema_version").fetchone()
+        assert row["v"] == 2
+
+        # Verify new columns exist on classifications
+        row = db.conn.execute(
+            "SELECT char_count, segment_hash FROM classifications WHERE id=1"
+        ).fetchone()
+        assert row["char_count"] == len("test risk text")  # backfilled by migration
+        assert row["segment_hash"] is None  # not backfilled
+
+        # Verify new column on filings
+        row = db.conn.execute(
+            "SELECT text_coverage_ratio FROM filings WHERE id=1"
+        ).fetchone()
+        assert row["text_coverage_ratio"] is None  # not backfilled
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Test 18: store_classifications populates char_count and segment_hash
+# ---------------------------------------------------------------------------
+
+
+def test_store_classifications_populates_char_count(db: FilingDatabase) -> None:
+    fid = _insert_filing(db)
+
+    classifications = [
+        {
+            "text": "Risk segment with known length",
+            "word_count": 5,
+            "risk_label": "environment",
+            "confidence": 0.85,
+            "label_source": "nli_zero_shot",
+            "char_count": 30,
+            "segment_hash": "abc123def456",
+        },
+        {
+            "text": "Another risk segment",
+            "word_count": 3,
+            "risk_label": "governance",
+            "confidence": 0.72,
+            "label_source": "heuristic",
+            # No explicit char_count — should be computed from len(text)
+        },
+    ]
+
+    db.store_classifications(fid, classifications, "v1", "AAPL", "2024")
+
+    rows = db.get_classifications("AAPL", "2024")
+    assert rows[0]["char_count"] == 30
+    assert rows[0]["segment_hash"] == "abc123def456"
+    assert rows[1]["char_count"] == len("Another risk segment")
+    assert rows[1]["segment_hash"] is None
+
+
+# ---------------------------------------------------------------------------
+# Test 19: upsert_filing stores text_coverage_ratio
+# ---------------------------------------------------------------------------
+
+
+def test_upsert_filing_text_coverage_ratio(db: FilingDatabase) -> None:
+    fid = _insert_filing(db, text_coverage_ratio=0.9567)
+    row = db.get_filing("AAPL", "2024", "10-K", "part1item1a")
+    assert row is not None
+    assert abs(row["text_coverage_ratio"] - 0.9567) < 0.0001

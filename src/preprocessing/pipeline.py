@@ -28,6 +28,7 @@ from .parser import SECFilingParser
 from .cleaning import TextCleaner
 from .extractor import SECSectionExtractor
 from .segmenter import RiskSegmenter, SegmentedRisks
+from .models.segmentation import RiskSegment
 from .constants import SectionIdentifier, OutputSuffix, PipelineStep
 from .models.extraction import ExtractedSection
 # Import parallel processing utility
@@ -257,6 +258,17 @@ def _process_filing_with_global_workers(
         logger.info("Section '%s': created %d segments", section_id, len(result))
         result.raw_section_char_count     = raw_chars
         result.cleaned_section_char_count = cleaned_chars
+
+        # Compute segment hashes (Phase 2)
+        for seg in result.segments:
+            if seg.segment_hash is None:
+                seg.segment_hash = RiskSegment.compute_hash(
+                    ticker=result.ticker or '',
+                    fiscal_year=result.fiscal_year or '',
+                    section_id=section_id,
+                    chunk_id=seg.chunk_id,
+                    text=seg.text,
+                )
 
         # Compute text coverage ratio (Gap 4)
         segment_char_total = sum(seg.char_count for seg in result.segments)
@@ -589,6 +601,17 @@ class SECPreprocessingPipeline:
                 cleaned_text=cleaned_text
             )
             logger.info("Section '%s': created %d segments", section_id, len(result))
+
+            # Compute segment hashes (Phase 2)
+            for seg in result.segments:
+                if seg.segment_hash is None:
+                    seg.segment_hash = RiskSegment.compute_hash(
+                        ticker=result.ticker or '',
+                        fiscal_year=result.fiscal_year or '',
+                        section_id=section_id,
+                        chunk_id=seg.chunk_id,
+                        text=seg.text,
+                    )
 
             # Compute text coverage ratio (Gap 4)
             cleaned_chars_val = len(cleaned_text)

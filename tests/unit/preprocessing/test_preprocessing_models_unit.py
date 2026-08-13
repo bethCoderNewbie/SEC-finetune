@@ -176,7 +176,7 @@ class TestSegmentedRisksSaveLoad:
         segmented_risks.save_to_json(out)
         data = json.loads(out.read_text())
         assert "version" in data
-        assert data["version"] == "1.0"
+        assert data["version"] == "2.1"
 
     def test_b5_filed_as_of_date_roundtrip(self, risk_segment, tmp_path):
         """B-5 fix: filed_as_of_date must survive save_to_json → load_from_json."""
@@ -411,7 +411,7 @@ class TestAncestorsRoundTrip:
         assert loaded.segments[0].ancestors == ["ITEM 1A. RISK FACTORS", "Supply Chain Risk"]
 
     def test_ancestors_present_in_raw_json(self, tmp_path):
-        """ancestors key written to every chunk in the JSON file."""
+        """ancestors key written to every segment in the JSON file."""
         seg = RiskSegment(
             chunk_id="1A_001",
             text="Risk text.",
@@ -420,8 +420,9 @@ class TestAncestorsRoundTrip:
         sr = SegmentedRisks(segments=[seg], company_name="ACME", form_type="10-K")
         out = sr.save_to_json(tmp_path / "test.json", overwrite=True)
         data = json.loads(out.read_text())
-        assert "ancestors" in data["chunks"][0]
-        assert data["chunks"][0]["ancestors"] == ["ITEM 1A. RISK FACTORS"]
+        assert "segments" in data
+        assert "ancestors" in data["segments"][0]
+        assert data["segments"][0]["ancestors"] == ["ITEM 1A. RISK FACTORS"]
 
     def test_ancestors_backward_compat_old_json(self, tmp_path):
         """Old JSON files without ancestors key load with default []."""
@@ -441,3 +442,131 @@ class TestAncestorsRoundTrip:
         path.write_text(json.dumps(old_data))
         loaded = SegmentedRisks.load_from_json(path)
         assert loaded.segments[0].ancestors == []
+
+
+# ---------------------------------------------------------------------------
+# v2.1 schema: new fields round-trip tests
+# ---------------------------------------------------------------------------
+
+class TestV21SchemaFields:
+    def test_filing_name_roundtrip(self, risk_segment, tmp_path):
+        """filing_name survives save_to_json / load_from_json round-trip."""
+        sr = SegmentedRisks(
+            segments=[risk_segment],
+            ticker="AAPL",
+            filing_name="AAPL_10K_2024.html",
+        )
+        out = tmp_path / "test.json"
+        sr.save_to_json(out)
+        loaded = SegmentedRisks.load_from_json(out)
+        assert loaded.filing_name == "AAPL_10K_2024.html"
+
+    def test_sentiment_roundtrip(self, tmp_path):
+        """Per-segment sentiment and aggregate_sentiment survive round-trip."""
+        seg = RiskSegment(
+            chunk_id="1A_001",
+            text="We face significant competitive risks.",
+            sentiment={
+                "negative_count": 1,
+                "positive_count": 0,
+                "negative_ratio": 0.2,
+                "positive_ratio": 0.0,
+            },
+        )
+        sr = SegmentedRisks(
+            segments=[seg],
+            ticker="AAPL",
+            fiscal_year="2024",
+            sentiment_analysis_enabled=True,
+            aggregate_sentiment={
+                "avg_negative_ratio": 0.2,
+                "avg_positive_ratio": 0.0,
+                "avg_uncertainty_ratio": 0.1,
+                "avg_sentiment_word_ratio": 0.15,
+            },
+        )
+        out = tmp_path / "test.json"
+        sr.save_to_json(out)
+
+        loaded = SegmentedRisks.load_from_json(out)
+        assert loaded.sentiment_analysis_enabled is True
+        assert loaded.aggregate_sentiment["avg_negative_ratio"] == 0.2
+        assert loaded.segments[0].sentiment["negative_count"] == 1
+
+    def test_segment_hash_computed_and_roundtripped(self, tmp_path):
+        """segment_hash is deterministic and survives round-trip."""
+        seg = RiskSegment(
+            chunk_id="1A_001",
+            text="Climate change risks are material to our operations.",
+        )
+        seg.segment_hash = RiskSegment.compute_hash(
+            ticker="AAPL", fiscal_year="2024",
+            section_id="part1item1a", chunk_id="1A_001",
+            text=seg.text,
+        )
+        assert len(seg.segment_hash) == 12
+
+        sr = SegmentedRisks(
+            segments=[seg],
+            ticker="AAPL",
+            fiscal_year="2024",
+            section_identifier="part1item1a",
+        )
+        out = tmp_path / "test.json"
+        sr.save_to_json(out)
+
+        loaded = SegmentedRisks.load_from_json(out)
+        assert loaded.segments[0].segment_hash == seg.segment_hash
+
+    def test_segment_hash_deterministic(self):
+        """Same inputs produce the same hash."""
+        h1 = RiskSegment.compute_hash("AAPL", "2024", "part1item1a", "1A_001", "text")
+        h2 = RiskSegment.compute_hash("AAPL", "2024", "part1item1a", "1A_001", "text")
+        assert h1 == h2
+        assert len(h1) == 12
+
+    def test_segment_hash_differs_on_input_change(self):
+        """Different inputs produce different hashes."""
+        h1 = RiskSegment.compute_hash("AAPL", "2024", "part1item1a", "1A_001", "text")
+        h2 = RiskSegment.compute_hash("MSFT", "2024", "part1item1a", "1A_001", "text")
+        assert h1 != h2
+
+    def test_segment_hash_recomputed_for_old_files(self, tmp_path):
+        """Loading old files without segment_hash recomputes it."""
+        old_data = {
+            "version": "1.0",
+            "document_info": {"ticker": "AAPL", "fiscal_year": "2024"},
+            "section_metadata": {"identifier": "part1item1a", "stats": {}},
+            "chunks": [
+                {"chunk_id": "1A_001", "text": "Risk text here.", "word_count": 3, "char_count": 15}
+            ],
+        }
+        path = tmp_path / "old.json"
+        path.write_text(json.dumps(old_data))
+        loaded = SegmentedRisks.load_from_json(path)
+        assert loaded.segments[0].segment_hash is not None
+        assert len(loaded.segments[0].segment_hash) == 12
+
+    def test_v21_uses_segments_key_not_chunks(self, risk_segment, tmp_path):
+        """v2.1 JSON output uses 'segments' key, not 'chunks'."""
+        sr = SegmentedRisks(segments=[risk_segment], ticker="TEST")
+        out = tmp_path / "test.json"
+        sr.save_to_json(out)
+        data = json.loads(out.read_text())
+        assert "segments" in data
+        assert "chunks" not in data
+
+    def test_backward_compat_loads_id_key(self, tmp_path):
+        """Files using 'id' instead of 'chunk_id' load correctly."""
+        old_data = {
+            "version": "2.1",
+            "document_info": {"ticker": "AAPL", "fiscal_year": "2024"},
+            "section_metadata": {"identifier": "part1item1a", "stats": {}},
+            "segments": [
+                {"id": "1A_001", "text": "Risk text.", "word_count": 2, "char_count": 10}
+            ],
+        }
+        path = tmp_path / "old_id.json"
+        path.write_text(json.dumps(old_data))
+        loaded = SegmentedRisks.load_from_json(path)
+        assert loaded.segments[0].chunk_id == "1A_001"

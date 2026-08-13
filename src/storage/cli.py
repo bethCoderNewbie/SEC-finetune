@@ -7,6 +7,8 @@ Usage:
     python -m src.storage.cli backfill-latest
     python -m src.storage.cli classify-all [--force]
     python -m src.storage.cli refresh <run_dir>
+    python -m src.storage.cli export-jsonl --run-dir <path> [--output <path>]
+    python -m src.storage.cli diff-runs <run_dir_a> <run_dir_b> [--format table|json]
 """
 
 from __future__ import annotations
@@ -250,6 +252,62 @@ def cmd_refresh(args: argparse.Namespace, config: AnalysisConfig) -> None:
     cmd_classify_all(args, config)
 
 
+def cmd_export_jsonl(args: argparse.Namespace, config: AnalysisConfig) -> None:
+    """Export all segments from a run directory to a JSONL file."""
+    from src.storage.export import export_corpus_jsonl
+
+    run_dir = Path(args.run_dir)
+    if not run_dir.is_dir():
+        print(f"Error: directory not found: {run_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    output = Path(args.output) if args.output else None
+    result_path = export_corpus_jsonl(run_dir, output_path=output)
+    print(f"Exported corpus to: {result_path}")
+
+
+def cmd_diff_runs(args: argparse.Namespace, config: AnalysisConfig) -> None:
+    """Compare aggregate statistics between two run directories."""
+    from src.storage.export import diff_runs
+
+    run_a = Path(args.run_dir_a)
+    run_b = Path(args.run_dir_b)
+
+    if not run_a.is_dir():
+        print(f"Error: directory not found: {run_a}", file=sys.stderr)
+        sys.exit(1)
+    if not run_b.is_dir():
+        print(f"Error: directory not found: {run_b}", file=sys.stderr)
+        sys.exit(1)
+
+    result = diff_runs(run_a, run_b)
+
+    if args.format == "json":
+        print(json.dumps(result, indent=2))
+    else:
+        # Table format
+        ra = result["run_a"]
+        rb = result["run_b"]
+        print(f"Run A: {ra['path']}")
+        print(f"Run B: {rb['path']}")
+        print()
+        print(f"{'Metric':<25} {'Run A':>12} {'Run B':>12} {'Delta':>12}")
+        print("-" * 63)
+        print(f"{'Filings':<25} {ra['filing_count']:>12} {rb['filing_count']:>12} {result['filing_count_delta']:>+12}")
+        print(f"{'Segments':<25} {ra['segment_count']:>12} {rb['segment_count']:>12} {result['segment_count_delta']:>+12}")
+        print(f"{'Tickers':<25} {ra['ticker_count']:>12} {rb['ticker_count']:>12} {rb['ticker_count'] - ra['ticker_count']:>+12}")
+
+        cov_a = f"{ra['avg_coverage_ratio']:.4f}" if ra['avg_coverage_ratio'] is not None else "N/A"
+        cov_b = f"{rb['avg_coverage_ratio']:.4f}" if rb['avg_coverage_ratio'] is not None else "N/A"
+        cov_d = f"{result['avg_coverage_delta']:+.4f}" if result['avg_coverage_delta'] is not None else "N/A"
+        print(f"{'Avg Coverage Ratio':<25} {cov_a:>12} {cov_b:>12} {cov_d:>12}")
+
+        if result["new_tickers"]:
+            print(f"\nNew tickers:     {', '.join(result['new_tickers'])}")
+        if result["removed_tickers"]:
+            print(f"Removed tickers: {', '.join(result['removed_tickers'])}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="python -m src.storage.cli",
@@ -284,6 +342,20 @@ def main() -> None:
     p_refresh = subparsers.add_parser("refresh", help="Backfill + classify all")
     p_refresh.add_argument("run_dir", type=str, help="Preprocessing run directory path")
 
+    # export-jsonl
+    p_export = subparsers.add_parser("export-jsonl", help="Export segments to JSONL")
+    p_export.add_argument("--run-dir", type=str, required=True, dest="run_dir",
+                          help="Preprocessing run directory path")
+    p_export.add_argument("--output", type=str, default=None,
+                          help="Output JSONL file path (default: <run_dir>/corpus.jsonl)")
+
+    # diff-runs
+    p_diff = subparsers.add_parser("diff-runs", help="Compare two run directories")
+    p_diff.add_argument("run_dir_a", type=str, help="Baseline (older) run directory")
+    p_diff.add_argument("run_dir_b", type=str, help="Comparison (newer) run directory")
+    p_diff.add_argument("--format", choices=["table", "json"], default="table",
+                        help="Output format (default: table)")
+
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -301,6 +373,8 @@ def main() -> None:
         "backfill-latest": cmd_backfill_latest,
         "classify-all": cmd_classify_all,
         "refresh": cmd_refresh,
+        "export-jsonl": cmd_export_jsonl,
+        "diff-runs": cmd_diff_runs,
     }
     dispatch[args.command](args, config)
 

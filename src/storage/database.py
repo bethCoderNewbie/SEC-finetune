@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS filings (
     total_segments      INTEGER,
     raw_char_count      INTEGER,
     cleaned_char_count  INTEGER,
+    text_coverage_ratio REAL,
     pipeline_version    TEXT,
     classifier_version  TEXT,
     processed_at        TEXT,
@@ -66,6 +67,8 @@ CREATE TABLE IF NOT EXISTS classifications (
     chunk_id        TEXT,
     text            TEXT NOT NULL,
     word_count      INTEGER,
+    char_count      INTEGER,
+    segment_hash    TEXT,
     risk_label      TEXT NOT NULL,
     sasb_topic      TEXT,
     sasb_industry   TEXT,
@@ -112,9 +115,16 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 _MIGRATIONS: Dict[int, str] = {
     # Version 1 = initial schema (everything above). No migration SQL needed.
+    2: """
+ALTER TABLE classifications ADD COLUMN char_count INTEGER;
+ALTER TABLE classifications ADD COLUMN segment_hash TEXT;
+ALTER TABLE filings ADD COLUMN text_coverage_ratio REAL;
+UPDATE classifications SET char_count = LENGTH(text);
+CREATE INDEX IF NOT EXISTS idx_classifications_hash ON classifications(segment_hash);
+""",
 }
 
-_CURRENT_SCHEMA_VERSION = 1
+_CURRENT_SCHEMA_VERSION = 2
 
 
 def compute_classifier_version(
@@ -176,7 +186,13 @@ class FilingDatabase:
         self.close()
 
     def _ensure_schema_version(self) -> None:
-        """Check current schema version and apply any pending migrations."""
+        """Check current schema version and apply any pending migrations.
+
+        For fresh databases (version 0), the CREATE TABLE statements in
+        ``_SCHEMA_SQL`` already include all columns up to the current version,
+        so we skip migration SQL and just stamp the version.  Migrations only
+        run when upgrading an existing database from a prior version.
+        """
         assert self._conn is not None
         row = self._conn.execute(
             "SELECT MAX(version) as v FROM schema_version"
@@ -184,6 +200,23 @@ class FilingDatabase:
         current = row["v"] if row["v"] is not None else 0
 
         if current >= _CURRENT_SCHEMA_VERSION:
+            return
+
+        if current == 0:
+            # Fresh database: schema already has all columns from _SCHEMA_SQL.
+            # Just record the current version and create any indexes that depend
+            # on v2+ columns (kept out of _SCHEMA_SQL to avoid errors on v1 DBs).
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_classifications_hash "
+                "ON classifications(segment_hash)"
+            )
+            now = datetime.now(tz=timezone.utc).isoformat()
+            self._conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (_CURRENT_SCHEMA_VERSION, now),
+            )
+            logger.info("Fresh database — stamped schema version %d", _CURRENT_SCHEMA_VERSION)
+            self._conn.commit()
             return
 
         for target_ver in range(current + 1, _CURRENT_SCHEMA_VERSION + 1):
@@ -229,6 +262,7 @@ class FilingDatabase:
         total_segments: Optional[int] = None,
         raw_char_count: Optional[int] = None,
         cleaned_char_count: Optional[int] = None,
+        text_coverage_ratio: Optional[float] = None,
         pipeline_version: Optional[str] = None,
         no_material_change: bool = False,
     ) -> int:
@@ -240,9 +274,9 @@ class FilingDatabase:
                 ticker, cik, company_name, form_type, fiscal_year, fiscal_quarter,
                 accession_number, filed_as_of_date, sic_code, sic_name, section_id,
                 raw_file_path, segmented_json_path, run_dir, total_segments,
-                raw_char_count, cleaned_char_count, pipeline_version,
-                processed_at, no_material_change
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                raw_char_count, cleaned_char_count, text_coverage_ratio,
+                pipeline_version, processed_at, no_material_change
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(ticker, fiscal_year, form_type, section_id) DO UPDATE SET
                 cik=excluded.cik,
                 company_name=excluded.company_name,
@@ -257,6 +291,7 @@ class FilingDatabase:
                 total_segments=excluded.total_segments,
                 raw_char_count=excluded.raw_char_count,
                 cleaned_char_count=excluded.cleaned_char_count,
+                text_coverage_ratio=excluded.text_coverage_ratio,
                 pipeline_version=excluded.pipeline_version,
                 processed_at=excluded.processed_at,
                 no_material_change=excluded.no_material_change
@@ -266,8 +301,8 @@ class FilingDatabase:
                 fiscal_quarter, accession_number, filed_as_of_date,
                 sic_code, sic_name, section_id, raw_file_path,
                 segmented_json_path, run_dir, total_segments,
-                raw_char_count, cleaned_char_count, pipeline_version,
-                now, no_material_change,
+                raw_char_count, cleaned_char_count, text_coverage_ratio,
+                pipeline_version, now, no_material_change,
             ),
         )
         self.conn.commit()
@@ -415,17 +450,21 @@ class FilingDatabase:
             self.conn.execute("DELETE FROM classifications WHERE filing_id=?", (filing_id,))
 
             for i, cls in enumerate(classifications):
+                text = cls.get("text", "")
                 self.conn.execute(
                     """INSERT INTO classifications (
                         filing_id, segment_index, chunk_id, text, word_count,
+                        char_count, segment_hash,
                         risk_label, sasb_topic, sasb_industry, confidence,
                         label_source, parent_subsection, ticker, fiscal_year
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         filing_id, i,
                         cls.get("chunk_id") or cls.get("segment_id", str(i)),
-                        cls.get("text", ""),
+                        text,
                         cls.get("word_count", 0),
+                        cls.get("char_count") or len(text),
+                        cls.get("segment_hash"),
                         cls.get("risk_label", "other"),
                         cls.get("sasb_topic"),
                         cls.get("sasb_industry"),
@@ -619,6 +658,12 @@ class FilingDatabase:
         if not section_id:
             section_id = "unknown"
 
+        # Extract text_coverage_ratio from stats
+        text_coverage = stats.get("text_coverage")
+        coverage_ratio = None
+        if isinstance(text_coverage, dict):
+            coverage_ratio = text_coverage.get("coverage_ratio")
+
         self.upsert_filing(
             ticker=ticker,
             fiscal_year=fiscal_year,
@@ -635,6 +680,7 @@ class FilingDatabase:
             total_segments=stats.get("total_chunks") or len(chunks),
             raw_char_count=stats.get("raw_section_char_count"),
             cleaned_char_count=stats.get("cleaned_section_char_count"),
+            text_coverage_ratio=coverage_ratio,
             pipeline_version=pipeline_version,
             no_material_change=sm.get("no_material_change", False),
         )

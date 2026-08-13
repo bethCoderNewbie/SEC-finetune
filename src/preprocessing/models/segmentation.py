@@ -21,6 +21,15 @@ class RiskSegment(BaseModel):
     text: str
     word_count: int = 0
     char_count: int = 0
+    segment_hash: Optional[str] = None      # sha256(ticker+fy+section+chunk_id+text[:200])[:12]
+    sentiment: Optional[Dict[str, Any]] = None  # Loughran-McDonald features (optional)
+
+    @staticmethod
+    def compute_hash(ticker: str, fiscal_year: str, section_id: str, chunk_id: str, text: str) -> str:
+        """Compute a globally unique 12-char segment identifier."""
+        import hashlib
+        raw = f"{ticker}:{fiscal_year}:{section_id}:{chunk_id}:{text[:200]}"
+        return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -65,6 +74,10 @@ class SegmentedRisks(BaseModel):
     cleaned_section_char_count: Optional[int] = None  # len(cleaned_text) post-TextCleaner
     # Boilerplate detection: True when section contains "no material change" language
     no_material_change: bool = False
+    # v2.1: filing-level fields for single-serializer output
+    filing_name: Optional[str] = None              # source filename
+    sentiment_analysis_enabled: bool = False        # whether sentiment was computed
+    aggregate_sentiment: Optional[Dict[str, float]] = None  # corpus-level averages
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -108,15 +121,28 @@ class SegmentedRisks(BaseModel):
         try:
             from src.config import settings as _cfg  # pylint: disable=import-outside-toplevel
             finbert_model = _cfg.models.default_model  # pylint: disable=no-member
+            cleaning_settings = {
+                'removed_html_tags':    _cfg.preprocessing.remove_html_tags,
+                'normalized_whitespace': _cfg.preprocessing.normalize_whitespace,
+                'removed_page_numbers': _cfg.preprocessing.remove_page_numbers,
+                'discarded_tables':     True,
+            }
         except Exception:  # pragma: no cover
             finbert_model = "ProsusAI/finbert"
+            cleaning_settings = {
+                'removed_html_tags': True,
+                'normalized_whitespace': True,
+                'removed_page_numbers': True,
+                'discarded_tables': True,
+            }
 
         num_tables = (
             self.metadata.get('element_type_counts', {}).get('TableElement', 0)
         )
 
-        data = {
-            'version': '1.0',
+        data: Dict[str, Any] = {
+            'version': '2.1',
+            'filing_name': self.filing_name,
             'document_info': {
                 'company_name': self.company_name,
                 'ticker': self.ticker,
@@ -142,12 +168,7 @@ class SegmentedRisks(BaseModel):
                 'identifier': self.section_identifier,
                 'title': self.section_title,
                 'no_material_change': self.no_material_change,
-                'cleaning_settings': {
-                    'removed_html_tags': True,
-                    'normalized_whitespace': True,
-                    'removed_page_numbers': True,
-                    'discarded_tables': True,
-                },
+                'cleaning_settings': cleaning_settings,
                 'stats': {
                     'total_chunks': self.total_segments,
                     'num_tables': num_tables,
@@ -160,7 +181,9 @@ class SegmentedRisks(BaseModel):
                     'text_coverage': self.metadata.get('text_coverage'),
                 },
             },
-            'chunks': [
+            'num_segments': self.total_segments,
+            'sentiment_analysis_enabled': self.sentiment_analysis_enabled,
+            'segments': [
                 {
                     'chunk_id':          seg.chunk_id,
                     'parent_subsection': seg.parent_subsection,
@@ -168,10 +191,15 @@ class SegmentedRisks(BaseModel):
                     'text':              seg.text,
                     'word_count':        seg.word_count,
                     'char_count':        seg.char_count,
+                    **({'segment_hash': seg.segment_hash} if seg.segment_hash else {}),
+                    **({'sentiment': seg.sentiment} if seg.sentiment else {}),
                 }
                 for seg in self.segments
             ],
         }
+
+        if self.aggregate_sentiment is not None:
+            data['aggregate_sentiment'] = self.aggregate_sentiment
 
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
@@ -197,27 +225,57 @@ class SegmentedRisks(BaseModel):
             di = data.get('document_info', {})
             sm = data.get('section_metadata', {})
             stats = sm.get('stats', {})
-            raw_chunks = data.get('chunks') or data.get('segments', [])
-            segments = [
-                RiskSegment(
-                    chunk_id=c.get('chunk_id', f"1A_{i+1:03d}"),
+            # Accept both 'segments' (v2.1) and 'chunks' (v1.0) keys
+            raw_chunks = data.get('segments') or data.get('chunks', [])
+
+            # Build segment list with full field support
+            ticker = di.get('ticker')
+            fiscal_year = di.get('fiscal_year')
+            section_id = sm.get('identifier')
+
+            segments = []
+            for i, c in enumerate(raw_chunks):
+                # Accept both 'chunk_id' and 'id' as the segment ID key
+                raw_id = c.get('chunk_id') or c.get('id')
+                chunk_id = str(raw_id) if raw_id is not None else f"1A_{i+1:03d}"
+                seg = RiskSegment(
+                    chunk_id=chunk_id,
                     parent_subsection=c.get('parent_subsection'),
                     ancestors=c.get('ancestors', []),
                     text=c.get('text', ''),
                     word_count=c.get('word_count', 0),
                     char_count=c.get('char_count', 0),
+                    segment_hash=c.get('segment_hash'),
+                    sentiment=c.get('sentiment'),
                 )
-                for i, c in enumerate(raw_chunks)
-            ]
+                # Recompute hash for old files that lack it
+                if seg.segment_hash is None and ticker and fiscal_year:
+                    seg.segment_hash = RiskSegment.compute_hash(
+                        ticker=ticker,
+                        fiscal_year=fiscal_year,
+                        section_id=section_id or '',
+                        chunk_id=seg.chunk_id,
+                        text=seg.text,
+                    )
+                segments.append(seg)
+
+            # Restore metadata dict with stats that may be needed downstream
+            restored_metadata: Dict[str, Any] = {
+                'dei': di.get('dei', {}),
+            }
+            # Preserve text_coverage in metadata for downstream consumers
+            if stats.get('text_coverage'):
+                restored_metadata['text_coverage'] = stats['text_coverage']
+
             return SegmentedRisks(
                 segments=segments,
                 sic_code=di.get('sic_code'),
                 sic_name=di.get('sic_name'),
                 cik=di.get('cik'),
-                ticker=di.get('ticker'),
+                ticker=ticker,
                 company_name=di.get('company_name'),
                 form_type=di.get('form_type'),
-                fiscal_year=di.get('fiscal_year'),
+                fiscal_year=fiscal_year,
                 accession_number=di.get('accession_number'),   # B-5 fix
                 filed_as_of_date=di.get('filed_as_of_date'),   # B-5 fix
                 amendment_flag=di.get('amendment_flag'),
@@ -229,9 +287,10 @@ class SegmentedRisks(BaseModel):
                 raw_section_char_count=stats.get('raw_section_char_count'),
                 cleaned_section_char_count=stats.get('cleaned_section_char_count'),
                 no_material_change=sm.get('no_material_change', False),
-                # Restore dei from document_info so metadata.get('dei') works
-                # after a save→load round-trip (dei is not in processing_metadata).
-                metadata={'dei': di.get('dei', {})},
+                filing_name=data.get('filing_name'),
+                sentiment_analysis_enabled=data.get('sentiment_analysis_enabled', False),
+                aggregate_sentiment=data.get('aggregate_sentiment'),
+                metadata=restored_metadata,
             )
 
         # Old flat schema: top-level 'segments' list

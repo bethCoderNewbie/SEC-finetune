@@ -294,16 +294,52 @@ def run_pipeline(
         if save_intermediates and len(segmented_risks) > 0:
             dest_dir.mkdir(parents=True, exist_ok=True)
             output_path = dest_dir / (input_file.stem + OutputSuffix.section_segmented(section_id))
-            output_data = _build_output_data(
-                input_file=input_file,
-                segmented_risks=segmented_risks,
-                sentiment_features_list=sentiment_features_list,
-                extract_sentiment=extract_sentiment,
-                raw_section_char_count=raw_chars,
-                cleaned_section_char_count=cleaned_chars,
-            )
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(output_data, f, indent=2, ensure_ascii=False)
+
+            # Populate v2.1 model fields before serialization
+            segmented_risks.filing_name = input_file.name
+            segmented_risks.sentiment_analysis_enabled = extract_sentiment
+            segmented_risks.raw_section_char_count = raw_chars
+            segmented_risks.cleaned_section_char_count = cleaned_chars
+
+            # Compute segment hashes
+            for seg in segmented_risks.segments:
+                if seg.segment_hash is None:
+                    seg.segment_hash = RiskSegment.compute_hash(
+                        ticker=segmented_risks.ticker or '',
+                        fiscal_year=segmented_risks.fiscal_year or '',
+                        section_id=segmented_risks.section_identifier or '',
+                        chunk_id=seg.chunk_id,
+                        text=seg.text,
+                    )
+
+            # Attach per-segment sentiment and compute aggregate
+            if sentiment_features_list and len(sentiment_features_list) > 0:
+                n = len(sentiment_features_list)
+                segmented_risks.aggregate_sentiment = {
+                    'avg_negative_ratio':       sum(f.negative_ratio    for f in sentiment_features_list) / n,
+                    'avg_uncertainty_ratio':    sum(f.uncertainty_ratio for f in sentiment_features_list) / n,
+                    'avg_positive_ratio':       sum(f.positive_ratio    for f in sentiment_features_list) / n,
+                    'avg_sentiment_word_ratio': sum(f.sentiment_word_ratio for f in sentiment_features_list) / n,
+                }
+                for i, seg in enumerate(segmented_risks.segments):
+                    if i < len(sentiment_features_list):
+                        sf = sentiment_features_list[i]
+                        seg.sentiment = {
+                            'negative_count':        sf.negative_count,
+                            'positive_count':        sf.positive_count,
+                            'uncertainty_count':     sf.uncertainty_count,
+                            'litigious_count':       sf.litigious_count,
+                            'constraining_count':    sf.constraining_count,
+                            'negative_ratio':        sf.negative_ratio,
+                            'positive_ratio':        sf.positive_ratio,
+                            'uncertainty_ratio':     sf.uncertainty_ratio,
+                            'litigious_ratio':       sf.litigious_ratio,
+                            'constraining_ratio':    sf.constraining_ratio,
+                            'total_sentiment_words': sf.total_sentiment_words,
+                            'sentiment_word_ratio':  sf.sentiment_word_ratio,
+                        }
+
+            segmented_risks.save_to_json(output_path, overwrite=True)
             print(f"  [OK] Saved segments to: {output_path}")
 
         all_results[section_id] = segmented_risks
@@ -314,136 +350,6 @@ def run_pipeline(
     print(f"Sections processed: {found}/{len(sections)}")
 
     return filing, all_results
-
-
-# ---------------------------------------------------------------------------
-# Output builder (shared by single-file and batch modes)
-# ---------------------------------------------------------------------------
-
-def _build_output_data(
-    input_file: Path,
-    segmented_risks: SegmentedRisks,
-    sentiment_features_list: Optional[List] = None,
-    extract_sentiment: bool = True,
-    raw_section_char_count: Optional[int] = None,
-    cleaned_section_char_count: Optional[int] = None,
-) -> Dict[str, Any]:
-    """
-    Build the output data structure for the final _segmented.json.
-
-    Schema (v2.1):
-        version / filing_name / document_info / processing_metadata / section_metadata /
-        num_segments / sentiment_analysis_enabled / [aggregate_sentiment] / segments
-
-    document_info carries filing-level identity fields (cik, ticker, sic_code, etc.)
-    plus the Tier-2 DEI sub-dict extracted from the XBRL ix:hidden block.
-
-    Args:
-        input_file: Input file path
-        segmented_risks: SegmentedRisks object with segments and metadata
-        sentiment_features_list: Optional list of sentiment features per segment
-        extract_sentiment: Whether sentiment analysis was enabled
-
-    Returns:
-        Dictionary ready for JSON serialization
-    """
-    num_tables = (
-        segmented_risks.metadata.get('element_type_counts', {}).get('TableElement', 0)
-    )
-
-    try:
-        finbert_model = settings.models.default_model  # pylint: disable=no-member
-    except Exception:  # pragma: no cover
-        finbert_model = "ProsusAI/finbert"
-
-    output_data = {
-        'version': '2.1',
-        'filing_name': input_file.name,
-        'document_info': {
-            'company_name':        segmented_risks.company_name,
-            'ticker':              segmented_risks.ticker,
-            'cik':                 segmented_risks.cik,
-            'sic_code':            segmented_risks.sic_code,
-            'sic_name':            segmented_risks.sic_name,
-            'form_type':           segmented_risks.form_type,
-            'fiscal_year':         segmented_risks.fiscal_year,
-            'accession_number':    segmented_risks.accession_number,
-            'filed_as_of_date':    segmented_risks.filed_as_of_date,
-            'amendment_flag':      segmented_risks.amendment_flag,
-            'entity_filer_category': segmented_risks.entity_filer_category,
-            'ein':                 segmented_risks.ein,
-            'dei':                 segmented_risks.metadata.get('dei') or {},
-        },
-        'processing_metadata': {
-            'parser_version': '1.0',
-            'finbert_model': finbert_model,
-            'chunking_strategy': 'sentence_level',
-            'max_tokens_per_chunk': 512,
-        },
-        'section_metadata': {
-            'identifier': segmented_risks.section_identifier,
-            'title': segmented_risks.section_title,
-            'no_material_change': segmented_risks.no_material_change,
-            'cleaning_settings': {
-                'removed_html_tags':    settings.preprocessing.remove_html_tags,
-                'normalized_whitespace': settings.preprocessing.normalize_whitespace,
-                'removed_page_numbers': settings.preprocessing.remove_page_numbers,
-                'discarded_tables':     True,
-            },
-            'stats': {
-                'total_chunks': segmented_risks.total_segments,
-                'num_tables':   num_tables,
-                'raw_section_char_count':     raw_section_char_count,
-                'cleaned_section_char_count': cleaned_section_char_count,
-                'table_char_count': segmented_risks.metadata.get('table_char_count'),
-                'pre_exclusion_char_count': segmented_risks.metadata.get('pre_exclusion_char_count'),
-                'extraction_manifest': segmented_risks.metadata.get('extraction_manifest'),
-                'segmentation_stats': segmented_risks.metadata.get('segmentation_stats'),
-                'text_coverage': segmented_risks.metadata.get('text_coverage'),
-            },
-        },
-        'num_segments': segmented_risks.total_segments,
-        'sentiment_analysis_enabled': extract_sentiment,
-    }
-
-    if sentiment_features_list and len(sentiment_features_list) > 0:
-        n = len(sentiment_features_list)
-        output_data['aggregate_sentiment'] = {
-            'avg_negative_ratio':       sum(f.negative_ratio    for f in sentiment_features_list) / n,
-            'avg_uncertainty_ratio':    sum(f.uncertainty_ratio for f in sentiment_features_list) / n,
-            'avg_positive_ratio':       sum(f.positive_ratio    for f in sentiment_features_list) / n,
-            'avg_sentiment_word_ratio': sum(f.sentiment_word_ratio for f in sentiment_features_list) / n,
-        }
-
-    output_data['segments'] = []
-    for i, seg in enumerate(segmented_risks.segments):
-        segment_dict = {
-            'id':               seg.chunk_id,
-            'parent_subsection': seg.parent_subsection,
-            'ancestors':        seg.ancestors,
-            'text':             seg.text,
-            'char_count':       seg.char_count,
-            'word_count':       seg.word_count,
-        }
-        if sentiment_features_list and i < len(sentiment_features_list):
-            sentiment = sentiment_features_list[i]
-            segment_dict['sentiment'] = {
-                'negative_count':        sentiment.negative_count,
-                'positive_count':        sentiment.positive_count,
-                'uncertainty_count':     sentiment.uncertainty_count,
-                'litigious_count':       sentiment.litigious_count,
-                'constraining_count':    sentiment.constraining_count,
-                'negative_ratio':        sentiment.negative_ratio,
-                'positive_ratio':        sentiment.positive_ratio,
-                'uncertainty_ratio':     sentiment.uncertainty_ratio,
-                'litigious_ratio':       sentiment.litigious_ratio,
-                'constraining_ratio':    sentiment.constraining_ratio,
-                'total_sentiment_words': sentiment.total_sentiment_words,
-                'sentiment_word_ratio':  sentiment.sentiment_word_ratio,
-            }
-        output_data['segments'].append(segment_dict)
-
-    return output_data
 
 
 # ---------------------------------------------------------------------------
@@ -621,16 +527,52 @@ def process_single_file_fast(args: Tuple) -> Dict[str, Any]:
                 section_output_path = output_dir / (
                     input_file.stem + OutputSuffix.section_segmented(section_id)
                 )
-                output_data = _build_output_data(
-                    input_file=input_file,
-                    segmented_risks=segmented_risks,
-                    sentiment_features_list=sentiment_features_list,
-                    extract_sentiment=(_worker_analyzer is not None),
-                    raw_section_char_count=raw_chars,
-                    cleaned_section_char_count=cleaned_chars,
-                )
-                with open(section_output_path, 'w', encoding='utf-8') as f:
-                    json.dump(output_data, f, indent=2, ensure_ascii=False)
+
+                # Populate v2.1 model fields before serialization
+                segmented_risks.filing_name = input_file.name
+                segmented_risks.sentiment_analysis_enabled = (_worker_analyzer is not None)
+                segmented_risks.raw_section_char_count = raw_chars
+                segmented_risks.cleaned_section_char_count = cleaned_chars
+
+                # Compute segment hashes
+                for seg in segmented_risks.segments:
+                    if seg.segment_hash is None:
+                        seg.segment_hash = RiskSegment.compute_hash(
+                            ticker=segmented_risks.ticker or '',
+                            fiscal_year=segmented_risks.fiscal_year or '',
+                            section_id=segmented_risks.section_identifier or '',
+                            chunk_id=seg.chunk_id,
+                            text=seg.text,
+                        )
+
+                # Attach per-segment sentiment and compute aggregate
+                if sentiment_features_list and len(sentiment_features_list) > 0:
+                    n = len(sentiment_features_list)
+                    segmented_risks.aggregate_sentiment = {
+                        'avg_negative_ratio':       sum(f.negative_ratio    for f in sentiment_features_list) / n,
+                        'avg_uncertainty_ratio':    sum(f.uncertainty_ratio for f in sentiment_features_list) / n,
+                        'avg_positive_ratio':       sum(f.positive_ratio    for f in sentiment_features_list) / n,
+                        'avg_sentiment_word_ratio': sum(f.sentiment_word_ratio for f in sentiment_features_list) / n,
+                    }
+                    for i, seg in enumerate(segmented_risks.segments):
+                        if i < len(sentiment_features_list):
+                            sf = sentiment_features_list[i]
+                            seg.sentiment = {
+                                'negative_count':        sf.negative_count,
+                                'positive_count':        sf.positive_count,
+                                'uncertainty_count':     sf.uncertainty_count,
+                                'litigious_count':       sf.litigious_count,
+                                'constraining_count':    sf.constraining_count,
+                                'negative_ratio':        sf.negative_ratio,
+                                'positive_ratio':        sf.positive_ratio,
+                                'uncertainty_ratio':     sf.uncertainty_ratio,
+                                'litigious_ratio':       sf.litigious_ratio,
+                                'constraining_ratio':    sf.constraining_ratio,
+                                'total_sentiment_words': sf.total_sentiment_words,
+                                'sentiment_word_ratio':  sf.sentiment_word_ratio,
+                            }
+
+                segmented_risks.save_to_json(section_output_path, overwrite=True)
                 if first_output_path is None:
                     first_output_path = section_output_path
 
