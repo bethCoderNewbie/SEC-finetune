@@ -142,6 +142,10 @@ class SECSectionExtractor:
         # Extract filing-level metadata
         filing_metadata = filing.metadata or {}
 
+        # Compute table and pre-exclusion char counts (Gap 2: measure before table exclusion)
+        table_char_count = sum(e['char_count'] for e in elements if e.get('is_table'))
+        pre_exclusion_char_count = sum(e['char_count'] for e in elements)
+
         # Build metadata — include fiscal_year/period_of_report so the segmenter
         # can promote them to SegmentedRisks.fiscal_year (Fix 6C).
         # dei carries Tier-2 XBRL ix:hidden fields extracted by parser._extract_metadata
@@ -150,6 +154,8 @@ class SECSectionExtractor:
             'num_subsections': len(subsections),
             'num_elements': len(elements),
             'element_type_counts': self._count_element_types(elements),
+            'table_char_count': table_char_count,
+            'pre_exclusion_char_count': pre_exclusion_char_count,
             'fiscal_year': filing_metadata.get('fiscal_year'),
             'period_of_report': filing_metadata.get('period_of_report'),
             'accession_number': filing_metadata.get('accession_number'),

@@ -684,6 +684,9 @@ class HealthCheckValidator:
         # 5. Amendment flag (ADR-011)
         results.extend(self._check_amendments(file_data))
 
+        # 6. Extraction completeness (ADR-020)
+        results.extend(self._check_completeness(file_data))
+
         # Generate report using existing infrastructure
         overall_status = determine_overall_status(results)
         blocking_summary = generate_blocking_summary(results)
@@ -734,6 +737,9 @@ class HealthCheckValidator:
 
         # 5. Amendment flag (ADR-011)
         results.extend(self._check_amendments(file_data))
+
+        # 6. Extraction completeness (ADR-020)
+        results.extend(self._check_completeness(file_data))
 
         # Generate report using existing infrastructure
         overall_status = determine_overall_status(results)
@@ -1027,6 +1033,46 @@ class HealthCheckValidator:
         threshold = self.registry.get("segment_duplicate_rate")
         if threshold:
             results.append(ValidationResult.from_threshold(threshold, dup_rate))
+
+        return results
+
+    def _check_completeness(self, file_data: List[Dict]) -> List[ValidationResult]:
+        """Check extraction/segmentation completeness (text coverage, section found rate)."""
+        results = []
+
+        coverage_values = []
+        found_rates = []
+
+        for data in file_data:
+            sm = data.get("section_metadata", {})
+            stats = sm.get("stats", {})
+
+            # Text coverage ratio
+            tc = stats.get("text_coverage")
+            if tc and isinstance(tc, dict):
+                ratio = tc.get("coverage_ratio")
+                if ratio is not None:
+                    coverage_values.append(ratio)
+
+            # Section found rate from extraction manifest
+            em = stats.get("extraction_manifest")
+            if em and isinstance(em, dict):
+                attempted = len(em.get("sections_attempted", []))
+                found = len(em.get("sections_found", []))
+                if attempted > 0:
+                    found_rates.append(found / attempted)
+
+        # Text coverage ratio — average across all files
+        threshold = self.registry.get("text_coverage_ratio")
+        if threshold and coverage_values:
+            avg_coverage = sum(coverage_values) / len(coverage_values)
+            results.append(ValidationResult.from_threshold(threshold, avg_coverage))
+
+        # Section found rate — average across all files
+        threshold = self.registry.get("section_found_rate")
+        if threshold and found_rates:
+            avg_found_rate = sum(found_rates) / len(found_rates)
+            results.append(ValidationResult.from_threshold(threshold, avg_found_rate))
 
         return results
 

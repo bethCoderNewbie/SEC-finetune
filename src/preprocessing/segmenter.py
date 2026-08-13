@@ -19,9 +19,37 @@ _CROSS_REF_DROP_PAT = re.compile(
     r'|for\s+additional\s+information',
 )
 
+# "No material change" boilerplate — detects 10-Q sections that refer back
+# to the prior 10-K without adding new risk factors.
+_NO_MATERIAL_CHANGE_PAT = re.compile(
+    r'(?i)'
+    r'no\s+material\s+change'
+    r'|there\s+have\s+been\s+no\s+material\s+changes'
+    r'|no\s+material\s+updates?\s+to'
+    r'|risk\s+factors?\s+(?:have\s+not|has\s+not)\s+materially\s+changed'
+    r'|incorporat(?:ed?)?\s+(?:herein\s+)?by\s+reference'
+    r'|(?:previously|previously\s+reported)\s+risk\s+factors?\s+(?:remain|continue)',
+)
+
 from pydantic import BaseModel, ConfigDict
 
 from src.config import settings
+
+
+class SegmentationStats(BaseModel):
+    """Immutable record of segment-level accounting from a single segmentation run."""
+    model_config = ConfigDict(frozen=True)
+
+    input_count: int = 0
+    post_filter_count: int = 0
+    filtered_too_short: int = 0
+    filtered_too_few_words: int = 0
+    filtered_non_risk: int = 0
+    cross_ref_drops: int = 0
+    post_split_count: int = 0
+    segments_split: int = 0
+    post_merge_count: int = 0
+    segments_merged: int = 0
 
 try:
     from sentence_transformers import SentenceTransformer, util
@@ -91,6 +119,8 @@ class RiskSegmenter:
         # pylint: enable=no-member
         self.similarity_threshold = similarity_threshold
 
+        self._last_stats = SegmentationStats()
+
         self.semantic_model = None
         if SENTENCE_TRANSFORMERS_AVAILABLE:
             try:
@@ -116,7 +146,12 @@ class RiskSegmenter:
             List[str]: List of individual risk segments
         """
         if not text:
+            self._stats_accum = {}
+            self._last_stats = SegmentationStats()
             return []
+
+        # Mutable accumulator — frozen SegmentationStats built at the end
+        sa: Dict[str, int] = {}
 
         # Try semantic segmentation first if model is available
         segments = []
@@ -144,15 +179,35 @@ class RiskSegmenter:
             )
             segments = self._segment_by_paragraphs(text)
 
+        sa['input_count'] = len(segments)
+
         # Filter and clean segments
-        segments = self._filter_segments(segments)
+        segments = self._filter_segments(segments, sa)
+        sa['post_filter_count'] = len(segments)
 
         # Split overly long segments
+        pre_split = len(segments)
         segments = self._split_long_segments(segments)
+        sa['post_split_count'] = len(segments)
+        sa['segments_split'] = sa['post_split_count'] - pre_split
 
         # Forward-merge any sub-threshold segments produced by splitting or
         # by the segmentation strategy itself (e.g. single-sentence bullet items)
+        pre_merge = len(segments)
         segments = self._merge_short_segments(segments)
+        sa['post_merge_count'] = len(segments)
+        sa['segments_merged'] = pre_merge - sa['post_merge_count']
+
+        self._last_stats = SegmentationStats(**sa)
+        logger.debug(
+            "Segmentation stats: input=%d filter=%d split=%d merge=%d final=%d "
+            "(dropped: short=%d few_words=%d non_risk=%d cross_ref=%d)",
+            sa.get('input_count', 0), sa.get('post_filter_count', 0),
+            sa.get('segments_split', 0), sa.get('segments_merged', 0),
+            sa.get('post_merge_count', 0),
+            sa.get('filtered_too_short', 0), sa.get('filtered_too_few_words', 0),
+            sa.get('filtered_non_risk', 0), sa.get('cross_ref_drops', 0),
+        )
 
         return segments
 
@@ -176,6 +231,15 @@ class RiskSegmenter:
 
         # Segment the text
         segment_texts = self.segment_risks(text_to_segment)
+
+        # Detect "no material change" boilerplate (Gap 5)
+        # Guard: only flag short sections with few segments to prevent false positives
+        # on substantive risk sections that mention "no material changes" once in passing.
+        no_material_change = False
+        if len(segment_texts) <= 3 and len(text_to_segment) < 2000:
+            if _NO_MATERIAL_CHANGE_PAT.search(text_to_segment):
+                no_material_change = True
+                logger.info("Detected 'no material change' boilerplate")
 
         # Fix 6B: build chunk_id and resolve parent_subsection from node_subsections.
         # Fall back to the section title for preamble content that precedes the first
@@ -215,6 +279,9 @@ class RiskSegmenter:
         parsed_meta = getattr(extracted_section, 'metadata', {})
         fiscal_year = parsed_meta.get('fiscal_year')
 
+        # Stash segmentation stats into metadata for downstream consumers
+        parsed_meta = {**parsed_meta, 'segmentation_stats': self._last_stats.model_dump()}
+
         # Build SegmentedRisks with preserved metadata
         return SegmentedRisks(
             segments=segments,
@@ -233,6 +300,7 @@ class RiskSegmenter:
             amendment_flag=getattr(extracted_section, 'amendment_flag', None),
             entity_filer_category=getattr(extracted_section, 'entity_filer_category', None),
             ein=getattr(extracted_section, 'ein', None),
+            no_material_change=no_material_change,
         )
 
     def _segment_by_headers(self, text: str) -> List[str]:
@@ -292,12 +360,15 @@ class RiskSegmenter:
 
         return segments
 
-    def _filter_segments(self, segments: List[str]) -> List[str]:
+    def _filter_segments(
+        self, segments: List[str], sa: Optional[Dict[str, int]] = None
+    ) -> List[str]:
         """
         Filter segments based on length and content quality
 
         Args:
             segments: List of raw segments
+            sa: Optional stats accumulator dict for counting filter reasons
 
         Returns:
             List[str]: Filtered segments
@@ -309,16 +380,25 @@ class RiskSegmenter:
 
             # Skip if too short
             if len(segment) < self.min_length:
+                if sa is not None:
+                    sa['filtered_too_short'] = sa.get('filtered_too_short', 0) + 1
                 continue
 
             # Drop genuine noise: lone words, numbers, punctuation-only fragments.
             # Sub-threshold but content-bearing segments (3–19 words) are left for
             # _merge_short_segments to absorb rather than dropped here.
             if len(segment.split()) < 3:
+                if sa is not None:
+                    sa['filtered_too_few_words'] = sa.get('filtered_too_few_words', 0) + 1
                 continue
 
             # Skip common non-risk content
             if self._is_non_risk_content(segment):
+                if sa is not None:
+                    sa['filtered_non_risk'] = sa.get('filtered_non_risk', 0) + 1
+                    # Check specifically for cross-ref drops
+                    if _CROSS_REF_DROP_PAT.search(segment) and len(segment.split()) < self.min_words:
+                        sa['cross_ref_drops'] = sa.get('cross_ref_drops', 0) + 1
                 continue
 
             filtered.append(segment)

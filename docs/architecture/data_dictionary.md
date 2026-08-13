@@ -3,7 +3,7 @@
 **Last updated:** 2026-02-23
 **Schema version:** 2.1 (as emitted by `_build_output_data()` in `run_preprocessing_pipeline.py`)
 **Output location:** `data/processed/{YYYYMMDD_HHMMSS}_preprocessing_{git_sha}/{stem}_{section_id}_segmented.json`
-**Cardinality:** One file per section per filing. A 10-K filing produces up to 7 files
+**Cardinality:** One file per section per filing. A 10-K filing produces up to 15 files
 (one per section in `configs/config.yaml sec_sections["10-K"]`). Absent sections produce
 no file — they are not written, not null-filled.
 
@@ -99,8 +99,45 @@ Present when the filing includes inline XBRL; empty dict `{}` otherwise.
 | `cleaning_settings.normalized_whitespace` | `bool` | | `settings.preprocessing.normalize_whitespace` |
 | `cleaning_settings.removed_page_numbers` | `bool` | | `settings.preprocessing.remove_page_numbers` |
 | `cleaning_settings.discarded_tables` | `bool` | Tables are always excluded from segmented text. | Hard-coded `true` |
+| `no_material_change` | `bool` | `true` when the section contains "no material change" boilerplate language. Guarded: only flagged when `<= 3 segments` AND `< 2000 chars`. | `RiskSegmenter.segment_extracted_section()` via `_NO_MATERIAL_CHANGE_PAT` |
 | `stats.total_chunks` | `int` | Number of segments in this section. | `SegmentedRisks.total_segments` |
 | `stats.num_tables` | `int` | Tables encountered in the section (discarded). | `SegmentedRisks.metadata["element_type_counts"]["TableElement"]` |
+| `stats.table_char_count` | `int\|null` | Character count of table elements before exclusion. | `SECSectionExtractor.extract_section()` — sum of `e['char_count']` where `e['is_table']` |
+| `stats.pre_exclusion_char_count` | `int\|null` | Total character count of all elements (text + tables) before table exclusion. | `SECSectionExtractor.extract_section()` — sum of all `e['char_count']` |
+| `stats.extraction_manifest` | `object\|null` | Which sections were attempted, found, and missing during extraction. See sub-fields below. | `SECPreprocessingPipeline._process_filing_with_global_workers()` |
+| `stats.segmentation_stats` | `object\|null` | Detailed segment-level accounting from segmentation. See sub-fields below. | `RiskSegmenter.segment_risks()` via `SegmentationStats` |
+| `stats.text_coverage` | `object\|null` | Ratio of segmented text to cleaned section text. See sub-fields below. | `pipeline.py` — computed after segmentation |
+
+#### `stats.extraction_manifest` sub-fields (ADR-020)
+
+| Field | Type | Description |
+|:------|:-----|:------------|
+| `sections_attempted` | `List[str]` | All section identifiers the pipeline attempted to extract |
+| `sections_found` | `List[str]` | Sections that returned non-null content |
+| `sections_missing` | `List[str]` | Sections that returned null (not found in filing) |
+
+#### `stats.segmentation_stats` sub-fields (ADR-020)
+
+| Field | Type | Description |
+|:------|:-----|:------------|
+| `input_count` | `int` | Segments produced by initial segmentation strategy |
+| `post_filter_count` | `int` | Segments remaining after `_filter_segments()` |
+| `filtered_too_short` | `int` | Segments dropped for being below `min_length` |
+| `filtered_too_few_words` | `int` | Segments dropped for having fewer than 3 words |
+| `filtered_non_risk` | `int` | Segments dropped by `_is_non_risk_content()` |
+| `cross_ref_drops` | `int` | Subset of `filtered_non_risk` matching `_CROSS_REF_DROP_PAT` |
+| `post_split_count` | `int` | Segments after `_split_long_segments()` |
+| `segments_split` | `int` | Net new segments created by splitting |
+| `post_merge_count` | `int` | Final segment count after `_merge_short_segments()` |
+| `segments_merged` | `int` | Segments absorbed by merging |
+
+#### `stats.text_coverage` sub-fields (ADR-020)
+
+| Field | Type | Description |
+|:------|:-----|:------------|
+| `segment_char_total` | `int` | Sum of `char_count` across all output segments |
+| `cleaned_char_count` | `int` | Character count of cleaned section text |
+| `coverage_ratio` | `float` | `segment_char_total / cleaned_char_count`, rounded to 4 decimal places |
 
 ---
 
@@ -190,6 +227,8 @@ A failing **blocking** rule prevents the output file from being written.
 | Max file size (standard) | raw HTML | ≤ 50 MB for non-financial SIC | No | `max_file_size_mb_standard <= 50` |
 | Max file size (financials) | raw HTML | ≤ 150 MB for SIC 6000–6799 | No | `max_file_size_mb_financial <= 150` |
 | Amendment flag check | `amendment_flag` | Must not be an amendment. `None` → SKIP. | Yes | `amendment_flag_not_amended <= 0.0` |
+| Text coverage ratio | `stats.text_coverage.coverage_ratio` | ≥ 85% of cleaned text appears in segments | No (warn at 70%) | `text_coverage_ratio >= 0.85` |
+| Section found rate | `stats.extraction_manifest` | ≥ 80% of attempted sections found | No (warn at 60%) | `section_found_rate >= 0.80` |
 
 ---
 

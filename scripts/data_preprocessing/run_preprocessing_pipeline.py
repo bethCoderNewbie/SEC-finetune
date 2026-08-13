@@ -383,6 +383,7 @@ def _build_output_data(
         'section_metadata': {
             'identifier': segmented_risks.section_identifier,
             'title': segmented_risks.section_title,
+            'no_material_change': segmented_risks.no_material_change,
             'cleaning_settings': {
                 'removed_html_tags':    settings.preprocessing.remove_html_tags,
                 'normalized_whitespace': settings.preprocessing.normalize_whitespace,
@@ -394,6 +395,11 @@ def _build_output_data(
                 'num_tables':   num_tables,
                 'raw_section_char_count':     raw_section_char_count,
                 'cleaned_section_char_count': cleaned_section_char_count,
+                'table_char_count': segmented_risks.metadata.get('table_char_count'),
+                'pre_exclusion_char_count': segmented_risks.metadata.get('pre_exclusion_char_count'),
+                'extraction_manifest': segmented_risks.metadata.get('extraction_manifest'),
+                'segmentation_stats': segmented_risks.metadata.get('segmentation_stats'),
+                'text_coverage': segmented_risks.metadata.get('text_coverage'),
             },
         },
         'num_segments': segmented_risks.total_segments,
@@ -590,6 +596,16 @@ def process_single_file_fast(args: Tuple) -> Dict[str, Any]:
             if len(segmented_risks) == 0:
                 continue
 
+            # Compute text coverage ratio (Gap 4)
+            segment_char_total = sum(seg.char_count for seg in segmented_risks.segments)
+            if cleaned_chars > 0:
+                coverage_ratio = round(segment_char_total / cleaned_chars, 4)
+                segmented_risks.metadata['text_coverage'] = {
+                    'segment_char_total': segment_char_total,
+                    'cleaned_char_count': cleaned_chars,
+                    'coverage_ratio': coverage_ratio,
+                }
+
             # Step 5: Sentiment (if worker is enabled)
             sentiment_features_list = None
             if _worker_analyzer:
@@ -633,6 +649,7 @@ def process_single_file_fast(args: Tuple) -> Dict[str, Any]:
                 'status': 'warning',
                 'num_segments': 0,
                 'sections_extracted': [],
+                'sections_attempted': sections,
                 'sic_code': _meta.get('sic_code'),
                 'sic_name': _meta.get('sic_name'),
                 'cik': _meta.get('cik'),
@@ -656,6 +673,7 @@ def process_single_file_fast(args: Tuple) -> Dict[str, Any]:
             'status': 'success',
             'num_segments': total_segments,
             'sections_extracted': list(all_segmented.keys()),
+            'sections_attempted': sections,
             'sic_code': first_result.sic_code,
             'sic_name': first_result.sic_name,
             'cik': first_result.cik,
@@ -680,6 +698,7 @@ def process_single_file_fast(args: Tuple) -> Dict[str, Any]:
             'status': 'error',
             'num_segments': 0,
             'sections_extracted': [],
+            'sections_attempted': sections if 'sections' in locals() else [],
             'sic_code': _meta.get('sic_code'),
             'sic_name': _meta.get('sic_name'),
             'cik': _meta.get('cik'),

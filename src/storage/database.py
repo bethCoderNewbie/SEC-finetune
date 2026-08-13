@@ -636,6 +636,7 @@ class FilingDatabase:
             raw_char_count=stats.get("raw_section_char_count"),
             cleaned_char_count=stats.get("cleaned_section_char_count"),
             pipeline_version=pipeline_version,
+            no_material_change=sm.get("no_material_change", False),
         )
         return 1
 

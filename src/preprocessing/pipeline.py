@@ -258,6 +258,17 @@ def _process_filing_with_global_workers(
         result.raw_section_char_count     = raw_chars
         result.cleaned_section_char_count = cleaned_chars
 
+        # Compute text coverage ratio (Gap 4)
+        segment_char_total = sum(seg.char_count for seg in result.segments)
+        if cleaned_chars > 0:
+            coverage_ratio = round(segment_char_total / cleaned_chars, 4)
+            result.metadata['text_coverage'] = {
+                'segment_char_total': segment_char_total,
+                'cleaned_char_count': cleaned_chars,
+                'coverage_ratio': coverage_ratio,
+            }
+            logger.info("Section '%s' coverage: %.1f%%", section_id, coverage_ratio * 100)
+
         # Save segmented output
         if output_dir:
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -267,6 +278,24 @@ def _process_filing_with_global_workers(
             )
 
         results[section_id] = result
+
+    # Extraction manifest (Gap 1): log which sections were found/missing
+    sections_found = [sid for sid, r in results.items() if r is not None]
+    sections_missing = [sid for sid, r in results.items() if r is None]
+    logger.info(
+        "Extraction manifest: attempted=%d found=%d missing=%s",
+        len(sections), len(sections_found), sections_missing,
+    )
+
+    # Store manifest on each found result
+    manifest = {
+        'sections_attempted': list(sections),
+        'sections_found': sections_found,
+        'sections_missing': sections_missing,
+    }
+    for sid, r in results.items():
+        if r is not None:
+            r.metadata['extraction_manifest'] = manifest
 
     return results
 
@@ -332,6 +361,7 @@ def _process_single_filing_worker(args: tuple) -> Dict[str, Any]:
                 'result': successful,
                 'num_segments': total_segments,
                 'sections_extracted': list(successful.keys()),
+                'sections_attempted': _sections_for_form_type(form_type),
                 'output_path': str(primary_path) if primary_path else None,
                 'sic_code': first.sic_code,
                 'company_name': first.company_name,
@@ -560,6 +590,18 @@ class SECPreprocessingPipeline:
             )
             logger.info("Section '%s': created %d segments", section_id, len(result))
 
+            # Compute text coverage ratio (Gap 4)
+            cleaned_chars_val = len(cleaned_text)
+            segment_char_total = sum(seg.char_count for seg in result.segments)
+            if cleaned_chars_val > 0:
+                coverage_ratio = round(segment_char_total / cleaned_chars_val, 4)
+                result.metadata['text_coverage'] = {
+                    'segment_char_total': segment_char_total,
+                    'cleaned_char_count': cleaned_chars_val,
+                    'coverage_ratio': coverage_ratio,
+                }
+                logger.info("Section '%s' coverage: %.1f%%", section_id, coverage_ratio * 100)
+
             # Save segmented output
             if output_dir:
                 output_dir.mkdir(parents=True, exist_ok=True)
@@ -568,6 +610,23 @@ class SECPreprocessingPipeline:
                 logger.info("Saved segmented section '%s' to: %s", section_id, seg_path)
 
             results[section_id] = result
+
+        # Extraction manifest (Gap 1)
+        section_id_list = [s.value for s in section_list]
+        sections_found = [sid for sid, r in results.items() if r is not None]
+        sections_missing = [sid for sid, r in results.items() if r is None]
+        logger.info(
+            "Extraction manifest: attempted=%d found=%d missing=%s",
+            len(section_id_list), len(sections_found), sections_missing,
+        )
+        manifest = {
+            'sections_attempted': section_id_list,
+            'sections_found': sections_found,
+            'sections_missing': sections_missing,
+        }
+        for sid, r in results.items():
+            if r is not None:
+                r.metadata['extraction_manifest'] = manifest
 
         return results
 

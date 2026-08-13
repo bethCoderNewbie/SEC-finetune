@@ -63,6 +63,8 @@ class SegmentedRisks(BaseModel):
     # Section-level char counts for G-02 loss measurement
     raw_section_char_count: Optional[int] = None      # len(extracted.text) pre-TextCleaner
     cleaned_section_char_count: Optional[int] = None  # len(cleaned_text) post-TextCleaner
+    # Boilerplate detection: True when section contains "no material change" language
+    no_material_change: bool = False
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -139,6 +141,7 @@ class SegmentedRisks(BaseModel):
             'section_metadata': {
                 'identifier': self.section_identifier,
                 'title': self.section_title,
+                'no_material_change': self.no_material_change,
                 'cleaning_settings': {
                     'removed_html_tags': True,
                     'normalized_whitespace': True,
@@ -150,6 +153,11 @@ class SegmentedRisks(BaseModel):
                     'num_tables': num_tables,
                     'raw_section_char_count':     self.raw_section_char_count,
                     'cleaned_section_char_count': self.cleaned_section_char_count,
+                    'table_char_count': self.metadata.get('table_char_count'),
+                    'pre_exclusion_char_count': self.metadata.get('pre_exclusion_char_count'),
+                    'extraction_manifest': self.metadata.get('extraction_manifest'),
+                    'segmentation_stats': self.metadata.get('segmentation_stats'),
+                    'text_coverage': self.metadata.get('text_coverage'),
                 },
             },
             'chunks': [
@@ -220,6 +228,7 @@ class SegmentedRisks(BaseModel):
                 total_segments=stats.get('total_chunks', len(segments)),
                 raw_section_char_count=stats.get('raw_section_char_count'),
                 cleaned_section_char_count=stats.get('cleaned_section_char_count'),
+                no_material_change=sm.get('no_material_change', False),
                 # Restore dei from document_info so metadata.get('dei') works
                 # after a save→load round-trip (dei is not in processing_metadata).
                 metadata={'dei': di.get('dei', {})},

@@ -392,6 +392,60 @@ python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch
 
 ---
 
+## Symptom: Text Coverage Ratio Below 70%
+
+**Severity:** Medium (silent content loss — pipeline succeeds but segments are incomplete)
+**Trigger:** `HealthCheckValidator` reports `text_coverage_ratio` as FAIL (< 0.70) or
+WARN (< 0.85) in `RUN_REPORT.md` or `check_single()` output.
+
+### Cause
+
+The text coverage ratio measures `sum(segment.char_count) / cleaned_section_char_count`.
+Values below 70% indicate that a significant portion of the cleaned section text did not
+survive segmentation. Common causes:
+
+1. **Aggressive filtering** — many segments dropped by `_filter_segments()` as non-risk content
+2. **Cross-reference drops** — `_CROSS_REF_DROP_PAT` removing substantive paragraphs
+3. **Merge absorption** — `_merge_short_segments()` combining too aggressively
+4. **Table-heavy section** — most content was in tables (excluded from segmentation)
+
+### Diagnosis
+
+```bash
+# 1. Check the segmentation_stats in the affected output file
+python -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+stats = d.get('section_metadata', {}).get('stats', {})
+print('text_coverage:', json.dumps(stats.get('text_coverage'), indent=2))
+print('segmentation_stats:', json.dumps(stats.get('segmentation_stats'), indent=2))
+print('table_char_count:', stats.get('table_char_count'))
+print('pre_exclusion_char_count:', stats.get('pre_exclusion_char_count'))
+" data/processed/<run_dir>/<file>_segmented.json
+
+# 2. Check if tables account for the missing content
+# If table_char_count is high relative to pre_exclusion_char_count, the content
+# is in tables (expected — tables are excluded from risk segmentation).
+
+# 3. Check filter breakdown
+# If filtered_non_risk or cross_ref_drops are high, review the section content
+# to determine if the filter patterns are too aggressive.
+```
+
+### Resolution
+
+| Finding | Resolution |
+|:--------|:-----------|
+| High `table_char_count` | Expected for financial statements sections. Consider if this section should be excluded from the extraction config. |
+| High `filtered_non_risk` | Review `_is_non_risk_content()` patterns in `src/preprocessing/segmenter.py` — they may be too aggressive for this filing type. |
+| High `cross_ref_drops` | The cross-ref pattern (`_CROSS_REF_DROP_PAT`) may be dropping substantive paragraphs. Check `segmenter.py:15-19`. |
+| High `segments_merged` | `_merge_short_segments()` is absorbing too much. Review `min_length` threshold in `configs/config.yaml`. |
+| All stats look normal | The coverage loss may be in whitespace normalization or Unicode cleaning. Compare `raw_section_char_count` vs `cleaned_section_char_count`. |
+
+**Reference:** ADR-020 (extraction/segmentation completeness), `src/config/qa_validation.py:_check_completeness()`
+
+---
+
 ## Routine Maintenance
 
 ### Prune old run directories

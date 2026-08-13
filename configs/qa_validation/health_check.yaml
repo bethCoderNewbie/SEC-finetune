@@ -23,6 +23,10 @@ categories:
     display_name: Content Substance
     description: Meaningful content validation (segment length, word count)
 
+  extraction_completeness:
+    display_name: Extraction Completeness
+    description: Content coverage and section extraction completeness validation
+
   domain_rules:
     display_name: Domain Rules
     description: SEC-specific business logic (duplicates, risk keywords)
@@ -236,3 +240,31 @@ thresholds:
       blocking: true
       description: "Filing must not be an amendment (AmendmentFlag = false). Amended filings are excluded from training data."
       tags: [domain, blocking, health_check, dei]
+
+  # -------------------------
+  # Extraction Completeness
+  # -------------------------
+  extraction_completeness:
+    text_coverage_ratio:
+      display_name: Text Coverage Ratio
+      metric_type: rate
+      target: 0.85
+      operator: ">="
+      warn_threshold: 0.70
+      blocking: false
+      description: >
+        Ratio of segmented text characters to cleaned section characters.
+        Values below 0.70 indicate significant content loss during segmentation.
+      tags: [health_check, completeness]
+
+    section_found_rate:
+      display_name: Section Found Rate
+      metric_type: rate
+      target: 0.80
+      operator: ">="
+      warn_threshold: 0.60
+      blocking: false
+      description: >
+        Fraction of attempted sections that were successfully extracted.
+        Low values may indicate filing format issues or missing section headers.
+      tags: [health_check, completeness]

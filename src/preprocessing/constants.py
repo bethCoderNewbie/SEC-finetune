@@ -166,6 +166,30 @@ SECTION_PATTERNS: Dict[str, List[str]] = {
         r'(?i)item\s*9\s*a\.?\s*controls',
         r'(?i)item\s*9a\.?',
     ],
+    "part2item9b": [
+        r'(?i)item\s*9\s*b\.?\s*other',
+        r'(?i)item\s*9b\.?',
+    ],
+    "part1item2": [
+        r'(?i)item\s*2\.?\s*properties',
+        r'(?i)^item\s*2\s*\.?$',
+    ],
+    "part1item3": [
+        r'(?i)item\s*3\.?\s*legal\s*proceedings',
+        r'(?i)^item\s*3\s*\.?$',
+    ],
+    "part1item4": [
+        r'(?i)item\s*4\.?\s*mine\s*safety',
+        r'(?i)^item\s*4\s*\.?$',
+    ],
+    "part2item5": [
+        r'(?i)item\s*5\.?\s*market',
+        r'(?i)^item\s*5\s*\.?$',
+    ],
+    "part2item6": [
+        r'(?i)item\s*6\.?\s*\[?\s*reserved',
+        r'(?i)^item\s*6\s*\.?$',
+    ],
 }
 
 
