@@ -352,6 +352,17 @@ class SegmentAnnotator:
         filing_date   = _reformat_date(segmented.filed_as_of_date)
 
         merged = self._merge_by_ancestors(segmented.segments, self._merge_lo, self._merge_hi)
+
+        # Filter degenerate segments (empty text, zero words)
+        merged = [seg for seg in merged if seg.text.strip() and seg.word_count >= 1]
+        if not merged:
+            logger.warning(
+                "All segments degenerate for %s/%s",
+                segmented.ticker,
+                segmented.section_identifier,
+            )
+            return []
+
         records: List[Dict[str, Any]] = []
         index = 0
 
@@ -454,9 +465,19 @@ class SegmentAnnotator:
                     segmented = _filter_by_ancestor(segmented, filter_lower)
 
                 records = self.annotate(segmented)
+                from src.validation.quality_gates import validate_classification_record
+
                 for rec in records:
+                    vr = validate_classification_record(rec)
+                    if not vr.is_valid:
+                        logger.warning(
+                            "Skipping invalid record in %s: %s",
+                            json_path.name,
+                            vr.blocking_failures,
+                        )
+                        continue
                     fh.write(json.dumps(rec) + "\n")
-                total += len(records)
+                    total += 1
                 logger.debug("Annotated %s: %d records", json_path.name, len(records))
 
         logger.info("annotate_run_dir complete: %d records → %s", total, output_path)

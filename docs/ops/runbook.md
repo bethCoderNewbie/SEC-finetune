@@ -706,3 +706,54 @@ echo $SEC_ANALYSIS__TRACE_LOGGING
 # Ensure trace logging is enabled (default: true)
 SEC_ANALYSIS__TRACE_LOGGING=true python -m src.analysis.cli analyze company AAPL
 ```
+
+---
+
+## Symptom: Downstream analysis produces unexpected results (missing labels, zero scores, empty text)
+
+**Severity:** Medium
+**Trigger:** Reports contain empty text segments, labels not matching SASB archetypes, confidence values outside [0, 1], or zero risk scores for filings that should have risk content.
+
+**Diagnosis:**
+```bash
+# Run the quality audit on the database
+python -m src.storage.cli status --quality
+
+# Example output:
+#   Quality Audit:
+#   ========================================
+#     [  OK] Missing CIK: 0
+#     [FAIL] Missing Company Name: 3
+#     [  OK] Zero Segments: 0
+#     [  OK] Missing SIC Code: 0
+#     [  OK] Empty Classification Text: 0
+#     [FAIL] Invalid Risk Labels: 2
+#     [  OK] Out-of-Range Confidence: 0
+#     [  OK] Invalid Label Sources: 0
+#   ========================================
+#   Total issues: 5
+```
+
+**Resolution:**
+
+If issues are found in filings (missing CIK, zero segments, missing company name):
+```bash
+# Re-backfill from the latest run directory — validation gates now filter bad files
+python -m src.storage.cli backfill-latest
+```
+
+If issues are found in classifications (invalid labels, out-of-range confidence):
+```bash
+# Re-classify all filings (forces re-annotation with validation gates active)
+python -m src.storage.cli classify-all --force
+```
+
+If the source data is bad (HTML artifacts, missing ticker), fix the preprocessing input
+and re-run the pipeline:
+```bash
+python scripts/data_preprocessing/run_preprocessing_pipeline.py --batch --workers 4
+python -m src.storage.cli backfill-latest
+python -m src.storage.cli classify-all
+```
+
+**References:** ADR-019 (boundary quality gates), `src/validation/quality_gates.py`, `src/storage/cli.py:_run_quality_audit()`

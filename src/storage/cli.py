@@ -49,8 +49,79 @@ def cmd_status(args: argparse.Namespace, config: AnalysisConfig) -> None:
         if stats.get("fiscal_year_range"):
             yr_min, yr_max = stats["fiscal_year_range"]
             print(f"  Fiscal year range:      {yr_min} - {yr_max}")
+
+        if getattr(args, "quality", False):
+            _run_quality_audit(db)
     finally:
         db.close()
+
+
+def _run_quality_audit(db: FilingDatabase) -> None:
+    """Run data quality audit queries against the database."""
+    from src.analysis.segment_annotator import ARCHETYPE_NAMES, _VALID_LABEL_SOURCES
+
+    print()
+    print("  Quality Audit:")
+    print("  " + "=" * 40)
+
+    total_issues = 0
+
+    # Define audit checks: (label, SQL, params)
+    archetype_placeholders = ", ".join("?" for _ in ARCHETYPE_NAMES)
+    source_placeholders = ", ".join("?" for _ in _VALID_LABEL_SOURCES)
+
+    checks = [
+        (
+            "Missing CIK",
+            "SELECT COUNT(*) as cnt FROM filings WHERE cik IS NULL OR cik = ''",
+            (),
+        ),
+        (
+            "Missing Company Name",
+            "SELECT COUNT(*) as cnt FROM filings WHERE company_name IS NULL OR company_name = ''",
+            (),
+        ),
+        (
+            "Zero Segments",
+            "SELECT COUNT(*) as cnt FROM filings WHERE total_segments IS NULL OR total_segments = 0",
+            (),
+        ),
+        (
+            "Missing SIC Code",
+            "SELECT COUNT(*) as cnt FROM filings WHERE sic_code IS NULL OR sic_code = ''",
+            (),
+        ),
+        (
+            "Empty Classification Text",
+            "SELECT COUNT(*) as cnt FROM classifications WHERE text IS NULL OR text = ''",
+            (),
+        ),
+        (
+            "Invalid Risk Labels",
+            f"SELECT COUNT(*) as cnt FROM classifications WHERE risk_label NOT IN ({archetype_placeholders})",
+            tuple(ARCHETYPE_NAMES),
+        ),
+        (
+            "Out-of-Range Confidence",
+            "SELECT COUNT(*) as cnt FROM classifications WHERE confidence < 0 OR confidence > 1",
+            (),
+        ),
+        (
+            "Invalid Label Sources",
+            f"SELECT COUNT(*) as cnt FROM classifications WHERE label_source NOT IN ({source_placeholders})",
+            tuple(_VALID_LABEL_SOURCES),
+        ),
+    ]
+
+    for label, sql, params in checks:
+        row = db.conn.execute(sql, params).fetchone()
+        count = row["cnt"]
+        tag = "  OK" if count == 0 else "FAIL"
+        print(f"    [{tag}] {label}: {count}")
+        total_issues += count
+
+    print("  " + "=" * 40)
+    print(f"  Total issues: {total_issues}")
 
 
 def cmd_backfill(args: argparse.Namespace, config: AnalysisConfig) -> None:
@@ -195,7 +266,8 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # status
-    subparsers.add_parser("status", help="Show database statistics")
+    p_status = subparsers.add_parser("status", help="Show database statistics")
+    p_status.add_argument("--quality", action="store_true", help="Run data quality audit")
 
     # backfill <run_dir>
     p_backfill = subparsers.add_parser("backfill", help="Import JSON files from a run directory")

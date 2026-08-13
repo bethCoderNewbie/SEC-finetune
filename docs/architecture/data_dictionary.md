@@ -445,6 +445,59 @@ data/processed/*/
 
 ---
 
+## Validation Enforcement Points (ADR-019)
+
+Quality gates enforce data integrity at system boundaries. Three layers of validation exist:
+
+### Enforcement Matrix
+
+| Threshold / Check | Batch (`check_run`) | Per-filing (`validate_filing`) | Per-record (`validate_classification_record`) |
+|---|---|---|---|
+| `cik_present_rate` | Yes | Yes (via `check_single`) | Warning only (`cik_present`) |
+| `company_name_present_rate` | Yes | Yes (via `check_single`) | N/A |
+| `sic_code_present_rate` | Yes | Yes (via `check_single`) | N/A |
+| `html_artifact_rate` | Yes | Yes (via `check_single`) | N/A |
+| `empty_segment_rate` | Yes | Yes (via `check_single`) | N/A |
+| `short_segment_rate` | Yes | Yes (via `check_single`) | N/A |
+| `min_word_count_rate` | Yes | Yes (via `check_single`) | N/A |
+| `duplicate_rate` | Yes | Yes (via `check_single`) | N/A |
+| `ticker_present` | N/A | Yes (structural pre-check) | Yes (blocking) |
+| `fiscal_year_valid` | N/A | Yes (structural pre-check) | N/A |
+| `filed_as_of_date_present` | N/A | Warning (pre-check) | N/A |
+| `text_non_empty` | N/A | N/A | Yes (blocking) |
+| `label_valid` | N/A | N/A | Yes (blocking, 0..5) |
+| `risk_label_valid` | N/A | N/A | Yes (blocking, `ARCHETYPE_NAMES`) |
+| `confidence_in_range` | N/A | N/A | Yes (blocking, [0.0, 1.0]) |
+| `label_source_valid` | N/A | N/A | Yes (blocking, `_VALID_LABEL_SOURCES`) |
+| `word_count_positive` | N/A | N/A | Yes (blocking) |
+| `char_count_positive` | N/A | N/A | Yes (blocking) |
+| `word_count_in_range` | N/A | N/A | Warning (20..380) |
+| `filing_date_present` | N/A | N/A | Warning |
+
+### Structural Pre-Condition Checks (not in YAML)
+
+These are boolean pre-conditions checked inline in `validate_filing()`, not rate thresholds from `health_check.yaml`:
+
+| Check | Blocking | Rationale |
+|-------|----------|-----------|
+| `ticker` present and non-empty | Yes | DB unique key; no downstream lookup possible |
+| `fiscal_year` present, 4-digit | Yes | DB unique key; annotator groups by year |
+| `filed_as_of_date` present | No (warn) | Annotator needs it for `filing_date` output field |
+
+### `FilingValidationResult` Dataclass
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `is_valid` | `bool` | `True` only when no blocking failures |
+| `status` | `str` | `"PASS"`, `"WARN"`, or `"FAIL"` |
+| `blocking_failures` | `List[str]` | Threshold/check names that failed (blocking=True) |
+| `warnings` | `List[str]` | Threshold/check names at WARN level |
+| `details` | `List[Dict]` | Full validation table rows for logging |
+
+Source: `src/validation/quality_gates.py`
+
+---
+
 ## Fields NOT Yet Present (Planned)
 
 | Field | Planned location | Depends on |

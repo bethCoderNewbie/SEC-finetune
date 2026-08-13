@@ -589,6 +589,16 @@ class FilingDatabase:
         with open(json_path, encoding="utf-8") as fh:
             data = json.load(fh)
 
+        # Validate filing quality before import
+        from src.validation.quality_gates import validate_filing
+
+        validation = validate_filing(data)
+        if not validation.is_valid:
+            logger.warning(
+                "Skipping %s: %s", json_path.name, validation.blocking_failures
+            )
+            return 0
+
         # Extract document_info (handles both schema versions)
         if "document_info" in data:
             di = data["document_info"]
@@ -604,10 +614,6 @@ class FilingDatabase:
         ticker = di.get("ticker")
         fiscal_year = di.get("fiscal_year")
         form_type = di.get("form_type", "10-K")
-
-        if not ticker or not fiscal_year:
-            logger.debug("Skipping %s: missing ticker or fiscal_year", json_path)
-            return 0
 
         section_id = sm.get("identifier") or _infer_section_id(json_path.name)
         if not section_id:
@@ -747,6 +753,14 @@ def classify_and_store(
     json_path = filing.get("segmented_json_path")
     if not json_path or not Path(json_path).exists():
         raise FileNotFoundError(f"Missing JSON at {json_path}")
+
+    # Validate filing quality before classification
+    from src.validation.quality_gates import validate_filing
+
+    filing_data = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    validation = validate_filing(filing_data)
+    if not validation.is_valid:
+        raise ValueError(f"Validation failed: {validation.blocking_failures}")
 
     segmented = SegmentedRisks.load_from_json(json_path)
     records = annotator.annotate(segmented)

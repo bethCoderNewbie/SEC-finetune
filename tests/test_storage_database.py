@@ -226,7 +226,7 @@ def test_store_and_get_risk_score(db: FilingDatabase) -> None:
 
 
 def _make_segmented_json(path: Path, ticker: str, fiscal_year: str, section_id: str = "part1item1a") -> None:
-    """Create a minimal valid segmented JSON file."""
+    """Create a minimal valid segmented JSON file that passes quality gates."""
     data = {
         "document_info": {
             "ticker": ticker,
@@ -234,14 +234,34 @@ def _make_segmented_json(path: Path, ticker: str, fiscal_year: str, section_id: 
             "form_type": "10-K",
             "cik": "0001234",
             "company_name": f"{ticker} Corp",
+            "sic_code": "3571",
+            "filed_as_of_date": "20240101",
         },
         "section_metadata": {
             "identifier": section_id,
             "stats": {"total_chunks": 2},
         },
         "chunks": [
-            {"text": "Segment one", "word_count": 2},
-            {"text": "Segment two", "word_count": 2},
+            {
+                "text": (
+                    "The company faces significant risk from cybersecurity threats "
+                    "and data breaches that may adversely affect operations and could "
+                    "result in material losses and potential regulatory penalties and "
+                    "uncertain outcomes for the business going forward this year"
+                ),
+                "word_count": 35,
+                "length": 220,
+            },
+            {
+                "text": (
+                    "Climate change and environmental regulations pose material risks "
+                    "to our operations and adverse weather events may disrupt supply "
+                    "chains and could increase operating costs significantly for the "
+                    "company and its subsidiaries in the coming fiscal year"
+                ),
+                "word_count": 35,
+                "length": 220,
+            },
         ],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
