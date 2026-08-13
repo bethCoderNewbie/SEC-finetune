@@ -615,16 +615,15 @@ class AnalysisOrchestrator:
         """Try DB lookup for SIC tickers. Returns None if DB unavailable."""
         try:
             from src.config.analysis import AnalysisConfig
-            from src.storage.database import FilingDatabase
+            from src.storage.database import get_database
 
             config = AnalysisConfig()
             if not config.db_path.exists():
                 return None
 
-            db = FilingDatabase(config.db_path)
-            with db:
-                tickers = db.find_tickers_for_sic(sic_code, fiscal_year)
-                return tickers if tickers else None
+            db = get_database(config.db_path)
+            tickers = db.find_tickers_for_sic(sic_code, fiscal_year)
+            return tickers if tickers else None
         except Exception:
             return None
 

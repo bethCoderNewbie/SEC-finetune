@@ -108,20 +108,46 @@ def _find_segmented_files_via_db(
     """
     try:
         from src.config.analysis import AnalysisConfig
-        from src.storage.database import FilingDatabase
+        from src.storage.database import get_database
 
         config = AnalysisConfig()
         if not config.db_path.exists():
             return None
 
-        db = FilingDatabase(config.db_path)
-        with db:
-            paths = db.get_segmented_json_paths(ticker, fiscal_year)
-            if not paths:
-                return None
-            # Verify paths still exist on disk
-            valid = [Path(p) for p in paths if Path(p).exists()]
-            return valid if valid else None
+        db = get_database(config.db_path)
+        paths = db.get_segmented_json_paths(ticker, fiscal_year)
+        if not paths:
+            return None
+        # Verify paths still exist on disk
+        valid = [Path(p) for p in paths if Path(p).exists()]
+        if not valid:
+            return None
+
+        # Stale-DB detection: warn if run_dir doesn't match latest on disk
+        try:
+            from src.config import settings as _settings
+            processed_root = _settings.paths.processed_data_dir
+            if processed_root.is_dir():
+                latest_dirs = sorted(
+                    [d for d in processed_root.iterdir()
+                     if d.is_dir() and "_preprocessing_" in d.name],
+                    key=lambda d: d.stat().st_mtime,
+                    reverse=True,
+                )
+                if latest_dirs:
+                    latest_run_dir = str(latest_dirs[0])
+                    db_run_dir = str(valid[0].parent)
+                    if latest_run_dir not in db_run_dir and db_run_dir not in latest_run_dir:
+                        logger.warning(
+                            "DB paths point to run_dir %s but latest on disk is %s "
+                            "— consider re-running backfill",
+                            valid[0].parent.name,
+                            latest_dirs[0].name,
+                        )
+        except Exception:
+            pass  # stale-DB check is best-effort
+
+        return valid
     except Exception as exc:
         logger.debug("DB lookup failed, falling back to glob: %s", exc)
         return None

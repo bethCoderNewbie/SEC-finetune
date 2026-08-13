@@ -138,6 +138,7 @@ _VALID_LABEL_SOURCES: frozenset = frozenset({
 # ---------------------------------------------------------------------------
 
 _HYPOTHESIS_TEMPLATES: Dict[str, str] = {
+    # 10-K sections
     "part1item1a": "This text describes a risk related to {}.",
     "part1item1c": "This text describes a risk related to {}.",
     "part1item1":  (
@@ -151,6 +152,15 @@ _HYPOTHESIS_TEMPLATES: Dict[str, str] = {
     "part2item7a": (
         "This market risk disclosure describes quantitative exposure to {}."
     ),
+    # 10-Q sections
+    "part2item1a": "This text describes a risk related to {}.",
+    "part2item1":  "This legal proceeding describes exposure to {}.",
+    "part2item2":  "This text describes changes to equity related to {}.",
+    "part1item2":  (
+        "This management discussion describes the financial or operational "
+        "impact of, or ongoing exposure to, {}-related factors."
+    ),
+    "part1item3":  "This market risk disclosure describes quantitative exposure to {}.",
     "_default":    "This text describes a risk related to {}.",
 }
 
@@ -178,11 +188,16 @@ _ANCESTOR_ARCHETYPE_PRIOR: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 _SECTION_CONFIDENCE_THRESHOLDS: Dict[str, float] = {
+    # 10-K sections
     "part1item1a": 0.70,
     "part1item1c": 0.70,
     "part2item7a": 0.65,
     "part2item7":  0.60,
     "part1item1":  0.55,
+    # 10-Q sections
+    "part2item1a": 0.70,
+    "part1item2":  0.60,
+    "part1item3":  0.65,
     "_default":    0.70,
 }
 

@@ -31,7 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.config.analysis import AnalysisConfig
-from src.storage.database import FilingDatabase, compute_classifier_version
+from src.storage.database import FilingDatabase, compute_classifier_version, classify_and_store
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +73,8 @@ def main() -> None:
                 sys.exit(1)
             run_dir = candidates[0]
             print(f"Backfilling from {run_dir.name} ...")
-            count = db.backfill_from_run_dir(run_dir)
-            print(f"  Imported {count} filing records")
+            count, skipped = db.backfill_from_run_dir(run_dir)
+            print(f"  Imported {count} filing records ({skipped} skipped)")
 
         # Compute current classifier version
         from src.config import settings
@@ -108,9 +108,6 @@ def main() -> None:
 
         # Load annotator ONCE
         from src.analysis.segment_annotator import SegmentAnnotator
-        from src.preprocessing.models.segmentation import SegmentedRisks
-        from src.analysis.skills.scorer import score_risk
-        from src.analysis.models.analysis import ClassificationResult
 
         load_start = time.monotonic()
         annotator = SegmentAnnotator()
@@ -123,55 +120,9 @@ def main() -> None:
         start = time.monotonic()
 
         for filing in filings:
-            json_path = filing.get("segmented_json_path")
-            if not json_path or not Path(json_path).exists():
-                logger.warning(
-                    "Skipping filing %d (%s %s): missing JSON at %s",
-                    filing["id"], filing["ticker"], filing["fiscal_year"], json_path,
-                )
-                errors += 1
-                continue
-
             try:
-                segmented = SegmentedRisks.load_from_json(json_path)
-                records = annotator.annotate(segmented)
-
-                db.store_classifications(
-                    filing_id=filing["id"],
-                    classifications=records,
-                    classifier_version=cv,
-                    ticker=filing["ticker"],
-                    fiscal_year=filing["fiscal_year"],
-                )
-                total_segments += len(records)
-
-                # Compute and store risk score
-                cls_results = [
-                    ClassificationResult(
-                        segment_id=str(rec.get("index", i)),
-                        text=rec.get("text", ""),
-                        risk_label=rec.get("risk_label", "other"),
-                        sasb_topic=rec.get("sasb_topic"),
-                        sasb_industry=rec.get("sasb_industry"),
-                        confidence=float(rec.get("confidence", 0.0)),
-                        label_source=rec.get("label_source", "heuristic"),
-                        word_count=int(rec.get("word_count", 0)),
-                    )
-                    for i, rec in enumerate(records)
-                ]
-
-                if cls_results:
-                    risk = score_risk(cls_results)
-                    db.store_risk_score(
-                        filing_id=filing["id"],
-                        ticker=filing["ticker"],
-                        fiscal_year=filing["fiscal_year"],
-                        form_type=filing["form_type"],
-                        score=risk.score,
-                        dominant_archetype=risk.dominant_archetype,
-                        label_distribution=risk.label_distribution,
-                    )
-
+                seg_count = classify_and_store(db, filing, annotator, cv)
+                total_segments += seg_count
                 classified += 1
                 if classified % 25 == 0:
                     elapsed = time.monotonic() - start
@@ -179,9 +130,8 @@ def main() -> None:
                     print(
                         f"  [{classified}/{len(filings)}] "
                         f"{filing['ticker']} {filing['fiscal_year']} — "
-                        f"{len(records)} segments ({rate:.1f} filings/s)"
+                        f"{seg_count} segments ({rate:.1f} filings/s)"
                     )
-
             except Exception as exc:
                 logger.warning(
                     "Failed to classify filing %d (%s %s): %s",

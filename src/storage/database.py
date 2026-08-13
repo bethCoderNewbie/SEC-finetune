@@ -97,7 +97,24 @@ CREATE INDEX IF NOT EXISTS idx_classifications_filing ON classifications(filing_
 CREATE INDEX IF NOT EXISTS idx_classifications_ticker ON classifications(ticker, fiscal_year);
 CREATE INDEX IF NOT EXISTS idx_classifications_label ON classifications(risk_label, ticker);
 CREATE INDEX IF NOT EXISTS idx_risk_scores_ticker ON risk_scores(ticker, fiscal_year);
+CREATE INDEX IF NOT EXISTS idx_filings_accession ON filings(accession_number);
+
+CREATE TABLE IF NOT EXISTS schema_version (
+    version     INTEGER NOT NULL,
+    applied_at  TEXT NOT NULL
+);
 """
+
+# ---------------------------------------------------------------------------
+# Schema migrations — keyed by target version, value is SQL to apply.
+# Each migration runs inside the same transaction as the version bump.
+# ---------------------------------------------------------------------------
+
+_MIGRATIONS: Dict[int, str] = {
+    # Version 1 = initial schema (everything above). No migration SQL needed.
+}
+
+_CURRENT_SCHEMA_VERSION = 1
 
 
 def compute_classifier_version(
@@ -143,6 +160,7 @@ class FilingDatabase:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA_SQL)
         self._conn.commit()
+        self._ensure_schema_version()
         logger.debug("FilingDatabase connected: %s", self._db_path)
 
     def close(self) -> None:
@@ -156,6 +174,30 @@ class FilingDatabase:
 
     def __exit__(self, *exc: Any) -> None:
         self.close()
+
+    def _ensure_schema_version(self) -> None:
+        """Check current schema version and apply any pending migrations."""
+        assert self._conn is not None
+        row = self._conn.execute(
+            "SELECT MAX(version) as v FROM schema_version"
+        ).fetchone()
+        current = row["v"] if row["v"] is not None else 0
+
+        if current >= _CURRENT_SCHEMA_VERSION:
+            return
+
+        for target_ver in range(current + 1, _CURRENT_SCHEMA_VERSION + 1):
+            migration_sql = _MIGRATIONS.get(target_ver)
+            if migration_sql:
+                self._conn.executescript(migration_sql)
+            now = datetime.now(tz=timezone.utc).isoformat()
+            self._conn.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                (target_ver, now),
+            )
+            logger.info("Applied schema migration to version %d", target_ver)
+
+        self._conn.commit()
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -367,40 +409,38 @@ class FilingDatabase:
         ticker: str,
         fiscal_year: str,
     ) -> int:
-        """Store classification results for a filing. Returns count stored."""
+        """Store classification results for a filing atomically. Returns count stored."""
         now = datetime.now(tz=timezone.utc).isoformat()
-        # Clear existing classifications for this filing
-        self.conn.execute("DELETE FROM classifications WHERE filing_id=?", (filing_id,))
+        with self.conn:  # implicit BEGIN / COMMIT / ROLLBACK
+            self.conn.execute("DELETE FROM classifications WHERE filing_id=?", (filing_id,))
 
-        for i, cls in enumerate(classifications):
+            for i, cls in enumerate(classifications):
+                self.conn.execute(
+                    """INSERT INTO classifications (
+                        filing_id, segment_index, chunk_id, text, word_count,
+                        risk_label, sasb_topic, sasb_industry, confidence,
+                        label_source, parent_subsection, ticker, fiscal_year
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        filing_id, i,
+                        cls.get("chunk_id") or cls.get("segment_id", str(i)),
+                        cls.get("text", ""),
+                        cls.get("word_count", 0),
+                        cls.get("risk_label", "other"),
+                        cls.get("sasb_topic"),
+                        cls.get("sasb_industry"),
+                        cls.get("confidence", 0.0),
+                        cls.get("label_source", "heuristic"),
+                        cls.get("parent_subsection"),
+                        ticker.upper(),
+                        fiscal_year,
+                    ),
+                )
+
             self.conn.execute(
-                """INSERT INTO classifications (
-                    filing_id, segment_index, chunk_id, text, word_count,
-                    risk_label, sasb_topic, sasb_industry, confidence,
-                    label_source, parent_subsection, ticker, fiscal_year
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    filing_id, i,
-                    cls.get("chunk_id") or cls.get("segment_id", str(i)),
-                    cls.get("text", ""),
-                    cls.get("word_count", 0),
-                    cls.get("risk_label", "other"),
-                    cls.get("sasb_topic"),
-                    cls.get("sasb_industry"),
-                    cls.get("confidence", 0.0),
-                    cls.get("label_source", "heuristic"),
-                    cls.get("parent_subsection"),
-                    ticker.upper(),
-                    fiscal_year,
-                ),
+                "UPDATE filings SET classifier_version=?, classified_at=? WHERE id=?",
+                (classifier_version, now, filing_id),
             )
-
-        # Update filing's classifier_version and classified_at
-        self.conn.execute(
-            "UPDATE filings SET classifier_version=?, classified_at=? WHERE id=?",
-            (classifier_version, now, filing_id),
-        )
-        self.conn.commit()
         return len(classifications)
 
     def get_classifications(
@@ -503,14 +543,14 @@ class FilingDatabase:
     # Backfill from JSON run directories
     # ------------------------------------------------------------------
 
-    def backfill_from_run_dir(self, run_dir: Path) -> int:
+    def backfill_from_run_dir(self, run_dir: Path) -> Tuple[int, int]:
         """Import all *_segmented.json files from a run directory into the DB.
 
         This is the reconstruction path: if the DB is deleted, this rebuilds
         it from the authoritative stamped run directories (ADR-007).
 
         Returns:
-            Number of filing records upserted.
+            (imported, skipped) — count of records upserted and files skipped.
         """
         run_dir = Path(run_dir)
         if not run_dir.is_dir():
@@ -520,18 +560,24 @@ class FilingDatabase:
         pipeline_version = _extract_pipeline_version(run_dir.name)
 
         count = 0
+        skipped = 0
         for json_path in sorted(run_dir.rglob("*_segmented.json")):
             try:
-                count += self._import_segmented_json(json_path, run_dir, pipeline_version)
+                result = self._import_segmented_json(json_path, run_dir, pipeline_version)
+                if result == 0:
+                    skipped += 1
+                else:
+                    count += result
             except Exception as exc:
                 logger.warning("Failed to import %s: %s", json_path, exc)
+                skipped += 1
                 continue
 
         logger.info(
-            "backfill_from_run_dir: imported %d filing records from %s",
-            count, run_dir,
+            "backfill_from_run_dir: imported %d filing records (%d skipped) from %s",
+            count, skipped, run_dir,
         )
-        return count
+        return count, skipped
 
     def _import_segmented_json(
         self,
@@ -642,6 +688,105 @@ class FilingDatabase:
             (f"%{query.upper()}%", f"%{query}%"),
         ).fetchall()
         return [{"ticker": r["ticker"], "company_name": r["company_name"]} for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Connection singleton
+# ---------------------------------------------------------------------------
+
+_DB_INSTANCE: Optional[FilingDatabase] = None
+
+
+def get_database(db_path: Optional[Path] = None) -> FilingDatabase:
+    """Return a shared FilingDatabase instance (singleton).
+
+    If *db_path* is None, the default path from AnalysisConfig is used.
+    If the singleton exists but points to a different path, it is replaced.
+    """
+    global _DB_INSTANCE
+
+    if db_path is None:
+        from src.config.analysis import AnalysisConfig
+        db_path = AnalysisConfig().db_path
+
+    if _DB_INSTANCE is not None and _DB_INSTANCE._db_path == Path(db_path):
+        return _DB_INSTANCE
+
+    # Close existing if path changed
+    if _DB_INSTANCE is not None:
+        _DB_INSTANCE.close()
+
+    _DB_INSTANCE = FilingDatabase(db_path)
+    _DB_INSTANCE.connect()
+    return _DB_INSTANCE
+
+
+def close_database() -> None:
+    """Close and discard the singleton database instance."""
+    global _DB_INSTANCE
+    if _DB_INSTANCE is not None:
+        _DB_INSTANCE.close()
+        _DB_INSTANCE = None
+
+
+def classify_and_store(
+    db: FilingDatabase,
+    filing: Dict[str, Any],
+    annotator: Any,
+    classifier_version: str,
+) -> int:
+    """Classify a single filing and store results. Returns segment count.
+
+    Encapsulates: load JSON → annotate → store_classifications → score_risk → store_risk_score.
+    Raises on error (caller decides how to handle).
+    """
+    from src.preprocessing.models.segmentation import SegmentedRisks
+    from src.analysis.models.analysis import ClassificationResult
+    from src.analysis.skills.scorer import score_risk
+
+    json_path = filing.get("segmented_json_path")
+    if not json_path or not Path(json_path).exists():
+        raise FileNotFoundError(f"Missing JSON at {json_path}")
+
+    segmented = SegmentedRisks.load_from_json(json_path)
+    records = annotator.annotate(segmented)
+
+    db.store_classifications(
+        filing_id=filing["id"],
+        classifications=records,
+        classifier_version=classifier_version,
+        ticker=filing["ticker"],
+        fiscal_year=filing["fiscal_year"],
+    )
+
+    # Compute and store risk score
+    cls_results = [
+        ClassificationResult(
+            segment_id=str(rec.get("index", i)),
+            text=rec.get("text", ""),
+            risk_label=rec.get("risk_label", "other"),
+            sasb_topic=rec.get("sasb_topic"),
+            sasb_industry=rec.get("sasb_industry"),
+            confidence=float(rec.get("confidence", 0.0)),
+            label_source=rec.get("label_source", "heuristic"),
+            word_count=int(rec.get("word_count", 0)),
+        )
+        for i, rec in enumerate(records)
+    ]
+
+    if cls_results:
+        risk = score_risk(cls_results)
+        db.store_risk_score(
+            filing_id=filing["id"],
+            ticker=filing["ticker"],
+            fiscal_year=filing["fiscal_year"],
+            form_type=filing["form_type"],
+            score=risk.score,
+            dominant_archetype=risk.dominant_archetype,
+            label_distribution=risk.label_distribution,
+        )
+
+    return len(records)
 
 
 # ---------------------------------------------------------------------------

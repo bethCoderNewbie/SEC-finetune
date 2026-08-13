@@ -41,7 +41,7 @@ def _try_cached_classifications(
 
     try:
         from src.config.analysis import AnalysisConfig
-        from src.storage.database import FilingDatabase, compute_classifier_version
+        from src.storage.database import get_database, compute_classifier_version
         from src.config import settings
 
         config = AnalysisConfig()
@@ -57,33 +57,32 @@ def _try_cached_classifications(
             merge_hi=cfg.merge_hi,
         )
 
-        db = FilingDatabase(config.db_path)
-        with db:
-            if not db.has_classifications(ticker, fiscal_year, classifier_version=cv):
-                return None
+        db = get_database(config.db_path)
+        if not db.has_classifications(ticker, fiscal_year, classifier_version=cv):
+            return None
 
-            rows = db.get_classifications(ticker, fiscal_year)
-            if not rows:
-                return None
+        rows = db.get_classifications(ticker, fiscal_year)
+        if not rows:
+            return None
 
-            results = [
-                ClassificationResult(
-                    segment_id=str(row.get("chunk_id") or row.get("segment_index", i)),
-                    text=row.get("text", ""),
-                    risk_label=row.get("risk_label", "other"),
-                    sasb_topic=row.get("sasb_topic"),
-                    sasb_industry=row.get("sasb_industry"),
-                    confidence=float(row.get("confidence", 0.0)),
-                    label_source=row.get("label_source", "heuristic"),
-                    word_count=int(row.get("word_count", 0)),
-                )
-                for i, row in enumerate(rows)
-            ]
-            logger.info(
-                "classify_filing: DB cache hit for %s %s — %d segments",
-                ticker, fiscal_year, len(results),
+        results = [
+            ClassificationResult(
+                segment_id=str(row.get("chunk_id") or row.get("segment_index", i)),
+                text=row.get("text", ""),
+                risk_label=row.get("risk_label", "other"),
+                sasb_topic=row.get("sasb_topic"),
+                sasb_industry=row.get("sasb_industry"),
+                confidence=float(row.get("confidence", 0.0)),
+                label_source=row.get("label_source", "heuristic"),
+                word_count=int(row.get("word_count", 0)),
             )
-            return results
+            for i, row in enumerate(rows)
+        ]
+        logger.info(
+            "classify_filing: DB cache hit for %s %s — %d segments",
+            ticker, fiscal_year, len(results),
+        )
+        return results
     except Exception as exc:
         logger.debug("DB cache check failed: %s", exc)
         return None
@@ -97,7 +96,7 @@ def _store_classifications_to_db(
     """Store fresh classification results into the DB (best-effort, non-blocking)."""
     try:
         from src.config.analysis import AnalysisConfig
-        from src.storage.database import FilingDatabase, compute_classifier_version
+        from src.storage.database import get_database, compute_classifier_version
         from src.config import settings
 
         config = AnalysisConfig()
@@ -113,21 +112,20 @@ def _store_classifications_to_db(
             merge_hi=cfg.merge_hi,
         )
 
-        db = FilingDatabase(config.db_path)
-        with db:
-            filing = db.get_filing(ticker, fiscal_year)
-            if filing is None:
-                return
-            db.store_classifications(
-                filing_id=filing["id"],
-                classifications=records,
-                classifier_version=cv,
-                ticker=ticker,
-                fiscal_year=fiscal_year,
-            )
-            logger.debug("Stored %d classifications in DB for %s %s", len(records), ticker, fiscal_year)
+        db = get_database(config.db_path)
+        filing = db.get_filing(ticker, fiscal_year)
+        if filing is None:
+            return
+        db.store_classifications(
+            filing_id=filing["id"],
+            classifications=records,
+            classifier_version=cv,
+            ticker=ticker,
+            fiscal_year=fiscal_year,
+        )
+        logger.debug("Stored %d classifications in DB for %s %s", len(records), ticker, fiscal_year)
     except Exception as exc:
-        logger.debug("Failed to store classifications in DB: %s", exc)
+        logger.warning("Failed to store classifications in DB: %s", exc)
 
 
 def classify_filing(
