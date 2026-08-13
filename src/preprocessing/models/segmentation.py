@@ -189,7 +189,7 @@ class SegmentedRisks(BaseModel):
             di = data.get('document_info', {})
             sm = data.get('section_metadata', {})
             stats = sm.get('stats', {})
-            raw_chunks = data.get('chunks', [])
+            raw_chunks = data.get('chunks') or data.get('segments', [])
             segments = [
                 RiskSegment(
                     chunk_id=c.get('chunk_id', f"1A_{i+1:03d}"),

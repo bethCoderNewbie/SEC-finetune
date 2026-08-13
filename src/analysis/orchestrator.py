@@ -563,10 +563,20 @@ class AnalysisOrchestrator:
         self, sic_code: str, fiscal_year: Optional[str]
     ) -> List[str]:
         """
-        Scan the preprocessing run directory for all filings matching sic_code.
+        Find all tickers matching sic_code, using DB when available.
+
+        Strategy (ADR-017):
+          1. Try SQLite lookup (O(1) via idx_filings_sic — <10ms).
+          2. Fall back to run directory glob scan if DB unavailable.
 
         Returns a de-duplicated sorted list of ticker symbols found.
         """
+        # Strategy 1: DB lookup
+        db_result = self._find_tickers_for_sic_via_db(sic_code, fiscal_year)
+        if db_result is not None:
+            return db_result
+
+        # Strategy 2: glob fallback
         import json as _json
 
         if self._run_dir is None:
@@ -597,6 +607,26 @@ class AnalysisOrchestrator:
                     continue
 
         return sorted(tickers)
+
+    @staticmethod
+    def _find_tickers_for_sic_via_db(
+        sic_code: str, fiscal_year: Optional[str]
+    ) -> Optional[List[str]]:
+        """Try DB lookup for SIC tickers. Returns None if DB unavailable."""
+        try:
+            from src.config.analysis import AnalysisConfig
+            from src.storage.database import FilingDatabase
+
+            config = AnalysisConfig()
+            if not config.db_path.exists():
+                return None
+
+            db = FilingDatabase(config.db_path)
+            with db:
+                tickers = db.find_tickers_for_sic(sic_code, fiscal_year)
+                return tickers if tickers else None
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Export

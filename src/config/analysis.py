@@ -28,7 +28,7 @@ class AnalysisConfig(BaseSettings):
     model: str = Field(default="claude-opus-4-6")
     max_tokens: int = Field(default=4096)
     temperature: float = Field(default=0.2)
-    skill_timeout_seconds: int = Field(default=30)
+    skill_timeout_seconds: int = Field(default=600)
     trace_logging: bool = Field(default=True)
     report_output_dir: Path = Field(default=Path("data/reports"))
     # ADR-007: processed run directory root for auto-discovery
@@ -42,3 +42,5 @@ class AnalysisConfig(BaseSettings):
     # YoY delta thresholds (RFC-008 §2.3)
     delta_new_threshold: float = Field(default=0.70)
     delta_stable_threshold: float = Field(default=0.85)
+    # SQLite filing database path (ADR-017)
+    db_path: Path = Field(default=Path("data/sec_filings.db"))

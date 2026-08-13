@@ -138,20 +138,20 @@ _VALID_LABEL_SOURCES: frozenset = frozenset({
 # ---------------------------------------------------------------------------
 
 _HYPOTHESIS_TEMPLATES: Dict[str, str] = {
-    "part1item1a": "This text describes a risk related to {archetype}.",
-    "part1item1c": "This text describes a risk related to {archetype}.",
+    "part1item1a": "This text describes a risk related to {}.",
+    "part1item1c": "This text describes a risk related to {}.",
     "part1item1":  (
         "This business description reveals a dependency, concentration, "
-        "or structural exposure related to {archetype}."
+        "or structural exposure related to {}."
     ),
     "part2item7":  (
         "This management discussion describes the financial or operational "
-        "impact of, or ongoing exposure to, {archetype}-related factors."
+        "impact of, or ongoing exposure to, {}-related factors."
     ),
     "part2item7a": (
-        "This market risk disclosure describes quantitative exposure to {archetype}."
+        "This market risk disclosure describes quantitative exposure to {}."
     ),
-    "_default":    "This text describes a risk related to {archetype}.",
+    "_default":    "This text describes a risk related to {}.",
 }
 
 # ---------------------------------------------------------------------------
@@ -561,13 +561,14 @@ class SegmentAnnotator:
         """
         if section_id not in _BINARY_GATE_SECTIONS:
             return True
-        hypothesis = (
-            "This text describes a risk, vulnerability, dependency, or adverse event "
-            "that could affect the company's operations or finances."
+        hypothesis = "This text describes {} in a company's SEC filing."
+        result = pipeline(
+            text,
+            ["a relevant risk factor", "non-risk content"],
+            hypothesis_template=hypothesis,
         )
-        result = pipeline(text, ["relevant", "not relevant"], hypothesis_template=hypothesis)
         scores = dict(zip(result["labels"], result["scores"]))
-        return scores.get("relevant", 0.0) >= gate_threshold
+        return scores.get("a relevant risk factor", 0.0) >= gate_threshold
 
     @staticmethod
     def _apply_ancestor_score_bonus(

@@ -1,10 +1,9 @@
 """
 load_filing skill — locate and deserialize a SegmentedRisks JSON for a given ticker+year.
 
-Filing lookup strategy:
-1. Glob all *_segmented.json files in the resolved run_dir.
-2. Quick-peek at each file's document_info.ticker and document_info.fiscal_year fields
-   (without constructing a full SegmentedRisks object).
+Filing lookup strategy (ADR-017):
+1. Try SQLite database lookup (O(1) via index) — returns in <1ms.
+2. If DB unavailable or miss, fall back to glob scan (original O(n) path).
 3. Merge segments from all matching sections into one SegmentedRisks.
 4. If run_dir is not supplied, use the most-recently-modified stamped directory
    under data/processed/ (ADR-007).
@@ -99,6 +98,35 @@ def _find_segmented_files(
     return matched
 
 
+def _find_segmented_files_via_db(
+    ticker: str, fiscal_year: Optional[str]
+) -> Optional[List[Path]]:
+    """Try to find segmented JSON paths from the SQLite database.
+
+    Returns None if DB is unavailable or contains no results (caller falls back to glob).
+    Returns a list of Paths if DB has matching records.
+    """
+    try:
+        from src.config.analysis import AnalysisConfig
+        from src.storage.database import FilingDatabase
+
+        config = AnalysisConfig()
+        if not config.db_path.exists():
+            return None
+
+        db = FilingDatabase(config.db_path)
+        with db:
+            paths = db.get_segmented_json_paths(ticker, fiscal_year)
+            if not paths:
+                return None
+            # Verify paths still exist on disk
+            valid = [Path(p) for p in paths if Path(p).exists()]
+            return valid if valid else None
+    except Exception as exc:
+        logger.debug("DB lookup failed, falling back to glob: %s", exc)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Public skill
 # ---------------------------------------------------------------------------
@@ -126,29 +154,44 @@ def load_filing(
         FilingNotFoundError: When no matching file is found.
         SkillError: On unexpected I/O errors.
     """
+    # Strategy 1: DB lookup (O(1) index scan — <1ms)
+    if run_dir is None and fiscal_year is not None:
+        db_paths = _find_segmented_files_via_db(ticker, fiscal_year)
+        if db_paths:
+            logger.info(
+                "load_filing: DB hit — %d section file(s) for %s %s",
+                len(db_paths), ticker, fiscal_year,
+            )
+            return _load_and_merge(db_paths)
+
+    # Strategy 2: glob fallback (original O(n) scan)
     if run_dir is None:
         from src.config import settings as _settings
-        run_dir = _latest_processed_dir(_settings.paths.processed_dir)
+        run_dir = _latest_processed_dir(_settings.paths.processed_data_dir)
 
     matched = _find_segmented_files(run_dir, ticker, fiscal_year)
     if not matched:
         raise FilingNotFoundError(ticker, fiscal_year, run_dir)
 
     logger.info(
-        "load_filing: found %d section file(s) for %s %s in %s",
+        "load_filing: glob found %d section file(s) for %s %s in %s",
         len(matched),
         ticker,
         fiscal_year or "latest",
         run_dir,
     )
 
-    # Load and merge all sections into one SegmentedRisks (preserving all segments)
-    primary = SegmentedRisks.load_from_json(matched[0])
-    if len(matched) == 1:
+    return _load_and_merge(matched)
+
+
+def _load_and_merge(paths: List[Path]) -> SegmentedRisks:
+    """Load and merge all section SegmentedRisks files into one."""
+    primary = SegmentedRisks.load_from_json(paths[0])
+    if len(paths) == 1:
         return primary
 
     all_segments: List[RiskSegment] = list(primary.segments)
-    for extra_file in matched[1:]:
+    for extra_file in paths[1:]:
         extra = SegmentedRisks.load_from_json(extra_file)
         all_segments.extend(extra.segments)
 

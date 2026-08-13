@@ -34,7 +34,13 @@ class SecSectionsConfig(BaseSettings):
         default_factory=lambda: _get_config().get('10-Q', {
             "part1item1": "Item 1. Financial Statements",
             "part1item2": "Item 2. Management's Discussion and Analysis",
+            "part1item3": "Item 3. Quantitative and Qualitative Disclosures About Market Risk",
+            "part1item4": "Item 4. Controls and Procedures",
+            "part2item1": "Item 1. Legal Proceedings",
             "part2item1a": "Item 1A. Risk Factors",
+            "part2item2": "Item 2. Unregistered Sales of Equity Securities",
+            "part2item5": "Item 5. Other Information",
+            "part2item6": "Item 6. Exhibits",
         })
     )
 
