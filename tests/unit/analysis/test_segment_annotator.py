@@ -282,7 +282,7 @@ class TestIsRiskRelevant:
 
     def test_gate_applied_for_part1item1_above_threshold(self):
         def _pipe(text, candidates, hypothesis_template=None, multi_label=False):
-            return {"labels": ["relevant", "not relevant"], "scores": [0.80, 0.20]}
+            return {"labels": ["a relevant risk factor", "non-risk content"], "scores": [0.80, 0.20]}
         result = SegmentAnnotator._is_risk_relevant(
             "We face supply chain risks.", "part1item1", _pipe, gate_threshold=0.5
         )
@@ -290,7 +290,7 @@ class TestIsRiskRelevant:
 
     def test_gate_applied_for_part1item1_below_threshold(self):
         def _pipe(text, candidates, hypothesis_template=None, multi_label=False):
-            return {"labels": ["relevant", "not relevant"], "scores": [0.30, 0.70]}
+            return {"labels": ["a relevant risk factor", "non-risk content"], "scores": [0.30, 0.70]}
         result = SegmentAnnotator._is_risk_relevant(
             "Our headquarters are in Cupertino.", "part1item1", _pipe, gate_threshold=0.5
         )
@@ -298,7 +298,7 @@ class TestIsRiskRelevant:
 
     def test_gate_applied_for_part2item7(self):
         def _pipe(text, candidates, hypothesis_template=None, multi_label=False):
-            return {"labels": ["relevant", "not relevant"], "scores": [0.60, 0.40]}
+            return {"labels": ["a relevant risk factor", "non-risk content"], "scores": [0.60, 0.40]}
         result = SegmentAnnotator._is_risk_relevant(
             "Revenue declined.", "part2item7", _pipe, gate_threshold=0.5
         )
